@@ -2,6 +2,7 @@
 #include "prism_rp/chronos_opaque_capture_effect.h"
 #include "prism_rp/chronos_vpu_effect.h"
 #include "prism_rp/lumina_cascades_effect.h"
+#include "prism_rp/meshlet/prism_meshlet_data.h"
 #include "prism_rp/prism_telemetry.h"
 
 #include <gdextension_interface.h>
@@ -28,6 +29,8 @@ void initialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
     GDREGISTER_CLASS(ChronosVPUCompositorEffect);
     GDREGISTER_CLASS(ChronosOpaqueCaptureEffect);
     GDREGISTER_CLASS(LuminaCascadesCompositorEffect);
+    GDREGISTER_CLASS(PrismMeshletData);
+    GDREGISTER_CLASS(PrismMeshletBuilder);
 
     g_telemetry_singleton = memnew(PrismTelemetry);
     PrismTelemetry::set_singleton(g_telemetry_singleton);

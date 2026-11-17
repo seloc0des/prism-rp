@@ -36,6 +36,8 @@ add_subdirectory(thirdparty/godot-cpp SYSTEM)
 file(GLOB_RECURSE PRISM_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/addons/prism_rp/src/*.cpp"
 )
+file(GLOB MESHOPTIMIZER_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/meshoptimizer/src/*.cpp")
+list(APPEND PRISM_SOURCES ${MESHOPTIMIZER_SOURCES})
 
 add_library(${PROJECT_NAME} SHARED ${PRISM_SOURCES})
 
@@ -43,6 +45,7 @@ target_include_directories(${PROJECT_NAME}
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/addons/prism_rp/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/renderdoc"
+        "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/meshoptimizer/src"
 )
 
 target_link_libraries(${PROJECT_NAME}
