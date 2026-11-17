@@ -12,7 +12,8 @@ in linear light:
                   don't map exactly, so this measures whether the light is in the right places
   fitted_scale    how far off the units are (1.0 = perfect calibration)
 
-Gate 2 passes when psnr_fitted_db > 36 (ROADMAP.md). Needs a GPU for Godot, and Blender 4.x.
+Gate 2 passes when psnr_fitted_db > 36 (ROADMAP.md). Needs a GPU for Godot, Blender 4.x or 5.x, and
+`pip install OpenEXR`.
 
     python3 tests/run_gate2.py --scenes 01_cornell_box 04_dynamic_sponza
 """
@@ -35,6 +36,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "reference"))
 
 import run_visual_regression as rvr  # noqa: E402
+from exr import load_pass  # noqa: E402
 from metrics import gate2_metrics, srgb_to_linear  # noqa: E402
 
 GATE2_SCENES = ["01_cornell_box", "04_dynamic_sponza"]
@@ -50,14 +52,14 @@ def lumina_capture_args(export_dir: Path) -> list[str]:
 
 
 def render_reference(blender: str, scene_json: Path, out_prefix: Path, samples: int, bounces: int) -> Path:
-    cmd = [blender, "-b", "--factory-startup", "--python", str(CYCLES_SCRIPT), "--",
+    cmd = [blender, "-b", "--factory-startup", "--python-exit-code", "1", "--python", str(CYCLES_SCRIPT), "--",
            "--scene", str(scene_json), "--out", str(out_prefix), "--samples", str(samples), "--diffuse-bounces", str(bounces)]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     (out_prefix.parent / "blender.log").write_text(proc.stdout + "\n" + proc.stderr, encoding="utf-8")
-    npy = Path(str(out_prefix) + "_diffuse_indirect.npy")
-    if proc.returncode != 0 or not npy.exists():
+    exr_path = Path(str(out_prefix) + "_passes.exr")
+    if proc.returncode != 0 or not exr_path.exists():
         raise RuntimeError(f"Blender failed (exit {proc.returncode}); see {out_prefix.parent / 'blender.log'}")
-    return npy
+    return exr_path
 
 
 def main() -> int:
@@ -88,7 +90,7 @@ def main() -> int:
         png, _, errors = rvr.capture_scene(godot, None, repo / "project", scene, rvr.CANONICAL_SCENES[scene], tier,
                                            args.capture_frame, out_root, lumina_capture_args(export_dir), 1.0, scene_dir / "godot")
         print(f"[{scene}] Cycles reference ({args.samples} spp) ...")
-        ref = np.load(render_reference(blender, export_dir / "scene.json", scene_dir / "reference", args.samples, args.diffuse_bounces))
+        ref = load_pass(render_reference(blender, export_dir / "scene.json", scene_dir / "reference", args.samples, args.diffuse_bounces), "DiffInd")
         test = srgb_to_linear(np.asarray(Image.open(png).convert("RGB"), np.float64) / 255.0)
         if test.shape != ref.shape:
             raise SystemExit(f"{scene}: Godot capture {test.shape} vs reference {ref.shape}")

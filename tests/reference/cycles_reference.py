@@ -3,9 +3,12 @@
     blender -b --factory-startup --python tests/reference/cycles_reference.py -- \
         --scene out/scene.json --out out/reference --samples 256 --diffuse-bounces 1
 
-Writes <out>_diffuse_indirect.npy (linear float32 HxWx3, top row first), the Cycles "Diffuse
-Indirect" pass, i.e. bounced diffuse light for white albedo, which is the quantity Lumina's
-"Denoised Irradiance" debug view shows; and <out>_combined.png for a visual check.
+Writes <out>_passes.exr, a multilayer EXR with every render pass (read the "DiffInd" pass with
+tests/reference/exr.py: bounced diffuse light for white albedo, the quantity Lumina's "Denoised
+Irradiance" debug view shows), and <out>_combined.png for a visual check.
+
+Deliberately avoids the compositor: its Python API changed in Blender 5.0, while multilayer EXR
+output works the same across 4.x and 5.x.
 """
 
 import argparse
@@ -13,8 +16,6 @@ import json
 import math
 import os
 import sys
-
-from array import array
 
 import bpy
 
@@ -49,12 +50,15 @@ def make_material(name, spec, scene_dir):
     if spec.get("albedo_texture"):
         tex = nodes.new("ShaderNodeTexImage")
         tex.image = bpy.data.images.load(os.path.join(scene_dir, spec["albedo_texture"]))
-        mix = nodes.new("ShaderNodeMixRGB")
+        # ShaderNodeMix (Blender 3.4+); the legacy MixRGB node is deprecated. Colour sockets are
+        # inputs 6 (A) / 7 (B) and output 2 when data_type is RGBA.
+        mix = nodes.new("ShaderNodeMix")
+        mix.data_type = "RGBA"
         mix.blend_type = "MULTIPLY"
-        mix.inputs["Fac"].default_value = 1.0
-        mix.inputs["Color2"].default_value = (r, g, b, 1.0)
-        links.new(tex.outputs["Color"], mix.inputs["Color1"])
-        links.new(mix.outputs["Color"], bsdf.inputs["Base Color"])
+        mix.inputs[0].default_value = 1.0
+        mix.inputs[7].default_value = (r, g, b, 1.0)
+        links.new(tex.outputs["Color"], mix.inputs[6])
+        links.new(mix.outputs[2], bsdf.inputs["Base Color"])
         if spec["transparency"] == "scissor":
             cmp = nodes.new("ShaderNodeMath")
             cmp.operation = "GREATER_THAN"
@@ -74,6 +78,13 @@ def build_mesh(spec, scene_dir, index):
     mesh = bpy.data.meshes.new(f"m{index}_{spec['name']}")
     mesh.from_pydata(verts, [], faces)
     mesh.update()
+    if spec.get("uvs"):
+        uvs = spec["uvs"]
+        layer = mesh.uv_layers.new(name="UVMap")
+        for poly in mesh.polygons:
+            for loop_index in poly.loop_indices:
+                v = mesh.loops[loop_index].vertex_index
+                layer.data[loop_index].uv = g2b.uv(uvs[2 * v], uvs[2 * v + 1])
     if spec["normals"]:
         normals = g2b.flat_positions(spec["normals"])
         mesh.normals_split_custom_set_from_vertices(normals)
@@ -166,33 +177,10 @@ def configure_render(args, width, height):
     scene.view_settings.view_transform = "Standard"
     scene.view_layers[0].use_pass_diffuse_indirect = True
 
-    scene.use_nodes = True
-    tree = scene.node_tree
-    tree.nodes.clear()
-    rl = tree.nodes.new("CompositorNodeRLayers")
-    composite = tree.nodes.new("CompositorNodeComposite")
-    tree.links.new(rl.outputs["Image"], composite.inputs["Image"])
-    # The Viewer node's pixels aren't populated in background mode, so the pass goes to a float EXR
-    # that is read back after the render.
-    out = tree.nodes.new("CompositorNodeOutputFile")
-    out.base_path = os.path.dirname(os.path.abspath(args.out))
-    out.format.file_format = "OPEN_EXR"
-    out.format.color_depth = "32"
-    out.format.color_management = "OVERRIDE"
-    out.format.linear_colorspace_settings.name = "Linear Rec.709"
-    out.file_slots[0].path = os.path.basename(args.out) + "_diffind_"
-    tree.links.new(rl.outputs["DiffInd"], out.inputs[0])
-
-
-def write_npy(path, data, shape):
-    """Minimal .npy writer (Blender's bundled Python may not have numpy)."""
-    header = "{'descr': '<f4', 'fortran_order': False, 'shape': %s, }" % (tuple(shape),)
-    header = header + " " * ((64 - (10 + len(header) + 1) % 64) % 64) + "\n"
-    with open(path, "wb") as f:
-        f.write(b"\x93NUMPY\x01\x00")
-        f.write(len(header).to_bytes(2, "little"))
-        f.write(header.encode("latin1"))
-        data.tofile(f)
+    settings = scene.render.image_settings
+    settings.file_format = "OPEN_EXR_MULTILAYER"
+    settings.color_depth = "32"
+    settings.exr_codec = "ZIP"
 
 
 def main():
@@ -210,23 +198,17 @@ def main():
     build_camera(data["camera"], width, height)
     configure_render(args, width, height)
 
-    bpy.context.scene.render.filepath = args.out + "_combined.png"
+    scene = bpy.context.scene
+    scene.render.filepath = args.out + "_passes.exr"
+    scene.render.use_file_extension = False
     bpy.ops.render.render(write_still=True)
 
-    exr_path = f"{args.out}_diffind_{bpy.context.scene.frame_current:04d}.exr"
-    img = bpy.data.images.load(exr_path)
-    img.colorspace_settings.name = "Non-Color"   # keep the stored linear values untouched
-    w, h = img.size[0], img.size[1]
-    rgba = img.pixels[:]
-    rgb = array("f")
-    for row in range(h - 1, -1, -1):   # Blender rows are bottom-up; write top row first
-        base = row * w * 4
-        for x in range(w):
-            i = base + x * 4
-            rgb.extend(rgba[i:i + 3])
-    write_npy(args.out + "_diffuse_indirect.npy", rgb, (h, w, 3))
-    os.remove(exr_path)
-    print(f"[prism-reference] wrote {args.out}_diffuse_indirect.npy ({w}x{h})")
+    # Also save the combined image as an 8-bit PNG for a quick visual check.
+    settings = scene.render.image_settings
+    settings.file_format = "PNG"
+    settings.color_depth = "8"
+    bpy.data.images["Render Result"].save_render(args.out + "_combined.png", scene=scene)
+    print(f"[prism-reference] wrote {args.out}_passes.exr ({width}x{height}, Blender {bpy.app.version_string})")
 
 
 main()

@@ -44,6 +44,10 @@ def test_sun_rotation_points_minus_z_along_direction():
     assert np.allclose(-rot[:, 2], d / np.linalg.norm(d))
 
 
+def test_uv_flips_v():
+    assert g2b.uv(0.25, 0.0) == (0.25, 1.0) and g2b.uv(1.0, 1.0) == (1.0, 0.0)
+
+
 def test_light_unit_conversions():
     assert g2b.omni_power_watts(1.0) == pytest.approx(4 * math.pi ** 2)
     assert g2b.sun_strength(2.5) == 2.5

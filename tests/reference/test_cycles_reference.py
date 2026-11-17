@@ -10,6 +10,7 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import exr  # noqa: E402
 import synthetic  # noqa: E402
 
 
@@ -17,10 +18,13 @@ import synthetic  # noqa: E402
 def test_cycles_diffuse_indirect_shows_red_bleed(tmp_path):
     scene = synthetic.write(tmp_path / "scene.json")
     out = tmp_path / "ref"
-    proc = subprocess.run(["blender", "-b", "--factory-startup", "--python", str(HERE / "cycles_reference.py"), "--",
+    proc = subprocess.run(["blender", "-b", "--factory-startup", "--python-exit-code", "1",
+                           "--python", str(HERE / "cycles_reference.py"), "--",
                            "--scene", str(scene), "--out", str(out), "--samples", "128"], capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stderr[-2000:]
-    ind = np.load(str(out) + "_diffuse_indirect.npy")
+    log = f"--- stdout ---\n{proc.stdout[-4000:]}\n--- stderr ---\n{proc.stderr[-4000:]}"
+    exr_path = Path(str(out) + "_passes.exr")
+    assert proc.returncode == 0 and exr_path.exists(), log
+    ind = exr.load_pass(exr_path, "DiffInd")
     assert ind.shape == (72, 96, 3) and np.isfinite(ind).all()
     h, w = ind.shape[:2]
     floor = ind[int(h * 0.92)]

@@ -110,7 +110,7 @@ The report ends with a Gate 1 table. It compares Chronos at 50% render scale aga
 
 ### Gate 2
 
-Gate 2 needs Blender 4.x on `PATH` as well. It renders Lumina's irradiance in Godot, exports the same frame, and path-traces it in Cycles with one diffuse bounce:
+Gate 2 needs Blender (4.x or 5.x) on `PATH` and `pip install OpenEXR` as well. It renders Lumina's irradiance in Godot, exports the same frame, and path-traces it in Cycles with one diffuse bounce:
 
 ```bash
 python3 tests/run_gate2.py --scenes 01_cornell_box 04_dynamic_sponza

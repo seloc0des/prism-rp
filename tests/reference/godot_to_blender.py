@@ -29,6 +29,11 @@ def flat_positions(flat):
     return [vec(flat[i:i + 3]) for i in range(0, len(flat), 3)]
 
 
+def uv(u, v):
+    """Godot UVs start at the top-left (v down); Blender's at the bottom-left (v up)."""
+    return (u, 1.0 - v)
+
+
 def triangles_ccw(indices):
     """Godot clockwise front faces -> counter-clockwise (Blender: face normal points out)."""
     return [(indices[i], indices[i + 2], indices[i + 1]) for i in range(0, len(indices), 3)]
