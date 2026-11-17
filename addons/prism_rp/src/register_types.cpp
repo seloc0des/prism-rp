@@ -9,6 +9,7 @@
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/core/memory.hpp>
 #include <godot_cpp/godot.hpp>
+#include <godot_cpp/variant/callable_method_pointer.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 namespace prism {
@@ -29,9 +30,10 @@ void initialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
     g_telemetry_singleton = memnew(PrismTelemetry);
     PrismTelemetry::set_singleton(g_telemetry_singleton);
     godot::Engine::get_singleton()->register_singleton("PrismTelemetry", g_telemetry_singleton);
-    g_telemetry_singleton->connect_frame_hook();
+    // RenderingServer isn't an Engine singleton yet at SCENE init; connect once the main loop runs.
+    callable_mp(g_telemetry_singleton, &PrismTelemetry::connect_frame_hook).call_deferred();
 
-    godot::UtilityFunctions::print("[Prism RP] Registered PrismTelemetry, ChronosVPUCompositorEffect & ChronosOpaqueCaptureEffect (Vulkan RenderingDevice ready).");
+    godot::UtilityFunctions::print("[Prism RP] Registered PrismTelemetry, ChronosVPUCompositorEffect & ChronosOpaqueCaptureEffect.");
 }
 
 void uninitialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {

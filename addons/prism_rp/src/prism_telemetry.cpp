@@ -39,10 +39,21 @@ constexpr double kEmaAlpha = 0.20;
 
 PrismTelemetry *PrismTelemetry::singleton = nullptr;
 
+// The RenderingServer is not registered yet when extensions initialize, so nothing here (or in
+// connect_frame_hook, which register_types defers to the first main-loop iteration) touches it.
 PrismTelemetry::PrismTelemetry() {
-    _ensure_rendering_device();
     configure_from_cmdline();
 }
+
+namespace {
+godot::RenderingServer *rendering_server_if_ready() {
+    godot::Engine *engine = godot::Engine::get_singleton();
+    if (engine == nullptr || !engine->has_singleton("RenderingServer")) {
+        return nullptr;
+    }
+    return godot::RenderingServer::get_singleton();
+}
+} // namespace
 
 // No export or RenderingDevice access here: at extension shutdown the RenderingServer may
 // already be gone. The QA rig exports explicitly while the engine is still running.
@@ -78,8 +89,10 @@ void PrismTelemetry::_bind_methods() {
 }
 
 void PrismTelemetry::_ensure_rendering_device() {
-    if (rd == nullptr && godot::RenderingServer::get_singleton() != nullptr) {
-        rd = godot::RenderingServer::get_singleton()->get_rendering_device();
+    if (rd == nullptr) {
+        if (godot::RenderingServer *rs = rendering_server_if_ready(); rs != nullptr) {
+            rd = rs->get_rendering_device();
+        }
     }
 }
 
@@ -152,7 +165,7 @@ bool PrismTelemetry::trigger_renderdoc_capture() {
 }
 
 void PrismTelemetry::connect_frame_hook() {
-    godot::RenderingServer *rs = godot::RenderingServer::get_singleton();
+    godot::RenderingServer *rs = rendering_server_if_ready();
     if (rs == nullptr || frame_hook_connected) {
         return;
     }
@@ -161,7 +174,7 @@ void PrismTelemetry::connect_frame_hook() {
 }
 
 void PrismTelemetry::disconnect_frame_hook() {
-    godot::RenderingServer *rs = godot::RenderingServer::get_singleton();
+    godot::RenderingServer *rs = rendering_server_if_ready();
     if (rs == nullptr || !frame_hook_connected) {
         return;
     }
@@ -177,9 +190,9 @@ void PrismTelemetry::_on_frame_pre_draw() {
     if (!enabled) {
         return;
     }
-    godot::RenderingServer::get_singleton()->call_on_render_thread(
-        callable_mp(this, &PrismTelemetry::_collect_on_render_thread)
-    );
+    if (godot::RenderingServer *rs = rendering_server_if_ready(); rs != nullptr) {
+        rs->call_on_render_thread(callable_mp(this, &PrismTelemetry::_collect_on_render_thread));
+    }
 }
 
 void PrismTelemetry::begin_pass(const godot::String &p_pass_name, const godot::Color &p_debug_color) {
