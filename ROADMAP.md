@@ -33,6 +33,7 @@ Building **Prism RP** for Godot 4.x uses a dual-track engineering strategy:
 ### Phase 3: Meshlet Asset Pipeline & 64-Bit Visibility Buffer (Weeks 12–16 — Track B)
 * Partition imported meshes via `meshoptimizer` into 64-vertex, 124-triangle meshlets with bounding spheres and backface normal cones.
 * Implement two-phase GPU Hi-Z occlusion culling and rasterize into `R32G32_UINT` **Visibility Buffer** (`InstanceID`, `MeshletID`, `PrimitiveID`, quantized barycentrics).
+* **Status:** the meshlet builder is in (`PrismMeshletBuilder`, meshoptimizer v1.3, Godot winding handled, unit-tested). Hi-Z culling, the visibility buffer and its rasterization need the Track B engine-module decision.
 * **Gate 3 DoD:** 15M-triangle stress scene renders at **60+ FPS on Tier 2** in **< 0.65 ms** for culling + visibility rasterization with **1.00x** fragment invocation per visible pixel.
 
 ### Phase 4: Tile-Sorted Material Shading & Virtual Shadow Pages (Weeks 17–20 — Track B)
