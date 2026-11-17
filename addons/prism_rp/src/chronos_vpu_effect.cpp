@@ -1,4 +1,5 @@
 #include "prism_rp/chronos_vpu_effect.h"
+#include "prism_rp/prism_rd_utils.h"
 #include "prism_rp/chronos_opaque_capture_effect.h"
 #include "prism_rp/prism_telemetry.h"
 
@@ -6,12 +7,6 @@
 #include <cstring>
 #include <string>
 
-#include <godot_cpp/classes/file_access.hpp>
-#include <godot_cpp/classes/rd_sampler_state.hpp>
-#include <godot_cpp/classes/rd_shader_source.hpp>
-#include <godot_cpp/classes/rd_shader_spirv.hpp>
-#include <godot_cpp/classes/rd_texture_format.hpp>
-#include <godot_cpp/classes/rd_texture_view.hpp>
 #include <godot_cpp/classes/rd_uniform.hpp>
 #include <godot_cpp/classes/render_scene_buffers.hpp>
 #include <godot_cpp/classes/render_scene_buffers_rd.hpp>
@@ -19,8 +14,6 @@
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/uniform_set_cache_rd.hpp>
 #include <godot_cpp/core/class_db.hpp>
-#include <godot_cpp/variant/packed_byte_array.hpp>
-#include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/variant/projection.hpp>
 #include <godot_cpp/variant/typed_array.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -28,40 +21,9 @@
 
 namespace prism {
 
-namespace {
-
-template <typename T>
-godot::PackedByteArray make_push_constant_bytes(const T &p_data) {
-    godot::PackedByteArray bytes;
-    bytes.resize(sizeof(T));
-    std::memcpy(bytes.ptrw(), &p_data, sizeof(T));
-    return bytes;
-}
-
-godot::Ref<godot::RDUniform> make_sampler_texture_uniform(
-    int32_t p_binding,
-    const godot::RID &p_sampler,
-    const godot::RID &p_texture
-) {
-    godot::Ref<godot::RDUniform> u;
-    u.instantiate();
-    u->set_uniform_type(godot::RenderingDevice::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE);
-    u->set_binding(p_binding);
-    u->add_id(p_sampler);
-    u->add_id(p_texture);
-    return u;
-}
-
-godot::Ref<godot::RDUniform> make_image_uniform(int32_t p_binding, const godot::RID &p_texture) {
-    godot::Ref<godot::RDUniform> u;
-    u.instantiate();
-    u->set_uniform_type(godot::RenderingDevice::UNIFORM_TYPE_IMAGE);
-    u->set_binding(p_binding);
-    u->add_id(p_texture);
-    return u;
-}
-
-} // namespace
+using rd_utils::make_image_uniform;
+using rd_utils::make_push_constant_bytes;
+using rd_utils::make_sampler_texture_uniform;
 
 ChronosVPUCompositorEffect::ChronosVPUCompositorEffect() {
     set_effect_callback_type(EFFECT_CALLBACK_TYPE_POST_TRANSPARENT);
@@ -669,29 +631,8 @@ bool ChronosVPUCompositorEffect::_ensure_render_resources() {
         return false;
     }
 
-    {
-        godot::Ref<godot::RDSamplerState> state;
-        state.instantiate();
-        state->set_mag_filter(godot::RenderingDevice::SAMPLER_FILTER_NEAREST);
-        state->set_min_filter(godot::RenderingDevice::SAMPLER_FILTER_NEAREST);
-        state->set_mip_filter(godot::RenderingDevice::SAMPLER_FILTER_NEAREST);
-        state->set_repeat_u(godot::RenderingDevice::SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE);
-        state->set_repeat_v(godot::RenderingDevice::SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE);
-        state->set_repeat_w(godot::RenderingDevice::SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE);
-        nearest_sampler = rd->sampler_create(state);
-    }
-
-    {
-        godot::Ref<godot::RDSamplerState> state;
-        state.instantiate();
-        state->set_mag_filter(godot::RenderingDevice::SAMPLER_FILTER_LINEAR);
-        state->set_min_filter(godot::RenderingDevice::SAMPLER_FILTER_LINEAR);
-        state->set_mip_filter(godot::RenderingDevice::SAMPLER_FILTER_LINEAR);
-        state->set_repeat_u(godot::RenderingDevice::SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE);
-        state->set_repeat_v(godot::RenderingDevice::SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE);
-        state->set_repeat_w(godot::RenderingDevice::SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE);
-        linear_sampler = rd->sampler_create(state);
-    }
+    nearest_sampler = rd_utils::create_sampler(rd, false);
+    linear_sampler = rd_utils::create_sampler(rd, true);
 
     if (!nearest_sampler.is_valid() || !linear_sampler.is_valid()) {
         godot::UtilityFunctions::push_error("[Prism RP] Failed to create Chronos VPU samplers.");
@@ -700,16 +641,7 @@ bool ChronosVPUCompositorEffect::_ensure_render_resources() {
     }
 
     auto build_stage = [&](const char *p_path, const char *p_name, godot::RID &r_shader, godot::RID &r_pipeline) -> bool {
-        r_shader = _compile_compute_shader(p_path, p_name);
-        if (!r_shader.is_valid()) {
-            return false;
-        }
-        r_pipeline = rd->compute_pipeline_create(r_shader);
-        if (!r_pipeline.is_valid()) {
-            godot::UtilityFunctions::push_error("[Prism RP] Failed to create compute pipeline: ", p_name);
-            return false;
-        }
-        return true;
+        return rd_utils::build_compute_stage(rd, p_path, p_name, r_shader, r_pipeline);
     };
 
     const bool ok =
@@ -735,21 +667,7 @@ godot::RID ChronosVPUCompositorEffect::_create_2d_texture(
     godot::RenderingDevice::DataFormat p_format,
     uint32_t p_usage_bits
 ) const {
-    godot::Ref<godot::RDTextureFormat> fmt;
-    fmt.instantiate();
-    fmt->set_width(p_width);
-    fmt->set_height(p_height);
-    fmt->set_depth(1);
-    fmt->set_array_layers(1);
-    fmt->set_mipmaps(1);
-    fmt->set_texture_type(godot::RenderingDevice::TEXTURE_TYPE_2D);
-    fmt->set_format(p_format);
-    fmt->set_samples(godot::RenderingDevice::TEXTURE_SAMPLES_1);
-    fmt->set_usage_bits(p_usage_bits);
-
-    godot::Ref<godot::RDTextureView> view;
-    view.instantiate();
-    return rd->texture_create(fmt, view);
+    return rd_utils::create_2d_texture(rd, p_width, p_height, p_format, p_usage_bits);
 }
 
 bool ChronosVPUCompositorEffect::_ensure_view_targets(const godot::Vector2i &p_internal_size, uint32_t p_view_count) {
@@ -815,16 +733,7 @@ void ChronosVPUCompositorEffect::_release_render_resources() {
     }
 
     auto free_pipeline_and_shader = [&](godot::RID &r_pipeline, godot::RID &r_shader) {
-        if (r_pipeline.is_valid()) {
-            if (rd->compute_pipeline_is_valid(r_pipeline)) {
-                rd->free_rid(r_pipeline);
-            }
-            r_pipeline = godot::RID();
-        }
-        if (r_shader.is_valid()) {
-            rd->free_rid(r_shader);
-            r_shader = godot::RID();
-        }
+        rd_utils::free_compute_stage(rd, r_pipeline, r_shader);
     };
 
     free_pipeline_and_shader(dilate_pipeline, dilate_shader);
@@ -869,89 +778,6 @@ void ChronosVPUCompositorEffect::_release_view_targets() {
     }
     view_targets.clear();
     cached_internal_size = godot::Vector2i(0, 0);
-}
-
-godot::String ChronosVPUCompositorEffect::_load_and_preprocess_glsl(
-    const godot::String &p_file_path,
-    std::unordered_set<std::string> &p_visited_paths
-) const {
-    const std::string canonical_key = p_file_path.utf8().get_data();
-    if (p_visited_paths.contains(canonical_key)) {
-        return "";
-    }
-    p_visited_paths.insert(canonical_key);
-
-    if (!godot::FileAccess::file_exists(p_file_path)) {
-        godot::UtilityFunctions::push_error("[Prism RP] Shader file not found: ", p_file_path);
-        return "";
-    }
-
-    const godot::String raw_source = godot::FileAccess::get_file_as_string(p_file_path);
-    const godot::PackedStringArray lines = raw_source.split("\n");
-    const godot::String parent_dir = p_file_path.get_base_dir();
-
-    godot::String resolved_source;
-    for (int64_t i = 0; i < lines.size(); ++i) {
-        const godot::String line = lines[i];
-        const godot::String trimmed = line.strip_edges();
-
-        if (trimmed.begins_with("#extension GL_GOOGLE_include_directive")) {
-            continue;
-        }
-
-        if (trimmed.begins_with("#include")) {
-            const int64_t first_quote = trimmed.find("\"");
-            const int64_t last_quote = trimmed.rfind("\"");
-            if (first_quote != -1 && last_quote > first_quote) {
-                const godot::String rel_include = trimmed.substr(first_quote + 1, last_quote - first_quote - 1);
-                const godot::String candidate_local = parent_dir.path_join(rel_include);
-                const godot::String candidate_shared = godot::String("res://addons/prism_rp/shaders/include").path_join(rel_include);
-
-                const godot::String target_include = godot::FileAccess::file_exists(candidate_local)
-                    ? candidate_local
-                    : candidate_shared;
-
-                resolved_source += _load_and_preprocess_glsl(target_include, p_visited_paths) + godot::String("\n");
-                continue;
-            }
-        }
-
-        resolved_source += line + godot::String("\n");
-    }
-
-    return resolved_source;
-}
-
-godot::RID ChronosVPUCompositorEffect::_compile_compute_shader(
-    const godot::String &p_shader_path,
-    const godot::String &p_debug_name
-) const {
-    std::unordered_set<std::string> visited;
-    const godot::String glsl_source = _load_and_preprocess_glsl(p_shader_path, visited);
-    if (glsl_source.is_empty()) {
-        return godot::RID();
-    }
-
-    godot::Ref<godot::RDShaderSource> rd_source;
-    rd_source.instantiate();
-    rd_source->set_language(godot::RenderingDevice::SHADER_LANGUAGE_GLSL);
-    rd_source->set_stage_source(godot::RenderingDevice::SHADER_STAGE_COMPUTE, glsl_source);
-
-    const godot::Ref<godot::RDShaderSPIRV> spirv = rd->shader_compile_spirv_from_source(rd_source);
-    if (spirv.is_null()) {
-        godot::UtilityFunctions::push_error("[Prism RP] Null SPIR-V returned for shader: ", p_shader_path);
-        return godot::RID();
-    }
-
-    const godot::String compile_error = spirv->get_stage_compile_error(godot::RenderingDevice::SHADER_STAGE_COMPUTE);
-    if (!compile_error.is_empty()) {
-        godot::UtilityFunctions::push_error(
-            "[Prism RP] SPIR-V compilation failed for ", p_shader_path, ":\n", compile_error
-        );
-        return godot::RID();
-    }
-
-    return rd->shader_create_from_spirv(spirv, p_debug_name);
 }
 
 } // namespace prism
