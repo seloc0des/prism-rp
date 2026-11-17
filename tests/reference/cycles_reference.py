@@ -156,6 +156,24 @@ def build_camera(cam, width, height):
     bpy.context.scene.camera = obj
 
 
+def set_output_format(settings, multilayer_exr):
+    """Blender 4.x has a distinct OPEN_EXR_MULTILAYER file format; Blender 5.0 replaced it with
+    media_type = 'MULTI_LAYER_IMAGE' plus file_format = 'OPEN_EXR'."""
+    if multilayer_exr:
+        try:
+            settings.file_format = "OPEN_EXR_MULTILAYER"
+        except TypeError:
+            settings.media_type = "MULTI_LAYER_IMAGE"
+            settings.file_format = "OPEN_EXR"
+        settings.color_depth = "32"
+        settings.exr_codec = "ZIP"
+    else:
+        if hasattr(settings, "media_type"):
+            settings.media_type = "IMAGE"
+        settings.file_format = "PNG"
+        settings.color_depth = "8"
+
+
 def configure_render(args, width, height):
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
@@ -177,10 +195,7 @@ def configure_render(args, width, height):
     scene.view_settings.view_transform = "Standard"
     scene.view_layers[0].use_pass_diffuse_indirect = True
 
-    settings = scene.render.image_settings
-    settings.file_format = "OPEN_EXR_MULTILAYER"
-    settings.color_depth = "32"
-    settings.exr_codec = "ZIP"
+    set_output_format(scene.render.image_settings, multilayer_exr=True)
 
 
 def main():
@@ -204,9 +219,7 @@ def main():
     bpy.ops.render.render(write_still=True)
 
     # Also save the combined image as an 8-bit PNG for a quick visual check.
-    settings = scene.render.image_settings
-    settings.file_format = "PNG"
-    settings.color_depth = "8"
+    set_output_format(scene.render.image_settings, multilayer_exr=False)
     bpy.data.images["Render Result"].save_render(args.out + "_combined.png", scene=scene)
     print(f"[prism-reference] wrote {args.out}_passes.exr ({width}x{height}, Blender {bpy.app.version_string})")
 
