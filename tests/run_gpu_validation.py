@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import re
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -181,6 +182,18 @@ def run_gate1(godot_bin: str, project_dir: Path, out_root: Path, tier: rvr.Hardw
     return res
 
 
+VALIDATION_ID = re.compile(r"(VUID-[A-Za-z0-9_-]+|SYNC-HAZARD-[A-Z_-]+)")
+
+
+def finding_keys(lines: list[str]) -> set[str]:
+    """Validation IDs where present, else the whole line: what to compare against the baseline."""
+    keys = set()
+    for line in lines:
+        m = VALIDATION_ID.search(line)
+        keys.add(m.group(1) if m else line.strip())
+    return keys
+
+
 def stage_total(gpu_ms: dict[str, float], stage: str) -> str:
     return f"{gpu_ms[stage]:.3f}" if stage in gpu_ms else "-"
 
@@ -206,11 +219,16 @@ def write_report(out_root: Path, tier: rvr.HardwareTierSpec, results: list[RunRe
                  f"aces2_optics {budget['aces2_optics']} ms, lumina_cascades_gi {budget['lumina_cascades_gi']} ms")
     lines.append("")
 
+    # Findings that also appear in the scene's stock-Godot run come from the engine, driver or
+    # validation layers, not from Prism RP.
+    baseline_keys = {r.scene: finding_keys(r.errors) for r in results if r.config == "baseline_godot"}
     if failed:
         lines.append("## Errors")
         lines.append("")
         for r in failed:
-            lines.append(f"- **{r.scene} / {r.config}**: {r.exception or r.errors[0]}" + (f" ([log]({r.log}))" if r.log else ""))
+            new = finding_keys(r.errors) - baseline_keys.get(r.scene, set())
+            tag = "" if r.exception or new or r.config == "baseline_godot" else " *(all also in baseline_godot: engine/driver, not Prism RP)*"
+            lines.append(f"- **{r.scene} / {r.config}**: {r.exception or r.errors[0]}{tag}" + (f" ([log]({r.log}))" if r.log else ""))
         lines.append("")
 
     for scene in dict.fromkeys(r.scene for r in results):

@@ -63,3 +63,19 @@ def test_report_end_to_end_with_fake_captures(tmp_path, monkeypatch):
     assert gate[0].passed and gate[0].mean_flip == 0.0
     assert report.count("| **") == len(gv.CONFIGS)
     assert (tmp_path / "results.json").exists()
+
+
+def test_errors_shared_with_baseline_are_labeled(tmp_path):
+    tier = rvr.HARDWARE_TIERS["tier2"]
+    engine = "Validation Error: [ VUID-vkQueueSubmit-pSignalSemaphores-00067 ] swapchain"
+    results = [
+        gv.RunResult(scene="01_cornell_box", config="baseline_godot", ok=False, errors=[engine]),
+        gv.RunResult(scene="01_cornell_box", config="chronos_default", ok=False, errors=[engine]),
+        gv.RunResult(scene="01_cornell_box", config="lumina_default", ok=False,
+                     errors=["Validation Error: [ VUID-vkCmdDispatch-None-08114 ] ours"]),
+    ]
+    report = gv.write_report(tmp_path, tier, results, [], 0.08).read_text()
+    chronos_line = next(l for l in report.splitlines() if "chronos_default**" in l)
+    lumina_line = next(l for l in report.splitlines() if "lumina_default**" in l)
+    assert "also in baseline_godot" in chronos_line
+    assert "also in baseline_godot" not in lumina_line

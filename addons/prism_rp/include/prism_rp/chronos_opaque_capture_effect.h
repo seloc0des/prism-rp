@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "prism_rp/prism_rd_utils.h"
+
 #include <godot_cpp/classes/compositor_effect.hpp>
 #include <godot_cpp/classes/render_data.hpp>
 #include <godot_cpp/variant/string_name.hpp>
@@ -23,6 +25,7 @@ public:
     static constexpr const char *kTextureName = "opaque_color";
 
     ChronosOpaqueCaptureEffect();
+    ~ChronosOpaqueCaptureEffect() override;
 
     void _render_callback(int32_t p_effect_callback_type, godot::RenderData *p_render_data) override;
 
@@ -34,6 +37,12 @@ public:
 
 protected:
     static void _bind_methods() {}
+
+private:
+    godot::RenderingDevice *rd = nullptr;
+    godot::RID nearest_sampler;
+    rd_utils::ComputeCopy copy;
+    bool init_attempted = false;
 };
 
 } // namespace prism

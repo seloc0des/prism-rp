@@ -12,6 +12,7 @@
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/variant/string.hpp>
+#include <godot_cpp/variant/vector2i.hpp>
 
 namespace prism::rd_utils {
 
@@ -50,5 +51,28 @@ void free_compute_stage(godot::RenderingDevice *p_rd, godot::RID &r_pipeline, go
 // Records one compute dispatch: bind pipeline + set 0 + push constants.
 void dispatch_compute(godot::RenderingDevice *p_rd, const godot::RID &p_pipeline, const godot::RID &p_uniform_set,
         const godot::PackedByteArray &p_push_constants, uint32_t p_groups_x, uint32_t p_groups_y, uint32_t p_groups_z = 1);
+
+// Compute-shader copy (shaders/util/prism_copy.comp.glsl) for sources that can be sampled but
+// not copied from, such as Godot 4.4's scene color buffer. Destination must be RGBA16F storage.
+class ComputeCopy {
+public:
+    struct alignas(16) PushConstants {
+        int32_t size_x = 0;
+        int32_t size_y = 0;
+        float _pad[2] = { 0.0f, 0.0f };
+    };
+    static_assert(sizeof(PushConstants) == 16);
+
+    bool init(godot::RenderingDevice *p_rd);
+    void release(godot::RenderingDevice *p_rd);
+    [[nodiscard]] bool is_valid() const { return pipeline.is_valid(); }
+    // Copies the top-left p_size texels of p_src (sampled with p_nearest_sampler) into p_dst.
+    void copy(godot::RenderingDevice *p_rd, const godot::RID &p_nearest_sampler, const godot::RID &p_src,
+            const godot::RID &p_dst, const godot::Vector2i &p_size) const;
+
+private:
+    godot::RID shader;
+    godot::RID pipeline;
+};
 
 } // namespace prism::rd_utils
