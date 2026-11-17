@@ -87,6 +87,8 @@ Lumina adds one bounce of indirect light, computed from what's on screen. The Co
 | `lumina_white_albedo` | Bleed visible as tinted light on grey surfaces | Use this to judge the lighting alone. If it's right here but wrong in default, the albedo proxy is the problem |
 | `lumina_no_denoise` | Noisy but the same overall brightness and color as default | Much darker or brighter than default: the denoiser isn't energy-conserving |
 | `lumina_one_cascade` | Only short-range bleed near contacts | Identical to default: upper cascades aren't contributing (merge) |
+| `lumina_world_cache` | Like `lumina_default`, slightly more bounce light in corners and near the screen edges | Brighter everywhere, or blotches that follow the camera: cache cells not being reset when the grid scrolls |
+| `lumina_debug_world_only` | Soft, low-frequency light; still a red tint near the red wall in 01 | Black: the cache never fills (update rays rejected). Blocky 1 m pattern: probe interpolation |
 | `lumina_debug_raw` | Grainy colored light, brighter near walls | Black: trace or integrate broken. Grid pattern at 8 px: probe interpolation |
 | `lumina_debug_denoised` | Smooth version of raw, edges preserved | Halos across object edges: depth/normal edge-stopping |
 | `lumina_debug_history` | Green on static surfaces, red at newly revealed areas | All red: reprojection rejecting everything (velocity sign or geometry test) |

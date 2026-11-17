@@ -24,8 +24,14 @@ namespace prism {
 //  4. SVGF:      temporal accumulation with moments/variance, then variance-guided a-trous.
 //  5. composite: color += albedo_proxy * irradiance (Forward+ has no albedo buffer; see the shader).
 //
-// v1 limits: screen-space only (no world-space cascades or ray-query fallback yet, so off-screen and
-// occluded emitters contribute nothing), one bounce, no ReSTIR.
+// Optional world-space radiance cache (world_cascades_enabled, off by default): a 16^3 probe grid
+// around the camera, 64 directions per probe, updated by marching world-space rays through the depth
+// buffer. Rays that leave the screen keep their cached value, so light that was visible recently
+// (an emitter now behind the camera) keeps contributing. The top screen level's transmittance
+// falls through to this cache.
+//
+// Limits: no ray-query / SDF fallback yet, so light never seen on screen contributes nothing;
+// one bounce; no ReSTIR.
 class LuminaCascadesCompositorEffect : public godot::CompositorEffect {
     GDCLASS(LuminaCascadesCompositorEffect, godot::CompositorEffect)
 
@@ -38,6 +44,7 @@ public:
         DEBUG_VIEW_VARIANCE = 4,
         DEBUG_VIEW_NORMALS = 5,
         DEBUG_VIEW_ALBEDO_PROXY = 6,
+        DEBUG_VIEW_WORLD_CASCADE_ONLY = 7,   // far field from the world cache only (needs world_cascades_enabled)
     };
 
     enum AlbedoMode : int32_t {
@@ -72,6 +79,10 @@ public:
     [[nodiscard]] int32_t get_albedo_mode() const;
     void set_debug_view_mode(int32_t p_mode);
     [[nodiscard]] int32_t get_debug_view_mode() const;
+    void set_world_cascades_enabled(bool p_enabled);
+    [[nodiscard]] bool is_world_cascades_enabled() const;
+    void set_world_probe_spacing(float p_spacing);
+    [[nodiscard]] float get_world_probe_spacing() const;
 
     void reset_history();
     void reload_shaders();
@@ -83,6 +94,20 @@ protected:
 private:
     static constexpr int32_t kMaxCascades = 4;
     static constexpr int32_t kBaseBlock = 4;   // level-0 directions = 4 x 4 = 16
+    static constexpr int32_t kWorldGridN = 16; // world cache: 16^3 probes
+    static constexpr int32_t kWorldBlock = 8;  // 8 x 8 = 64 directions per world probe (WORLD_BLOCK)
+
+    // Shared by lumina_ws_classify / _update / _merge (lumina_world_common.glsl). 112 bytes.
+    struct alignas(16) WorldPushConstants {
+        int32_t a0[4] = { 0, 0, kWorldGridN, kWorldBlock };   // res.xy, grid N, block
+        int32_t a1[4] = { 0, 0, 0, 0 };                      // base cell xyz, frame / flags
+        float cam_pos[4] = { 0, 0, 0, 1 };                   // xyz, probe spacing
+        float cam_right[4] = { 1, 0, 0, 0.25f };             // xyz, thickness
+        float cam_up[4] = { 0, 1, 0, 0.1f };                 // xyz, blend alpha minimum
+        float proj[4] = { 1, 1, 0, 0 };
+        float misc[4] = { 0.05f, 0, 8, 32 };                 // depth params, ray length / spacing px, steps
+    };
+    static_assert(sizeof(WorldPushConstants) == 112);
 
     struct alignas(16) TracePushConstants {
         int32_t internal_res_x = 0;
@@ -192,6 +217,14 @@ private:
     godot::RID temporal_shader, temporal_pipeline;
     godot::RID atrous_shader, atrous_pipeline;
     godot::RID composite_shader, composite_pipeline;
+    godot::RID ws_classify_shader, ws_classify_pipeline;
+    godot::RID ws_update_shader, ws_update_pipeline;
+    godot::RID ws_merge_shader, ws_merge_pipeline;
+
+    // World cache (view-independent; updated from view 0 once per frame).
+    godot::RID world_probes;   // RGBA16F (N*N*block) x (N*block)
+    godot::RID world_state;    // RGBA32F (N*N) x N: cell id, changed, buried, written
+    float cached_world_spacing = 0.0f;
 
     std::vector<PerViewTargets> view_targets;
     godot::Vector2i cached_internal_size = godot::Vector2i(0, 0);
@@ -212,6 +245,11 @@ private:
     float denoise_strength = 4.0f;
     int32_t albedo_mode = ALBEDO_PROXY;
     int32_t debug_view_mode = DEBUG_VIEW_FINAL;
+    bool world_cascades_enabled = false;
+    float world_probe_spacing = 1.0f;
+
+    bool _ensure_world_targets();
+    void _release_world_targets();
 };
 
 } // namespace prism

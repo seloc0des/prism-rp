@@ -68,3 +68,16 @@ def atrous(w, h, step, phi_color=4.0, phi_normal=128.0, phi_depth=1.0, depth_par
 
 def composite_lumina(w, h, intensity=1.0, debug=0, albedo_mode=0, max_history=32.0):
     return pack("iifiif2f", w, h, intensity, debug, albedo_mode, max_history, 0.0, 0.0)
+
+
+def world(res, grid_n, block_or_screen_block, base_cell, a1w, cam_pos, spacing, right, thickness, up, alpha_min,
+          proj, depth_params, misc_z, misc_w):
+    """Shared 112-byte WorldPushConstants (lumina_world_common.glsl)."""
+    return pack("4i4i4f4f4f4f4f",
+                res[0], res[1], grid_n, block_or_screen_block,
+                *base_cell, a1w,
+                *cam_pos, spacing,
+                *right, thickness,
+                *up, alpha_min,
+                *proj,
+                *depth_params, misc_z, misc_w)

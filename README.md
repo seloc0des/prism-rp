@@ -49,9 +49,9 @@ Things to know before using it:
 * **Forward+ only.** It reads Godot's `normal_roughness` buffer, which only Forward+ renders.
 * **Turn SDFGI off** (and VoxelGI, LightmapGI) on the same Environment, or the indirect light is counted twice.
 * **The albedo is approximated.** Forward+ has no albedo buffer and a compositor effect can't reach material lighting, so the bounce is applied as `albedo_proxy * irradiance`: the pixel's own hue at a mid-grey reflectance. Set `albedo_mode` to white to judge the lighting by itself. A real albedo comes with Track B's G-buffer.
-* **Screen-space limits.** Anything off screen or hidden behind geometry doesn't contribute, and there is one bounce. World-space cascades and the ray-query fallback are the next steps.
+* **Screen-space limits.** Light that has never been on screen doesn't contribute, and there is one bounce. `world_cascades_enabled` (off by default) adds a world-space radiance cache: a 16x16x16 probe grid around the camera that remembers light it saw in earlier frames, so an emitter that just went off screen keeps lighting the scene. A ray-query / SDF fallback for light that was never visible is the next step.
 
-Every stage has a switch (`gi_enabled`, `temporal_enabled`, `atrous_iterations`, `cascade_count`) and there are six debug views (raw and denoised irradiance, history length, variance, normals, albedo proxy).
+Every stage has a switch (`gi_enabled`, `temporal_enabled`, `atrous_iterations`, `cascade_count`) and there are seven debug views (raw and denoised irradiance, history length, variance, normals, albedo proxy, world cache only).
 
 ```gdscript
 var compositor := Compositor.new()
