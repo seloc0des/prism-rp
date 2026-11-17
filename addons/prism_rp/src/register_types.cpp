@@ -1,23 +1,42 @@
 #include "prism_rp/register_types.h"
+#include "prism_rp/chronos_vpu_effect.h"
+#include "prism_rp/prism_telemetry.h"
 
 #include <gdextension_interface.h>
+#include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/defs.hpp>
+#include <godot_cpp/core/memory.hpp>
 #include <godot_cpp/godot.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 namespace prism {
 
+static PrismTelemetry *g_telemetry_singleton = nullptr;
+
 void initialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
     if (p_level != godot::MODULE_INITIALIZATION_LEVEL_SCENE) {
         return;
     }
-    // Phase 1+ classes (ChronosVPUCompositorEffect, PrismTelemetry) register here via GDREGISTER_CLASS.
-    godot::UtilityFunctions::print("[Prism RP] C++20 GDExtension initialized (Vulkan RenderingDevice backend ready).");
+
+    GDREGISTER_CLASS(PrismTelemetry);
+    GDREGISTER_CLASS(ChronosVPUCompositorEffect);
+
+    g_telemetry_singleton = memnew(PrismTelemetry);
+    godot::Engine::get_singleton()->register_singleton("PrismTelemetry", g_telemetry_singleton);
+
+    godot::UtilityFunctions::print("[Prism RP] Registered PrismTelemetry & ChronosVPUCompositorEffect (Vulkan RenderingDevice ready).");
 }
 
 void uninitialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
     if (p_level != godot::MODULE_INITIALIZATION_LEVEL_SCENE) {
         return;
+    }
+
+    if (g_telemetry_singleton != nullptr) {
+        godot::Engine::get_singleton()->unregister_singleton("PrismTelemetry");
+        memdelete(g_telemetry_singleton);
+        g_telemetry_singleton = nullptr;
     }
 }
 

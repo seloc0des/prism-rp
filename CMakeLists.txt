@@ -1,17 +1,14 @@
 cmake_minimum_required(VERSION 3.22)
 project(prism_rp VERSION 0.1.0 LANGUAGES CXX)
 
-# Enforce C++20 without compiler-specific extensions
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Build options
 option(PRISM_RP_VALIDATE_SHADERS "Validate GLSL 4.60 shaders via glslangValidator during build" ON)
 set(GODOT_TARGET "template_debug" CACHE STRING "Godot build target (template_debug or template_release)")
 
-# Normalize platform and architecture strings to match prism_rp.gdextension
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(PRISM_PLATFORM "linux")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
@@ -31,10 +28,8 @@ else()
     set(PRISM_ARCH "x86_64")
 endif()
 
-# Add godot-cpp submodule
 add_subdirectory(thirdparty/godot-cpp SYSTEM)
 
-# Collect Prism RP C++20 sources
 file(GLOB_RECURSE PRISM_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/addons/prism_rp/src/*.cpp"
 )
@@ -52,14 +47,12 @@ target_link_libraries(${PROJECT_NAME}
         godot::cpp
 )
 
-# Strict C++20 warning flags
 if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /W4 /Zc:__cplusplus)
 else()
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()
 
-# Output directly into addons/prism_rp/bin/ with Godot-compatible naming
 set(PRISM_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/addons/prism_rp/bin")
 set(PRISM_OUTPUT_NAME "prism_rp.${PRISM_PLATFORM}.${GODOT_TARGET}.${PRISM_ARCH}")
 
@@ -74,7 +67,6 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${PRISM_OUTPUT_DIR}"
 )
 
-# --- Automatic SPIR-V Validation Target ---
 if(PRISM_RP_VALIDATE_SHADERS)
     find_program(GLSLANG_VALIDATOR glslangValidator HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
     if(NOT GLSLANG_VALIDATOR)

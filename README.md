@@ -10,18 +10,16 @@
 | **Material Shading** | Uber-shader permutations in forward pass | **Substrate** multi-lobe layered material graph | **Tile-Sorted Compute Shading** reading a Thin G-Buffer; decoupled from rasterization |
 | **Global Illumination** | Lightmapper, coarse VoxelGI, or SDFGI | **Lumen** hybrid screen/SDF/hardware RT GI | **Lumina-Cascades**: hierarchical 6D screen-space + world-space radiance probes with ReSTIR |
 | **Shadows** | Cascaded Shadow Maps (CSM) + Omni/Spot atlases | **Virtual Shadow Maps (VSM)** per-pixel pages | **Virtualized Clipmap Shadow Pages (VCSP)** allocated via visibility-buffer page faults |
-| **Video & Temporal Post** | FSR 2.2, TAA, basic linear-to-sRGB/AgX tonemapping | TSR, hardware DLSS/FSR3, physical camera post | **Chronos VPU**: unified dilated motion vectors, SVGF denoising, FSR 3.1/XeSS/DLSS + optical-flow frame gen, and ACEScg optics |
+| **Video & Temporal Post** | FSR 2.2, TAA, basic linear-to-sRGB/AgX tonemapping | TSR, hardware DLSS/FSR3, physical camera post | **Chronos VPU**: unified dilated motion vectors, SVGF denoising, native Compute TAAU / FSR 3.1 / XeSS / DLSS, and ACEScg 2.0 optics |
 
 ---
 
 ## Quick-Start Setup
 
-1. **Initialize Git & Submodules** (or run `./setup_submodules.sh`):
+1. **Initialize Git & Submodules**:
    ```bash
-   git init
-   git submodule add -b 4.4 https://github.com/godotengine/godot-cpp.git thirdparty/godot-cpp
-   git submodule add https://github.com/zeux/meshoptimizer.git thirdparty/meshoptimizer
-   git submodule update --init --recursive
+   chmod +x setup_submodules.sh
+   ./setup_submodules.sh
    ```
 
 2. **Validate GLSL 4.60 Shaders to Vulkan 1.3 SPIR-V**:
@@ -40,10 +38,11 @@
      cmake --build build_cmake -j$(nproc)
      ```
 
-4. **Test in Godot 4**:
-   Open `project/project.godot` in Godot 4.4+ (or run headless with Vulkan validation layers enabled):
+4. **Run the Automated Visual & Frame-Budget QA Harness**:
    ```bash
-   VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation godot --headless --rendering-driver vulkan --path project --quit-after 5
+   pip install flip-evaluator numpy pillow
+   python3 tests/run_visual_regression.py --tier tier2 --update-golden
+   python3 tests/run_visual_regression.py --tier tier2 --max-flip 0.015 --max-pass-delta-ms 0.25
    ```
 
 See `ROADMAP.md` for the full 24-week dual-track execution plan, hardware tier budgets, and QA verification gates.
