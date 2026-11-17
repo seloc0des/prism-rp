@@ -33,13 +33,14 @@ Building **Prism RP** for Godot 4.x uses a dual-track engineering strategy:
 ### Phase 3: Meshlet Asset Pipeline & 64-Bit Visibility Buffer (Weeks 12–16 — Track B)
 * Partition imported meshes via `meshoptimizer` into 64-vertex, 124-triangle meshlets with bounding spheres and backface normal cones.
 * Implement two-phase GPU Hi-Z occlusion culling and rasterize into `R32G32_UINT` **Visibility Buffer** (`InstanceID`, `MeshletID`, `PrimitiveID`, quantized barycentrics).
-* **Status:** the meshlet builder is in (`PrismMeshletBuilder`, meshoptimizer v1.3, Godot winding handled, unit-tested). Hi-Z culling, the visibility buffer and its rasterization need the Track B engine-module decision.
+* **Status:** the meshlet builder is in (`PrismMeshletBuilder`, meshoptimizer v1.3, Godot winding handled, unit-tested). Draft shaders for Hi-Z culling, the visibility buffer and its rasterization are in the tree but not wired up; running them needs the Track B engine-module decision (Godot 4.4's `RenderingDevice` has no mesh-shader stage or indirect-count draws). Known issues: `docs/TRACK_B_SHADERS.md`.
 * **Gate 3 DoD:** 15M-triangle stress scene renders at **60+ FPS on Tier 2** in **< 0.65 ms** for culling + visibility rasterization with **1.00x** fragment invocation per visible pixel.
 
 ### Phase 4: Tile-Sorted Material Shading & Virtual Shadow Pages (Weeks 17–20 — Track B)
 * Reconstruct world positions, tangent frames, and analytic `ddx`/`ddy` UV partials in compute.
 * Bin 8x8 screen tiles by `MaterialID` into indirect compute kernels outputting the **Thin G-Buffer** (Standard PBR, Clear-Coat, Subsurface, Thin-Film).
 * Implement 16k x 16k **Virtual Shadow Pages (VCSP)** driven by visibility-buffer page-fault feedback.
+* **Status:** draft shaders for tile classification, material shading and shadow pages are in the tree but not wired up. The shadow-page draft is smaller than planned (2k x 2k virtual per clipmap level) and its 8192x8192 R32 atlas (256 MiB) is over the 64 MB cap. Known issues: `docs/TRACK_B_SHADERS.md`.
 * **Gate 4 DoD:** Zero foliage shadow shimmer during camera rotation; physical shadow pool capped at **64 MB**.
 
 ### Phase 5: Froxel Volumetrics, Frame Generation & Production Hardening (Weeks 21–24)

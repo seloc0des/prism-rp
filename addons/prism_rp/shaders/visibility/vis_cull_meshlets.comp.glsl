@@ -1,6 +1,7 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 
-#include "../include/visibility_common.glsl"
+#include "visibility_common.glsl"
 
 // ============================================================================
 // Prism RP — Two-Phase GPU Meshlet Culler

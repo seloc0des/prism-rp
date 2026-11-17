@@ -1,7 +1,8 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_fragment_shader_barycentric : require
 
-#include "../include/visibility_common.glsl"
+#include "visibility_common.glsl"
 
 // ============================================================================
 // Prism RP — 64-Bit Visibility Buffer Fragment Shader (R32G32_UINT)

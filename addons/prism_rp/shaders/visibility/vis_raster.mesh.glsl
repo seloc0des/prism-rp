@@ -1,7 +1,8 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_mesh_shader : require
 
-#include "../include/visibility_common.glsl"
+#include "visibility_common.glsl"
 
 // ============================================================================
 // Prism RP — Visibility Buffer Mesh Shader (VK_EXT_mesh_shader)
