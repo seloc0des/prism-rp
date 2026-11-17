@@ -86,6 +86,31 @@ jobs:
       - name: Run unit tests
         run: python -m pytest tests/unit -v
 
+  shader-tests:
+    name: Compute shader tests on lavapipe (numeric checks, validation layers on)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install lavapipe, Vulkan dev headers, validation layers and glslang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-validationlayers vulkan-tools libvulkan-dev nlohmann-json3-dev glslang-tools g++
+          pip install pytest numpy
+          ICD="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)"
+          echo "VK_DRIVER_FILES=$ICD" >> "$GITHUB_ENV"
+
+      - name: Run shader tests
+        run: |
+          vulkaninfo --summary | grep -E "deviceName|apiVersion"
+          python -m pytest tests/shader_harness -v
+
   build-gdextension:
     name: Build C++20 (${{ matrix.os }} / ${{ matrix.target }})
     runs-on: ${{ matrix.os }}
