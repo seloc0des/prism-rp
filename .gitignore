@@ -1,0 +1,38 @@
+# Godot 4
+.godot/
+*.import
+export.cfg
+export_presets.cfg
+
+# Build artifacts (SCons & CMake)
+.sconsign.dblite
+*.os
+*.o
+*.obj
+*.a
+*.lib
+*.exp
+*.pdb
+*.ilk
+build/
+build_cmake/
+compile_commands.json
+
+# Compiled GDExtension binaries (built by CI or locally)
+addons/prism_rp/bin/*.so
+addons/prism_rp/bin/*.dll
+addons/prism_rp/bin/*.dylib
+addons/prism_rp/bin/*.framework
+
+# QA & RenderDoc captures
+*.rdc
+*.spv
+godot_vulkan_qa.log
+__pycache__/
+*.py[cod]
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

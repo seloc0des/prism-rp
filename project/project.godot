@@ -1,0 +1,10 @@
+config_version=5
+
+[application]
+
+config/name="Prism RP Benchmark Suite"
+config/features=PackedStringArray("4.4", "Forward Plus")
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
