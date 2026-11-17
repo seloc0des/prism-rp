@@ -1,10 +1,11 @@
+from pathlib import Path
 import re
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from conftest import REPO
+REPO = Path(__file__).resolve().parents[2]
 import run_visual_regression as rvr
 
 

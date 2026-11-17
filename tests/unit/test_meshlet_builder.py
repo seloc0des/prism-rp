@@ -1,9 +1,10 @@
+from pathlib import Path
 import shutil
 import subprocess
 
 import pytest
 
-from conftest import REPO
+REPO = Path(__file__).resolve().parents[2]
 
 MESHOPT = REPO / "thirdparty" / "meshoptimizer" / "src"
 

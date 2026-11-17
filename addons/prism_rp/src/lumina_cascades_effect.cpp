@@ -46,6 +46,7 @@ LuminaCascadesCompositorEffect::LuminaCascadesCompositorEffect() {
 }
 
 LuminaCascadesCompositorEffect::~LuminaCascadesCompositorEffect() {
+    _release_world_targets();
     _release_view_targets();
     _release_render_resources();
 }
@@ -100,8 +101,16 @@ void LuminaCascadesCompositorEffect::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_debug_view_mode"), &LuminaCascadesCompositorEffect::get_debug_view_mode);
     ADD_PROPERTY(
         PropertyInfo(Variant::INT, "debug_view_mode", godot::PROPERTY_HINT_ENUM,
-            "Final Output:0,Raw Irradiance:1,Denoised Irradiance:2,History Length:3,Variance:4,Normals:5,Albedo Proxy:6"),
+            "Final Output:0,Raw Irradiance:1,Denoised Irradiance:2,History Length:3,Variance:4,Normals:5,Albedo Proxy:6,World Cascade Only:7"),
         "set_debug_view_mode", "get_debug_view_mode");
+
+    ClassDB::bind_method(D_METHOD("set_world_cascades_enabled", "enabled"), &LuminaCascadesCompositorEffect::set_world_cascades_enabled);
+    ClassDB::bind_method(D_METHOD("is_world_cascades_enabled"), &LuminaCascadesCompositorEffect::is_world_cascades_enabled);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "world_cascades_enabled"), "set_world_cascades_enabled", "is_world_cascades_enabled");
+
+    ClassDB::bind_method(D_METHOD("set_world_probe_spacing", "meters"), &LuminaCascadesCompositorEffect::set_world_probe_spacing);
+    ClassDB::bind_method(D_METHOD("get_world_probe_spacing"), &LuminaCascadesCompositorEffect::get_world_probe_spacing);
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "world_probe_spacing", godot::PROPERTY_HINT_RANGE, "0.25,8.0,0.25,suffix:m"), "set_world_probe_spacing", "get_world_probe_spacing");
 
     ClassDB::bind_method(D_METHOD("reset_history"), &LuminaCascadesCompositorEffect::reset_history);
     ClassDB::bind_method(D_METHOD("reload_shaders"), &LuminaCascadesCompositorEffect::reload_shaders);
@@ -148,6 +157,11 @@ int32_t LuminaCascadesCompositorEffect::get_albedo_mode() const { return albedo_
 void LuminaCascadesCompositorEffect::set_debug_view_mode(int32_t p_mode) { debug_view_mode = p_mode; }
 int32_t LuminaCascadesCompositorEffect::get_debug_view_mode() const { return debug_view_mode; }
 
+void LuminaCascadesCompositorEffect::set_world_cascades_enabled(bool p_enabled) { world_cascades_enabled = p_enabled; }
+bool LuminaCascadesCompositorEffect::is_world_cascades_enabled() const { return world_cascades_enabled; }
+void LuminaCascadesCompositorEffect::set_world_probe_spacing(float p_spacing) { world_probe_spacing = std::clamp(p_spacing, 0.25f, 8.0f); }
+float LuminaCascadesCompositorEffect::get_world_probe_spacing() const { return world_probe_spacing; }
+
 void LuminaCascadesCompositorEffect::reset_history() { history_reset_requested = true; }
 
 void LuminaCascadesCompositorEffect::reload_shaders() {
@@ -182,6 +196,8 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
         !temporal_pipeline.is_valid() || !atrous_pipeline.is_valid() || !composite_pipeline.is_valid()) {
         return;
     }
+    const bool world_active = world_cascades_enabled && ws_classify_pipeline.is_valid() &&
+        ws_update_pipeline.is_valid() && ws_merge_pipeline.is_valid() && _ensure_world_targets();
 
     godot::Ref<godot::RenderSceneBuffers> base_buffers = p_render_data->get_render_scene_buffers();
     auto *scene_buffers = godot::Object::cast_to<godot::RenderSceneBuffersRD>(base_buffers.ptr());
@@ -261,6 +277,79 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
 
                 dispatch_compute(rd, trace_pipeline, uset, make_push_constant_bytes(pc),
                     groups_for(cl.probe_count.x * cl.block), groups_for(cl.probe_count.y * cl.block));
+            }
+        }
+
+        // 1b. World cache: update once per frame (view 0), then let the top screen level fall
+        // through to it. Positions use each eye's own offset from the camera.
+        if (world_active) {
+            const godot::Transform3D cam_xf = scene_data->get_cam_transform();
+            const godot::Vector3 eye = cam_xf.origin + cam_xf.basis.xform(scene_data->get_view_eye_offset(view));
+            const godot::Vector3 right = cam_xf.basis.get_column(0).normalized();
+            const godot::Vector3 up = cam_xf.basis.get_column(1).normalized();
+            const float spacing = world_probe_spacing;
+
+            WorldPushConstants wpc;
+            wpc.a0[0] = size.x;
+            wpc.a0[1] = size.y;
+            const godot::Vector3 cam_cell = (cam_xf.origin / spacing).floor();
+            wpc.a1[0] = static_cast<int32_t>(cam_cell.x) - kWorldGridN / 2;
+            wpc.a1[1] = static_cast<int32_t>(cam_cell.y) - kWorldGridN / 2;
+            wpc.a1[2] = static_cast<int32_t>(cam_cell.z) - kWorldGridN / 2;
+            const float cam4[4] = { static_cast<float>(eye.x), static_cast<float>(eye.y), static_cast<float>(eye.z), spacing };
+            std::copy(std::begin(cam4), std::end(cam4), wpc.cam_pos);
+            wpc.cam_right[0] = static_cast<float>(right.x); wpc.cam_right[1] = static_cast<float>(right.y); wpc.cam_right[2] = static_cast<float>(right.z);
+            wpc.cam_right[3] = 0.25f;   // thickness, fraction of view depth
+            wpc.cam_up[0] = static_cast<float>(up.x); wpc.cam_up[1] = static_cast<float>(up.y); wpc.cam_up[2] = static_cast<float>(up.z);
+            wpc.cam_up[3] = 0.1f;       // running-average floor: ~10-frame memory once converged
+            std::copy(std::begin(proj4), std::end(proj4), wpc.proj);
+            wpc.misc[0] = depth_params[0];
+            wpc.misc[1] = depth_params[1];
+
+            if (view == 0) {
+                ScopedPassTimer timer("lumina_ws_update", godot::Color(0.35f, 0.70f, 0.55f, 1.0f));
+                WorldPushConstants upc = wpc;
+                upc.a0[3] = kWorldBlock;
+                upc.a1[3] = static_cast<int32_t>(frame_counter);
+                upc.misc[2] = 8.0f * spacing;    // ray length
+                upc.misc[3] = 32.0f;             // steps
+                const auto bytes = make_push_constant_bytes(upc);
+
+                godot::TypedArray<godot::RDUniform> uc;
+                uc.push_back(make_sampler_texture_uniform(0, nearest_sampler, depth_tex));
+                uc.push_back(make_image_uniform(1, world_state));
+                const godot::RID cset = godot::UniformSetCacheRD::get_cache(ws_classify_shader, 0, uc);
+                godot::TypedArray<godot::RDUniform> uu;
+                uu.push_back(make_sampler_texture_uniform(0, nearest_sampler, depth_tex));
+                uu.push_back(make_sampler_texture_uniform(1, linear_sampler, color_tex));
+                uu.push_back(make_sampler_texture_uniform(2, nearest_sampler, world_state));
+                uu.push_back(make_image_uniform(3, world_probes));
+                const godot::RID uset = godot::UniformSetCacheRD::get_cache(ws_update_shader, 0, uu);
+                if (cset.is_valid() && uset.is_valid()) {
+                    const uint32_t g3 = static_cast<uint32_t>((kWorldGridN + 3) / 4);
+                    dispatch_compute(rd, ws_classify_pipeline, cset, bytes, g3, g3, g3);
+                    dispatch_compute(rd, ws_update_pipeline, uset, bytes,
+                        groups_for(kWorldGridN * kWorldGridN * kWorldBlock), groups_for(kWorldGridN * kWorldBlock));
+                }
+            }
+
+            {
+                ScopedPassTimer timer("lumina_ws_merge", godot::Color(0.30f, 0.65f, 0.50f, 1.0f));
+                const CascadeLevel &top = vt.cascades[static_cast<size_t>(cascade_count - 1)];
+                WorldPushConstants mpc = wpc;
+                mpc.a0[3] = top.block;
+                mpc.a1[3] = (debug_view_mode == DEBUG_VIEW_WORLD_CASCADE_ONLY) ? 1 : 0;
+                mpc.misc[2] = top.spacing_px;
+                godot::TypedArray<godot::RDUniform> u;
+                u.push_back(make_sampler_texture_uniform(0, nearest_sampler, depth_tex));
+                u.push_back(make_sampler_texture_uniform(1, nearest_sampler, world_probes));
+                u.push_back(make_sampler_texture_uniform(2, nearest_sampler, world_state));
+                u.push_back(make_image_uniform(3, top.texture));
+                const godot::RID mset = godot::UniformSetCacheRD::get_cache(ws_merge_shader, 0, u);
+                if (mset.is_valid()) {
+                    dispatch_compute(rd, ws_merge_pipeline, mset, make_push_constant_bytes(mpc),
+                        groups_for(top.probe_count.x * top.block), groups_for(top.probe_count.y * top.block));
+                }
             }
         }
 
@@ -385,7 +474,8 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 pc.internal_res_x = size.x;
                 pc.internal_res_y = size.y;
                 pc.intensity = intensity;
-                pc.debug_view_mode = debug_view_mode;
+                // "World Cascade Only" shows the denoised irradiance built from the far field alone.
+                pc.debug_view_mode = (debug_view_mode == DEBUG_VIEW_WORLD_CASCADE_ONLY) ? DEBUG_VIEW_DENOISED_IRRADIANCE : debug_view_mode;
                 pc.albedo_mode = albedo_mode;
                 pc.max_history = kMaxHistory;
                 dispatch_compute(rd, composite_pipeline, uset, make_push_constant_bytes(pc), gx, gy);
@@ -412,7 +502,10 @@ bool LuminaCascadesCompositorEffect::_ensure_render_resources() {
         build("lumina_rc_integrate.comp.glsl", "lumina_rc_integrate", integrate_shader, integrate_pipeline) &&
         build("lumina_svgf_temporal.comp.glsl", "lumina_svgf_temporal", temporal_shader, temporal_pipeline) &&
         build("lumina_svgf_atrous.comp.glsl", "lumina_svgf_atrous", atrous_shader, atrous_pipeline) &&
-        build("lumina_composite.comp.glsl", "lumina_composite", composite_shader, composite_pipeline);
+        build("lumina_composite.comp.glsl", "lumina_composite", composite_shader, composite_pipeline) &&
+        build("lumina_ws_classify.comp.glsl", "lumina_ws_classify", ws_classify_shader, ws_classify_pipeline) &&
+        build("lumina_ws_update.comp.glsl", "lumina_ws_update", ws_update_shader, ws_update_pipeline) &&
+        build("lumina_ws_merge.comp.glsl", "lumina_ws_merge", ws_merge_shader, ws_merge_pipeline);
     if (!ok) {
         _release_render_resources();
     }
@@ -429,6 +522,9 @@ void LuminaCascadesCompositorEffect::_release_render_resources() {
     rd_utils::free_compute_stage(rd, temporal_pipeline, temporal_shader);
     rd_utils::free_compute_stage(rd, atrous_pipeline, atrous_shader);
     rd_utils::free_compute_stage(rd, composite_pipeline, composite_shader);
+    rd_utils::free_compute_stage(rd, ws_classify_pipeline, ws_classify_shader);
+    rd_utils::free_compute_stage(rd, ws_update_pipeline, ws_update_shader);
+    rd_utils::free_compute_stage(rd, ws_merge_pipeline, ws_merge_shader);
     rd_utils::free_rid(rd, nearest_sampler);
     rd_utils::free_rid(rd, linear_sampler);
 }
@@ -482,6 +578,35 @@ bool LuminaCascadesCompositorEffect::_ensure_view_targets(const godot::Vector2i 
     cached_probe_spacing = probe_spacing;
     history_reset_requested = true;
     return true;
+}
+
+bool LuminaCascadesCompositorEffect::_ensure_world_targets() {
+    if (world_probes.is_valid() && world_state.is_valid() && cached_world_spacing == world_probe_spacing) {
+        return true;
+    }
+    _release_world_targets();
+    using RD = godot::RenderingDevice;
+    // CAN_COPY_TO: RenderingDevice::texture_clear requires it.
+    const uint32_t rw = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
+    world_probes = rd_utils::create_2d_texture(rd, kWorldGridN * kWorldGridN * kWorldBlock, kWorldGridN * kWorldBlock,
+        RD::DATA_FORMAT_R16G16B16A16_SFLOAT, rw);
+    world_state = rd_utils::create_2d_texture(rd, kWorldGridN * kWorldGridN, kWorldGridN, RD::DATA_FORMAT_R32G32B32A32_SFLOAT, rw);
+    if (!world_probes.is_valid() || !world_state.is_valid()) {
+        godot::UtilityFunctions::push_error("[Prism RP] Failed to allocate the Lumina world cache.");
+        _release_world_targets();
+        return false;
+    }
+    // Fresh textures are undefined; clear so every slot reads as never written.
+    rd->texture_clear(world_probes, godot::Color(0, 0, 0, 0), 0, 1, 0, 1);
+    rd->texture_clear(world_state, godot::Color(0, 0, 0, 0), 0, 1, 0, 1);
+    cached_world_spacing = world_probe_spacing;
+    return true;
+}
+
+void LuminaCascadesCompositorEffect::_release_world_targets() {
+    rd_utils::free_rid(rd, world_probes);
+    rd_utils::free_rid(rd, world_state);
+    cached_world_spacing = 0.0f;
 }
 
 void LuminaCascadesCompositorEffect::_release_view_targets() {

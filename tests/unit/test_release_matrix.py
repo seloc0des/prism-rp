@@ -1,8 +1,9 @@
+from pathlib import Path
 import re
 
 import yaml
 
-from conftest import REPO
+REPO = Path(__file__).resolve().parents[2]
 
 
 def test_release_builds_every_gdextension_library():

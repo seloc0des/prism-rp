@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO
+REPO = Path(__file__).resolve().parents[2]
 
 SHADER_ROOT = REPO / "addons" / "prism_rp" / "shaders"
 INCLUDE_DIR = SHADER_ROOT / "include"
@@ -35,6 +35,9 @@ SHADER_TO_STRUCT = {
     "lumina_svgf_atrous": (LUMINA_H, "AtrousPushConstants"),
     "lumina_composite": (LUMINA_H, "CompositePushConstants"),
     "prism_copy": (RD_UTILS_H, "PushConstants"),
+    "lumina_ws_classify": (LUMINA_H, "WorldPushConstants"),
+    "lumina_ws_update": (LUMINA_H, "WorldPushConstants"),
+    "lumina_ws_merge": (LUMINA_H, "WorldPushConstants"),
 }
 
 SHADERS = sorted(p for p in SHADER_ROOT.rglob("*.comp.glsl"))
@@ -49,7 +52,7 @@ def shader_push_constant_size(shader: Path) -> int:
         ["glslangValidator", "-V", "-q", "--target-env", "vulkan1.3", "-S", "comp", f"-I{INCLUDE_DIR}", str(shader), "-o", "/dev/null"],
         capture_output=True, text=True, check=True,
     ).stdout
-    m = re.search(r"^\s*PushConstants: .*?size (\d+)", out, re.M)
+    m = re.search(r"^\s*\w*PushConstants: .*?size (\d+)", out, re.M)
     assert m, f"no PushConstants block reflected for {shader.name}"
     return int(m.group(1))
 

@@ -1,10 +1,11 @@
+from pathlib import Path
 import math
 import sys
 
 import numpy as np
 import pytest
 
-from conftest import TESTS_DIR
+TESTS_DIR = Path(__file__).resolve().parents[1]
 
 sys.path.insert(0, str(TESTS_DIR / "reference"))
 import godot_to_blender as g2b  # noqa: E402
