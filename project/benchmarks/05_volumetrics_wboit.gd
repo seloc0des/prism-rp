@@ -32,7 +32,7 @@ func _build_benchmark_scene() -> void:
 	shaft_sun.rotation_degrees = Vector3(-58.0, 24.0, 0.0)
 	shaft_sun.light_color = Color(1.0, 0.93, 0.80)
 	shaft_sun.light_energy = 5.2
-	shaft_sun.volumetric_fog_energy = 2.4
+	shaft_sun.light_volumetric_fog_energy = 2.4
 	shaft_sun.shadow_enabled = true
 	add_child(shaft_sun)
 
