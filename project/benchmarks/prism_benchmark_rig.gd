@@ -10,6 +10,20 @@ extends Node3D
 var camera: Camera3D
 var world_environment: WorldEnvironment
 var chronos_effect: CompositorEffect
+var lumina_effect: CompositorEffect
+var opaque_capture_effect: CompositorEffect
+
+## Which Prism RP effects to build (QA flags: --prism-chronos=off, --prism-lumina=off,
+## --prism-opaque-capture=off, --prism-sdfgi=on|off). SDFGI defaults to off when Lumina runs,
+## so the two GIs don't stack.
+var use_chronos := true
+var use_lumina := true
+var use_opaque_capture := true
+var sdfgi_override := ""
+## --prism-godot-taa=on enables Godot's own TAA, to exercise Chronos' double-TAA guard.
+var godot_taa := false
+## Property overrides: --prism-set=chronos.taau_enabled=false,lumina.debug_view_mode=2
+var property_overrides: Array[Dictionary] = []
 
 ## Sub-pixel camera jitter for Chronos TAA, supplied by the addon's ChronosJitterCamera.
 @export var jitter_enabled := true
@@ -95,6 +109,65 @@ func _parse_cmdline_args() -> void:
 			quit_after_frame = arg.get_slice("=", 1).to_int()
 		elif arg == "--prism-no-jitter":
 			jitter_enabled = false
+		elif arg.begins_with("--prism-chronos="):
+			use_chronos = _flag_value(arg)
+		elif arg.begins_with("--prism-lumina="):
+			use_lumina = _flag_value(arg)
+		elif arg.begins_with("--prism-opaque-capture="):
+			use_opaque_capture = _flag_value(arg)
+		elif arg.begins_with("--prism-godot-taa="):
+			godot_taa = _flag_value(arg)
+		elif arg.begins_with("--prism-sdfgi="):
+			sdfgi_override = arg.get_slice("=", 1).to_lower()
+		elif arg.begins_with("--prism-set="):
+			_parse_property_overrides(arg.substr("--prism-set=".length()))
+
+func _flag_value(arg: String) -> bool:
+	var value := arg.get_slice("=", 1).to_lower()
+	return not (value == "off" or value == "0" or value == "false")
+
+## "chronos.taau_enabled=false,lumina.intensity=1.5" -> [{target, property, value}, ...]
+func _parse_property_overrides(spec: String) -> void:
+	for entry in spec.split(",", false):
+		var eq := entry.find("=")
+		var dot := entry.find(".")
+		if eq < 0 or dot < 0 or dot > eq:
+			push_error("[Prism RP QA] Bad --prism-set entry '%s' (want effect.property=value)" % entry)
+			continue
+		property_overrides.append({
+			"target": entry.substr(0, dot),
+			"property": entry.substr(dot + 1, eq - dot - 1),
+			"value": _parse_value(entry.substr(eq + 1)),
+		})
+
+func _parse_value(text: String) -> Variant:
+	var lower := text.to_lower()
+	if lower == "true" or lower == "on":
+		return true
+	if lower == "false" or lower == "off":
+		return false
+	if text.is_valid_int():
+		return text.to_int()
+	if text.is_valid_float():
+		return text.to_float()
+	return text
+
+func _apply_property_overrides() -> void:
+	var targets := {
+		"chronos": chronos_effect,
+		"lumina": lumina_effect,
+		"capture": opaque_capture_effect,
+	}
+	for o in property_overrides:
+		var target: Object = targets.get(o["target"])
+		if target == null:
+			push_warning("[Prism RP QA] --prism-set target '%s' is not active" % o["target"])
+			continue
+		var prop: StringName = o["property"]
+		if not (prop in target):
+			push_error("[Prism RP QA] %s has no property '%s'" % [o["target"], prop])
+			continue
+		target.set(prop, o["value"])
 
 func _configure_viewport_scaling() -> void:
 	var vp := get_viewport()
@@ -102,7 +175,7 @@ func _configure_viewport_scaling() -> void:
 		return
 	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
 	vp.scaling_3d_scale = render_scale
-	vp.use_taa = false
+	vp.use_taa = godot_taa
 
 func _setup_environment_and_chronos_vpu() -> void:
 	var env := Environment.new()
@@ -116,29 +189,42 @@ func _setup_environment_and_chronos_vpu() -> void:
 	env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
 	env.tonemap_exposure = 1.0
 	env.glow_enabled = false
-	env.sdfgi_enabled = true
-	env.sdfgi_use_occlusion = true
 
-	var compositor := Compositor.new()
-	if ClassDB.class_exists(&"ChronosVPUCompositorEffect"):
-		var instance: Variant = ClassDB.instantiate(&"ChronosVPUCompositorEffect")
-		if instance is CompositorEffect:
-			chronos_effect = instance as CompositorEffect
+	var effects: Array[CompositorEffect] = []
+	if not ClassDB.class_exists(&"ChronosVPUCompositorEffect"):
+		push_warning("[Prism RP QA] Prism RP extension not loaded; running baseline Forward+.")
+	else:
+		# Callback types order the effects (Lumina POST_OPAQUE, capture PRE_TRANSPARENT,
+		# Chronos POST_TRANSPARENT); array order doesn't matter.
+		if use_lumina:
+			lumina_effect = ClassDB.instantiate(&"LuminaCascadesCompositorEffect") as CompositorEffect
+			effects.append(lumina_effect)
+		if use_chronos:
+			chronos_effect = ClassDB.instantiate(&"ChronosVPUCompositorEffect") as CompositorEffect
 			chronos_effect.set(&"dilate_velocity_enabled", true)
 			chronos_effect.set(&"reactive_mask_enabled", true)
 			chronos_effect.set(&"taau_enabled", true)
 			chronos_effect.set(&"fft_bloom_enabled", true)
 			chronos_effect.set(&"aces_odt_enabled", true)
 			chronos_effect.set(&"output_display_mode", 0)
-			var effects: Array[CompositorEffect] = []
-			# Opaque-only capture at PRE_TRANSPARENT: lets Chronos flag particles and glass
-			# (no depth / motion vectors) in its reactive mask.
-			if ClassDB.class_exists(&"ChronosOpaqueCaptureEffect"):
-				effects.append(ClassDB.instantiate(&"ChronosOpaqueCaptureEffect") as CompositorEffect)
 			effects.append(chronos_effect)
-			compositor.compositor_effects = effects
-	else:
-		push_warning("[Prism RP QA] ChronosVPUCompositorEffect class not loaded; running baseline Forward+.")
+			# Opaque-only capture lets Chronos flag particles and glass (no depth or motion
+			# vectors) in its reactive mask.
+			if use_opaque_capture:
+				opaque_capture_effect = ClassDB.instantiate(&"ChronosOpaqueCaptureEffect") as CompositorEffect
+				effects.append(opaque_capture_effect)
+		_apply_property_overrides()
+
+	var sdfgi_on := lumina_effect == null
+	if sdfgi_override == "on":
+		sdfgi_on = true
+	elif sdfgi_override == "off":
+		sdfgi_on = false
+	env.sdfgi_enabled = sdfgi_on
+	env.sdfgi_use_occlusion = true
+
+	var compositor := Compositor.new()
+	compositor.compositor_effects = effects
 
 	world_environment = WorldEnvironment.new()
 	world_environment.name = "BenchmarkWorldEnvironment"

@@ -237,8 +237,16 @@ def capture_scene(
     tier: HardwareTierSpec,
     capture_frame: int,
     artifacts_dir: Path,
+    extra_args: list[str] | None = None,
+    render_scale: float | None = None,
+    output_dir: Path | None = None,
 ) -> tuple[Path, dict[str, float], list[str]]:
-    scene_art_dir = artifacts_dir / tier.name / scene_name
+    """Run one scene and return (screenshot, per-stage GPU ms, validation/script error lines).
+
+    extra_args are appended to the rig's user args (after `--`); render_scale overrides the tier's
+    internal/target ratio; output_dir overrides <artifacts>/<tier>/<scene>.
+    """
+    scene_art_dir = output_dir if output_dir is not None else artifacts_dir / tier.name / scene_name
     scene_art_dir.mkdir(parents=True, exist_ok=True)
 
     telemetry_json = scene_art_dir / "telemetry.json"
@@ -246,7 +254,8 @@ def capture_scene(
     for stale in [telemetry_json, captured_png, *scene_art_dir.glob("*.rdc")]:
         stale.unlink(missing_ok=True)
 
-    render_scale = round(tier.internal_width / float(tier.target_width), 4)
+    if render_scale is None:
+        render_scale = round(tier.internal_width / float(tier.target_width), 4)
     cmd: list[str] = [
         godot_bin,
         "--rendering-driver", "vulkan",
@@ -263,6 +272,7 @@ def capture_scene(
         f"--qa-telemetry-out={telemetry_json}",
         f"--qa-screenshot-out={captured_png}",
         f"--quit-after={capture_frame + 3}",
+        *(extra_args or []),
     ]
 
     if renderdoccmd:
