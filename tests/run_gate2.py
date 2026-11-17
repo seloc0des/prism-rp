@@ -3,8 +3,8 @@
 
 For each scene: Godot renders Lumina's "Denoised Irradiance" debug view (bounced diffuse light
 for white albedo; Chronos off, ambient off, no jitter, full resolution) and exports the scene
-(project/benchmarks/prism_scene_export.gd). Blender re-renders that export with Cycles and writes
-its Diffuse Indirect pass, limited to the same single diffuse bounce. The two are compared
+(project/benchmarks/prism_scene_export.gd). Blender re-renders that export with Cycles, once with
+the same single diffuse bounce and once without; the difference is the bounced light. The two are compared
 in linear light:
 
   psnr_db         raw PSNR
@@ -36,7 +36,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "reference"))
 
 import run_visual_regression as rvr  # noqa: E402
-from exr import load_pass  # noqa: E402
+from exr import load_indirect  # noqa: E402
 from metrics import gate2_metrics, srgb_to_linear  # noqa: E402
 
 GATE2_SCENES = ["01_cornell_box", "04_dynamic_sponza"]
@@ -56,10 +56,9 @@ def render_reference(blender: str, scene_json: Path, out_prefix: Path, samples: 
            "--scene", str(scene_json), "--out", str(out_prefix), "--samples", str(samples), "--diffuse-bounces", str(bounces)]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     (out_prefix.parent / "blender.log").write_text(proc.stdout + "\n" + proc.stderr, encoding="utf-8")
-    exr_path = Path(str(out_prefix) + "_passes.exr")
-    if proc.returncode != 0 or not exr_path.exists():
+    if proc.returncode != 0 or not Path(str(out_prefix) + "_direct.exr").exists():
         raise RuntimeError(f"Blender failed (exit {proc.returncode}); see {out_prefix.parent / 'blender.log'}")
-    return exr_path
+    return out_prefix
 
 
 def main() -> int:
@@ -90,7 +89,7 @@ def main() -> int:
         png, _, errors = rvr.capture_scene(godot, None, repo / "project", scene, rvr.CANONICAL_SCENES[scene], tier,
                                            args.capture_frame, out_root, lumina_capture_args(export_dir), 1.0, scene_dir / "godot")
         print(f"[{scene}] Cycles reference ({args.samples} spp) ...")
-        ref = load_pass(render_reference(blender, export_dir / "scene.json", scene_dir / "reference", args.samples, args.diffuse_bounces), "DiffInd")
+        ref = load_indirect(render_reference(blender, export_dir / "scene.json", scene_dir / "reference", args.samples, args.diffuse_bounces))
         test = srgb_to_linear(np.asarray(Image.open(png).convert("RGB"), np.float64) / 255.0)
         if test.shape != ref.shape:
             raise SystemExit(f"{scene}: Godot capture {test.shape} vs reference {ref.shape}")

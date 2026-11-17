@@ -3,12 +3,25 @@
     blender -b --factory-startup --python tests/reference/cycles_reference.py -- \
         --scene out/scene.json --out out/reference --samples 256 --diffuse-bounces 1
 
-Writes <out>_passes.exr, a multilayer EXR with every render pass (read the "DiffInd" pass with
-tests/reference/exr.py: bounced diffuse light for white albedo, the quantity Lumina's "Denoised
-Irradiance" debug view shows), and <out>_combined.png for a visual check.
+Writes two EXRs and a PNG:
+  <out>_full.exr    with --diffuse-bounces bounces
+  <out>_direct.exr  with no bounces (direct light and emission only)
+  <out>_full.png    for a visual check
+tests/reference/exr.py:load_indirect() returns full - direct: the bounced light alone.
 
-Deliberately avoids the compositor: its Python API changed in Blender 5.0, while multilayer EXR
-output works the same across 4.x and 5.x.
+Every material shows white, non-metallic, non-specular to camera rays (Light Path "Is Camera
+Ray") and its real look to every other ray. So the difference is bounced diffuse light for white
+albedo at the visible surface, coloured by what it bounced off: the quantity Lumina's "Denoised
+Irradiance" debug view shows.
+
+Cross-check (Blender 4.0, synthetic Cornell box, 512 spp): this agrees with Cycles' own Diffuse
+Indirect pass in structure (per-pixel correlation 0.96) but reads ~17-24% lower in level. The pass
+separates lighting from colour by dividing out the base colour, which isn't exact for the layered
+Principled BSDF; this method renders the target quantity directly. Gate 2's scale-fitted PSNR is
+unaffected by a uniform level difference; the raw PSNR and fitted scale show it.
+
+This uses only the Combined image on purpose. Render passes and the compositor's Python API both
+changed in Blender 5.0; two plain renders work the same across 4.x and 5.x.
 """
 
 import argparse
@@ -40,9 +53,27 @@ def make_material(name, spec, scene_dir):
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
     bsdf = nodes.get("Principled BSDF")
     r, g, b, a = spec["albedo"]
-    bsdf.inputs["Base Color"].default_value = (r, g, b, 1.0)
     bsdf.inputs["Roughness"].default_value = spec["roughness"]
-    bsdf.inputs["Metallic"].default_value = spec["metallic"]
+
+    # Camera rays see a white, non-metallic, non-specular surface; other rays the real material.
+    path = nodes.new("ShaderNodeLightPath")
+    cam_white = nodes.new("ShaderNodeMix")
+    cam_white.data_type = "RGBA"
+    cam_white.blend_type = "MIX"
+    cam_white.inputs[6].default_value = (r, g, b, 1.0)      # A: real albedo (a texture replaces it below)
+    cam_white.inputs[7].default_value = (1.0, 1.0, 1.0, 1.0)  # B: white
+    links.new(path.outputs["Is Camera Ray"], cam_white.inputs[0])
+    links.new(cam_white.outputs[2], bsdf.inputs["Base Color"])
+    not_cam = nodes.new("ShaderNodeMath")
+    not_cam.operation = "SUBTRACT"
+    not_cam.inputs[0].default_value = 1.0
+    links.new(path.outputs["Is Camera Ray"], not_cam.inputs[1])
+    for socket, value in (("Metallic", spec["metallic"]), ("Specular IOR Level", 0.5)):
+        scaled = nodes.new("ShaderNodeMath")
+        scaled.operation = "MULTIPLY"
+        scaled.inputs[1].default_value = value
+        links.new(not_cam.outputs["Value"], scaled.inputs[0])
+        links.new(scaled.outputs["Value"], bsdf.inputs[socket])
     e = spec["emission"]
     if max(e) > 0.0:
         bsdf.inputs["Emission Color"].default_value = (e[0], e[1], e[2], 1.0)
@@ -58,7 +89,7 @@ def make_material(name, spec, scene_dir):
         mix.inputs[0].default_value = 1.0
         mix.inputs[7].default_value = (r, g, b, 1.0)
         links.new(tex.outputs["Color"], mix.inputs[6])
-        links.new(mix.outputs[2], bsdf.inputs["Base Color"])
+        links.new(mix.outputs[2], cam_white.inputs[6])
         if spec["transparency"] == "scissor":
             cmp = nodes.new("ShaderNodeMath")
             cmp.operation = "GREATER_THAN"
@@ -156,22 +187,32 @@ def build_camera(cam, width, height):
     bpy.context.scene.camera = obj
 
 
-def set_output_format(settings, multilayer_exr):
-    """Blender 5.0 added image_settings.media_type, which restricts the allowed file formats:
-    'MULTI_LAYER_IMAGE' allows only OPEN_EXR_MULTILAYER, 'IMAGE' allows PNG etc. Set it first when
-    it exists; Blender 4.x has no media_type and accepts the format directly."""
-    has_media_type = hasattr(settings, "media_type")
-    if multilayer_exr:
-        if has_media_type:
-            settings.media_type = "MULTI_LAYER_IMAGE"
-        settings.file_format = "OPEN_EXR_MULTILAYER"
+def set_output_format(settings, kind):
+    """kind: 'exr' (float RGBA) or 'png'. Blender 5.0 added image_settings.media_type, which limits
+    the allowed file formats; set it first when it exists (4.x has none)."""
+    if hasattr(settings, "media_type"):
+        settings.media_type = "IMAGE"
+    if kind == "exr":
+        settings.file_format = "OPEN_EXR"
         settings.color_depth = "32"
         settings.exr_codec = "ZIP"
     else:
-        if has_media_type:
-            settings.media_type = "IMAGE"
         settings.file_format = "PNG"
         settings.color_depth = "8"
+
+
+def set_bounces(scene, diffuse):
+    scene.cycles.diffuse_bounces = diffuse
+    scene.cycles.glossy_bounces = 1 if diffuse > 0 else 0
+    scene.cycles.transmission_bounces = 1 if diffuse > 0 else 0
+    scene.cycles.max_bounces = diffuse + 2 if diffuse > 0 else 0
+    scene.cycles.transparent_max_bounces = 16   # alpha cut-outs stay correct with no bounces
+
+
+def render_to(scene, path):
+    scene.render.filepath = path
+    scene.render.use_file_extension = False
+    bpy.ops.render.render(write_still=True)
 
 
 def configure_render(args, width, height):
@@ -180,11 +221,6 @@ def configure_render(args, width, height):
     scene.cycles.device = "CPU"
     scene.cycles.samples = args.samples
     scene.cycles.use_denoising = False
-    scene.cycles.max_bounces = max(args.diffuse_bounces, 1) + 2
-    scene.cycles.diffuse_bounces = args.diffuse_bounces
-    scene.cycles.glossy_bounces = 1
-    scene.cycles.transmission_bounces = 1
-    scene.cycles.transparent_max_bounces = 16
     scene.cycles.caustics_reflective = False
     scene.cycles.caustics_refractive = False
     scene.cycles.seed = 1
@@ -193,9 +229,7 @@ def configure_render(args, width, height):
     scene.render.resolution_percentage = 100
     scene.render.film_transparent = False
     scene.view_settings.view_transform = "Standard"
-    scene.view_layers[0].use_pass_diffuse_indirect = True
-
-    set_output_format(scene.render.image_settings, multilayer_exr=True)
+    set_output_format(scene.render.image_settings, "exr")
 
 
 def main():
@@ -214,14 +248,16 @@ def main():
     configure_render(args, width, height)
 
     scene = bpy.context.scene
-    scene.render.filepath = args.out + "_passes.exr"
-    scene.render.use_file_extension = False
-    bpy.ops.render.render(write_still=True)
+    set_bounces(scene, args.diffuse_bounces)
+    render_to(scene, args.out + "_full.exr")
+    set_output_format(scene.render.image_settings, "png")
+    bpy.data.images["Render Result"].save_render(args.out + "_full.png", scene=scene)
 
-    # Also save the combined image as an 8-bit PNG for a quick visual check.
-    set_output_format(scene.render.image_settings, multilayer_exr=False)
-    bpy.data.images["Render Result"].save_render(args.out + "_combined.png", scene=scene)
-    print(f"[prism-reference] wrote {args.out}_passes.exr ({width}x{height}, Blender {bpy.app.version_string})")
+    # Same seed, no bounces: the direct light and emission cancel in the difference.
+    set_output_format(scene.render.image_settings, "exr")
+    set_bounces(scene, 0)
+    render_to(scene, args.out + "_direct.exr")
+    print(f"[prism-reference] wrote {args.out}_full.exr / _direct.exr ({width}x{height}, Blender {bpy.app.version_string})")
 
 
 main()
