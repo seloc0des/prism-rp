@@ -22,7 +22,21 @@ Godot 4.4 runs compositor effects at `POST_TRANSPARENT`. That is before Godot's 
 * **Everything resolves at the render (internal) resolution.** Godot then upscales to the window size with whatever `scaling_3d_mode` you set. The compositor API has no way to hand Godot a frame at a different resolution, so Chronos is a temporal anti-aliaser today, not an upscaler.
 * **Output is linear Rec.709.** With `aces_odt_enabled` off, Chronos writes scene-referred HDR and your Environment's tonemapper takes it from there. With it on, Chronos applies its own SDR look (ACES 1.3 reference gamut compression plus a filmic tonescale; this is *not* the ACES 2.0 ODT) and writes display-referred linear values. In that case set the Environment to `TONE_MAPPER_LINEAR` with exposure 1.0 so Godot only does the sRGB encode.
 * **Display P3 and HDR10 aren't supported yet.** Godot 4.4 has no HDR or wide-gamut swapchain. The `output_display_mode` values exist for later, warn, and render as SDR sRGB.
-* **Jitter comes from the camera, not from Godot.** Godot only jitters when its own TAA or FSR2 is enabled, and those would run after Chronos and filter the image a second time. Keep `use_taa` off, put the `Camera3D` in `PROJECTION_FRUSTUM` mode and drive `frustum_offset` with a sub-pixel sequence. Chronos reads the offset back from the projection matrix of the frame being rendered and removes it from Godot's motion vectors. `project/benchmarks/prism_benchmark_rig.gd` does exactly this with an 8-phase Halton(2,3) sequence; copy `_jitter_frustum_offset` from there.
+* **Jitter comes from the camera, not from Godot.** Godot only jitters when its own TAA or FSR2 is enabled, and those would run after Chronos and filter the image a second time. Use `ChronosJitterCamera` (`addons/prism_rp/scripts/chronos_jitter_camera.gd`) in place of `Camera3D`. You set `fov` as usual; at runtime it switches to a frustum projection and moves `frustum_offset` along a Halton(2,3) sequence. Chronos reads the offset back from each eye's projection and removes it from Godot's motion vectors.
+* **Godot's own temporal modes switch Chronos TAA off.** If `Viewport.use_taa` is on, or `scaling_3d_mode` is FSR2 or MetalFX Temporal, Chronos warns once and bypasses its TAA (bloom and the SDR look still run) rather than resolve twice.
+
+### Particles and transparent surfaces
+
+These write neither depth nor motion vectors, so a TAA history reprojects the background under them and smears them. Add a `ChronosOpaqueCaptureEffect` to the same `Compositor` as Chronos. It copies the opaque-only frame at `PRE_TRANSPARENT`, and Chronos flags every pixel the transparent pass changed in its reactive mask (the same opaque-vs-final comparison FSR 2 uses to generate its reactive mask). `transparency_reactive_scale` sets how hard those pixels drop their history.
+
+```gdscript
+var compositor := Compositor.new()
+compositor.compositor_effects = [ChronosOpaqueCaptureEffect.new(), ChronosVPUCompositorEffect.new()]
+```
+
+### Telemetry
+
+`PrismTelemetry` records per-pass GPU timestamps once per frame, on the render thread. It is on by default in debug and editor builds and off in `template_release`. Pass `--prism-telemetry=on` (after `--`) or call `PrismTelemetry.set_enabled(true)` to profile a release build. The bloom shows up as three stages (`chronos_fft_bloom_forward_rows`, `chronos_fft_bloom_columns_convolve`, `chronos_fft_bloom_inverse_rows`), so the Chronos budget can be broken down per dispatch.
 
 ## Quick-Start Setup
 

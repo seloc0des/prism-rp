@@ -15,11 +15,13 @@
 #include <renderdoc_app.h>
 
 #include <godot_cpp/classes/dir_access.hpp>
+#include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/json.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/callable_method_pointer.hpp>
 #include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
@@ -91,6 +93,9 @@ void PrismTelemetry::configure_from_cmdline() {
         const godot::String arg = user_args[i];
         if (arg.begins_with("--prism-tier=")) {
             active_tier = arg.get_slice("=", 1);
+        } else if (arg.begins_with("--prism-telemetry=")) {
+            const godot::String value = arg.get_slice("=", 1).to_lower();
+            enabled = (value == "on" || value == "1" || value == "true");
         }
     }
 }
@@ -146,10 +151,35 @@ bool PrismTelemetry::trigger_renderdoc_capture() {
     return true;
 }
 
-void PrismTelemetry::begin_frame(uint64_t p_frame_index) {
-    current_cpu_frame = p_frame_index;
-    open_pass_depth = 0;
-    collect_timestamps();
+void PrismTelemetry::connect_frame_hook() {
+    godot::RenderingServer *rs = godot::RenderingServer::get_singleton();
+    if (rs == nullptr || frame_hook_connected) {
+        return;
+    }
+    rs->connect("frame_pre_draw", callable_mp(this, &PrismTelemetry::_on_frame_pre_draw));
+    frame_hook_connected = true;
+}
+
+void PrismTelemetry::disconnect_frame_hook() {
+    godot::RenderingServer *rs = godot::RenderingServer::get_singleton();
+    if (rs == nullptr || !frame_hook_connected) {
+        return;
+    }
+    const godot::Callable cb = callable_mp(this, &PrismTelemetry::_on_frame_pre_draw);
+    if (rs->is_connected("frame_pre_draw", cb)) {
+        rs->disconnect("frame_pre_draw", cb);
+    }
+    frame_hook_connected = false;
+}
+
+// Main thread. Queued onto the render thread ahead of this frame's draw.
+void PrismTelemetry::_on_frame_pre_draw() {
+    if (!enabled) {
+        return;
+    }
+    godot::RenderingServer::get_singleton()->call_on_render_thread(
+        callable_mp(this, &PrismTelemetry::_collect_on_render_thread)
+    );
 }
 
 void PrismTelemetry::begin_pass(const godot::String &p_pass_name, const godot::Color &p_debug_color) {
@@ -205,13 +235,25 @@ godot::String PrismTelemetry::_map_to_canonical_stage(const godot::String &p_sub
     return p_subpass_name;
 }
 
-void PrismTelemetry::collect_timestamps() {
-    if (!enabled) {
-        return;
-    }
+void PrismTelemetry::_collect_on_render_thread() {
+    open_pass_depth = 0;
     _ensure_rendering_device();
     if (rd == nullptr) {
         return;
+    }
+
+    {
+        constexpr double kBytesToMegabytes = 1.0 / (1024.0 * 1024.0);
+        std::lock_guard<std::mutex> lock(stats_mutex);
+        current_cpu_frame = godot::Engine::get_singleton()->get_frames_drawn();
+        if (!has_device_info) {
+            device_name = rd->get_device_name();
+            device_vendor = rd->get_device_vendor_name();
+            has_device_info = true;
+        }
+        vram_textures_mb = static_cast<double>(rd->get_memory_usage(godot::RenderingDevice::MEMORY_TEXTURES)) * kBytesToMegabytes;
+        vram_buffers_mb = static_cast<double>(rd->get_memory_usage(godot::RenderingDevice::MEMORY_BUFFERS)) * kBytesToMegabytes;
+        vram_total_mb = static_cast<double>(rd->get_memory_usage(godot::RenderingDevice::MEMORY_TOTAL)) * kBytesToMegabytes;
     }
 
     const uint32_t ts_count = rd->get_captured_timestamps_count();
@@ -220,10 +262,6 @@ void PrismTelemetry::collect_timestamps() {
     }
 
     const uint64_t retired_gpu_frame = rd->get_captured_timestamps_frame();
-    if (retired_gpu_frame == last_collected_gpu_frame) {
-        return;
-    }
-    last_collected_gpu_frame = retired_gpu_frame;
 
     struct OpenStamp {
         std::string name;
@@ -247,9 +285,6 @@ void PrismTelemetry::collect_timestamps() {
         if (label.begins_with(kBeginPrefix)) {
             const godot::String pass_name = label.substr(kBeginPrefixLength);
             const std::string key = pass_name.utf8().get_data();
-            if (!subpass_stats.contains(key)) {
-                insertion_order.push_back(key);
-            }
             stamp_stack.push_back(OpenStamp{ key, gpu_ns, cpu_ns });
         } else if (label.begins_with(kEndPrefix) && !stamp_stack.empty()) {
             const OpenStamp start = std::move(stamp_stack.back());
@@ -291,12 +326,23 @@ void PrismTelemetry::collect_timestamps() {
         }
     };
 
+    std::lock_guard<std::mutex> lock(stats_mutex);
+    if (retired_gpu_frame == last_collected_gpu_frame) {
+        return;
+    }
+    last_collected_gpu_frame = retired_gpu_frame;
+    for (const auto &[key, _ms] : frame_subpass_gpu_ms) {
+        if (!subpass_stats.contains(key)) {
+            insertion_order.push_back(key);
+        }
+    }
     update_sample_map(subpass_stats, frame_subpass_gpu_ms, frame_subpass_cpu_ms);
     update_sample_map(canonical_stage_stats, frame_stage_gpu_ms, frame_stage_cpu_ms);
 }
 
 double PrismTelemetry::get_pass_gpu_ms(const godot::String &p_pass_name) const {
     const std::string key = p_pass_name.utf8().get_data();
+    std::lock_guard<std::mutex> lock(stats_mutex);
     if (const auto it = canonical_stage_stats.find(key); it != canonical_stage_stats.end()) {
         return it->second.latest_gpu_ms;
     }
@@ -307,23 +353,24 @@ double PrismTelemetry::get_pass_gpu_ms(const godot::String &p_pass_name) const {
 }
 
 godot::Dictionary PrismTelemetry::get_telemetry_dictionary() const {
+    std::lock_guard<std::mutex> lock(stats_mutex);
     godot::Dictionary root;
     root["schema_version"] = 1;
     root["tier"] = active_tier;
     root["captured_gpu_frame"] = static_cast<int64_t>(last_collected_gpu_frame == UINT64_MAX ? 0 : last_collected_gpu_frame);
     root["submitted_cpu_frame"] = static_cast<int64_t>(current_cpu_frame);
 
-    if (rd != nullptr) {
+    root["telemetry_enabled"] = enabled;
+    if (has_device_info) {
         godot::Dictionary device_info;
-        device_info["name"] = rd->get_device_name();
-        device_info["vendor"] = rd->get_device_vendor_name();
+        device_info["name"] = device_name;
+        device_info["vendor"] = device_vendor;
         root["device"] = device_info;
 
-        constexpr double kBytesToMegabytes = 1.0 / (1024.0 * 1024.0);
         godot::Dictionary vram_mb;
-        vram_mb["textures"] = static_cast<double>(rd->get_memory_usage(godot::RenderingDevice::MEMORY_TEXTURES)) * kBytesToMegabytes;
-        vram_mb["buffers"] = static_cast<double>(rd->get_memory_usage(godot::RenderingDevice::MEMORY_BUFFERS)) * kBytesToMegabytes;
-        vram_mb["total"] = static_cast<double>(rd->get_memory_usage(godot::RenderingDevice::MEMORY_TOTAL)) * kBytesToMegabytes;
+        vram_mb["textures"] = vram_textures_mb;
+        vram_mb["buffers"] = vram_buffers_mb;
+        vram_mb["total"] = vram_total_mb;
         root["vram_usage_mb"] = vram_mb;
     }
 
