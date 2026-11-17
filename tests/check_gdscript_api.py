@@ -43,7 +43,7 @@ def load_api_names() -> dict[str, set[str]]:
 
 def check_file(path: Path, names: dict[str, set[str]]) -> list[str]:
     src = path.read_text(encoding="utf-8")
-    local_funcs = set(re.findall(r"^func (\w+)", src, re.M))
+    local_funcs = set(re.findall(r"^(?:static )?func (\w+)", src, re.M))
     local_vars = set(re.findall(r"^(?:@export\S*\s+)?var (\w+)", src, re.M))
     problems: list[str] = []
     try:
@@ -70,6 +70,10 @@ def check_file(path: Path, names: dict[str, set[str]]) -> list[str]:
 
 def run() -> list[str]:
     names = load_api_names()
+    # Functions defined in any repo script (e.g. PrismSceneExport.export_scene) are callable elsewhere.
+    for pattern in SCRIPT_GLOBS:
+        for gd in REPO.glob(pattern):
+            names["methods"].update(re.findall(r"^(?:static )?func (\w+)", gd.read_text(encoding="utf-8"), re.M))
     problems: list[str] = []
     for pattern in SCRIPT_GLOBS:
         for gd in sorted(REPO.glob(pattern)):
