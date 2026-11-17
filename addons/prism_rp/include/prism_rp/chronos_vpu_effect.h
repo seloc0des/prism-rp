@@ -2,8 +2,6 @@
 
 #include <array>
 #include <cstdint>
-#include <string>
-#include <unordered_set>
 #include <vector>
 
 #include <godot_cpp/classes/compositor_effect.hpp>
@@ -230,16 +228,6 @@ private:
         uint32_t p_height,
         godot::RenderingDevice::DataFormat p_format,
         uint32_t p_usage_bits
-    ) const;
-
-    [[nodiscard]] godot::String _load_and_preprocess_glsl(
-        const godot::String &p_file_path,
-        std::unordered_set<std::string> &p_visited_paths
-    ) const;
-
-    [[nodiscard]] godot::RID _compile_compute_shader(
-        const godot::String &p_shader_path,
-        const godot::String &p_debug_name
     ) const;
 
     godot::RenderingDevice *rd = nullptr;
