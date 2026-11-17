@@ -1,6 +1,7 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 
-#include "../include/vis_shading_common.glsl"
+#include "vis_shading_common.glsl"
 
 // ============================================================================
 // Prism RP — 8x8 Tile Material Classification Pass

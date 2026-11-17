@@ -1,7 +1,8 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_nonuniform_qualifier : require
 
-#include "../include/vis_shading_common.glsl"
+#include "vis_shading_common.glsl"
 
 // ============================================================================
 // Prism RP — Deferred Visibility Buffer Material Shading Pass

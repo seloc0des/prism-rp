@@ -1,7 +1,8 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 
-#include "../include/vis_shading_common.glsl"
-#include "../include/vsp_common.glsl"
+#include "vis_shading_common.glsl"
+#include "vsp_common.glsl"
 
 // ============================================================================
 // Prism RP — Virtual Shadow Pages Contact-Hardening PCSS Sampler
