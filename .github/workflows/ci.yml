@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main, develop]
 
+# A newer push to the same branch / PR cancels the run in progress: only the latest commit's
+# results matter, and stale runs otherwise queue up and starve each other of runners.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   GODOT_VERSION: "4.4.1"
   PYTHON_VERSION: "3.11"
@@ -63,6 +69,71 @@ jobs:
           path: build/spirv/*.spv
           if-no-files-found: error
 
+  unit-tests:
+    name: Python unit tests (harness, push-constant layouts, GDScript API names)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install glslang and Python dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslang-tools
+          pip install pytest pyyaml flip-evaluator numpy pillow
+
+      - name: Run unit tests
+        run: python -m pytest tests/unit -v
+
+  shader-tests:
+    name: Compute shader tests on lavapipe (numeric checks, validation layers on)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install lavapipe, Vulkan dev headers, validation layers and glslang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-validationlayers vulkan-tools libvulkan-dev nlohmann-json3-dev glslang-tools g++
+          pip install pytest numpy
+          ICD="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)"
+          echo "VK_DRIVER_FILES=$ICD" >> "$GITHUB_ENV"
+
+      - name: Run shader tests
+        run: |
+          vulkaninfo --summary | grep -E "deviceName|apiVersion"
+          python -m pytest tests/shader_harness -v
+
+  reference-renderer:
+    name: Gate 2 reference pipeline (Blender Cycles, synthetic Cornell box)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Blender and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends blender
+          python3 -m pip install pytest numpy OpenEXR
+          blender --version | head -1
+
+      - name: Render and check the reference
+        run: python3 -m pytest tests/reference -v
+
   build-gdextension:
     name: Build C++20 (${{ matrix.os }} / ${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -82,10 +153,7 @@ jobs:
             platform: windows
             arch: x86_64
             target: template_debug
-          - os: macos-latest
-            platform: macos
-            arch: universal
-            target: template_debug
+          # macOS dropped for now (not a target; the CMake/SCons scripts still support it).
 
     steps:
       - name: Checkout repository with submodules
@@ -101,25 +169,38 @@ jobs:
       - name: Install SCons
         run: pip install scons
 
+      - name: Resolve godot-cpp submodule commit
+        id: godot_cpp
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD:thirdparty/godot-cpp)" >> "$GITHUB_OUTPUT"
+
       - name: Cache godot-cpp build artifacts
         uses: actions/cache@v4
         with:
           path: |
             thirdparty/godot-cpp/bin
             thirdparty/godot-cpp/gen
-            .sconsign.dblite
-          key: godot-cpp-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.target }}-${{ hashFiles('thirdparty/godot-cpp/**') }}
+          key: godot-cpp-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.target }}-${{ steps.godot_cpp.outputs.sha }}
 
-      - name: Compile Prism RP via SCons (C++20)
-        run: |
-          scons platform=${{ matrix.platform }} arch=${{ matrix.arch }} target=${{ matrix.target }} -j4
-
-      - name: Verify CMake C++20 configuration (Linux)
+      # CMake builds first: they write to the same bin/ path, and the uploaded artifact should be
+      # the SCons build that follows.
+      - name: Verify CMake C++20 build (Linux, with shader validation)
         if: matrix.platform == 'linux' && matrix.target == 'template_debug'
         run: |
           sudo apt-get update && sudo apt-get install -y ninja-build glslang-tools
           cmake -B build_cmake -G Ninja -DGODOT_TARGET=template_debug -DPRISM_RP_VALIDATE_SHADERS=ON
           cmake --build build_cmake -j4
+
+      - name: Verify CMake C++20 build (Windows)
+        if: matrix.platform != 'linux' && matrix.target == 'template_debug'
+        shell: bash
+        run: |
+          cmake -B build_cmake -DGODOT_TARGET=template_debug -DPRISM_RP_VALIDATE_SHADERS=OFF -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build_cmake --config Debug -j 4
+
+      - name: Compile Prism RP via SCons (C++20)
+        run: |
+          scons platform=${{ matrix.platform }} arch=${{ matrix.arch }} target=${{ matrix.target }} -j4
 
       - name: Upload GDExtension binary artifact
         uses: actions/upload-artifact@v4
@@ -128,9 +209,12 @@ jobs:
           path: addons/prism_rp/bin/*
           if-no-files-found: error
 
-  headless-vulkan-qa:
-    name: Headless Vulkan Validation Layer Smoke Test
+  vulkan-qa:
+    name: Vulkan Validation Layer Smoke Test (lavapipe)
     needs: [validate-shaders, build-gdextension]
+    # Only the Linux debug binary is needed: run even if another platform's build failed or was
+    # cancelled. The artifact download fails if Linux didn't build.
+    if: ${{ !cancelled() && needs.validate-shaders.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -142,32 +226,89 @@ jobs:
           name: prism-rp-linux-template_debug
           path: addons/prism_rp/bin
 
-      - name: Install Mesa Lavapipe (Vulkan 1.3) & Khronos Validation Layers
+      - name: Install Mesa Lavapipe (Vulkan 1.3), Khronos Validation Layers & Xvfb
         run: |
           sudo apt-get update
-          sudo apt-get install -y mesa-vulkan-drivers vulkan-validationlayers vulkan-tools wget unzip
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-validationlayers vulkan-tools xvfb wget unzip
 
-      - name: Download Godot ${{ env.GODOT_VERSION }} Linux headless binary
+      - name: Download Godot ${{ env.GODOT_VERSION }} Linux binary
         run: |
           wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" -O godot.zip
           unzip -q godot.zip
           chmod +x Godot_v${GODOT_VERSION}-stable_linux.x86_64
 
-      - name: Link addon into QA project and boot with Vulkan Validation Layers
-        env:
-          VK_INSTANCE_LAYERS: "VK_LAYER_KHRONOS_validation"
-          VK_DRIVER_FILES: "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
+      - name: Link addon into QA project and import it
         run: |
           mkdir -p project/addons
           ln -s "$(pwd)/addons/prism_rp" "$(pwd)/project/addons/prism_rp"
+          # The import pass writes .godot/extension_list.cfg; without it the GDExtension is never loaded.
+          ./Godot_v${GODOT_VERSION}-stable_linux.x86_64 --headless --path project --import 2>&1 | tee godot_import.log
+          test -f project/.godot/extension_list.cfg
 
-          ./Godot_v${GODOT_VERSION}-stable_linux.x86_64 \
-            --headless \
-            --rendering-driver vulkan \
-            --path project \
-            --quit-after 5 2>&1 | tee godot_vulkan_qa.log
+      - name: Locate the lavapipe ICD and check Vulkan works under Xvfb
+        run: |
+          # Mesa 25+ ships lvp_icd.json; older releases used lvp_icd.<arch>.json.
+          ICD="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)"
+          test -n "$ICD"
+          echo "VK_DRIVER_FILES=$ICD" >> "$GITHUB_ENV"
+          VK_DRIVER_FILES="$ICD" xvfb-run -a vulkaninfo --summary
 
-          if grep -E "VUID-|Validation Error|ERROR: Can't open dynamic library" godot_vulkan_qa.log; then
-            echo "::error::Vulkan Validation or GDExtension loading errors detected!"
+      - name: Boot every benchmark scene on Vulkan with validation layers
+        env:
+          VK_INSTANCE_LAYERS: "VK_LAYER_KHRONOS_validation"
+        run: |
+          set -o pipefail
+          GODOT=./Godot_v${GODOT_VERSION}-stable_linux.x86_64
+          SCENES="01_cornell_box 02_foliage_overdraw 03_thin_geometry_aliasing 04_dynamic_sponza 05_volumetrics_wboit"
+
+          run_scenes() {  # $1 = log file, remaining = rig user args
+            local log="$1"; shift
+            : > "$log"
+            for scene in $SCENES; do
+              echo "=== ${scene}" | tee -a "$log"
+              # Not --headless: headless forces the dummy renderer, so Vulkan would never start.
+              xvfb-run -a -s "-screen 0 1280x720x24" \
+                "$GODOT" --rendering-driver vulkan --path project --fixed-fps 60 \
+                  "res://benchmarks/${scene}.tscn" --quit-after 30 -- "$@" 2>&1 | tee -a "$log"
+            done
+          }
+
+          # Baseline first: same scenes with every Prism RP effect off. Anything it reports comes
+          # from Godot, Mesa or the validation layers themselves, not from this repository.
+          run_scenes godot_baseline.log --prism-chronos=off --prism-lumina=off
+          run_scenes godot_vulkan_qa.log
+
+          # Godot silently falls back to OpenGL when Vulkan fails; that must not pass as a Vulkan run.
+          if grep -q "switching to OpenGL" godot_vulkan_qa.log || ! grep -q "Forward+ - Using Device" godot_vulkan_qa.log; then
+            echo "::error::Godot did not run on Vulkan Forward+."
             exit 1
           fi
+          if ! grep -q "\[Prism RP\] Registered" godot_vulkan_qa.log; then
+            echo "::error::Prism RP GDExtension did not register (extension not loaded)."
+            exit 1
+          fi
+
+          # Always fatal, baseline or not.
+          if grep -E "SCRIPT ERROR|Parse Error|Can't open dynamic library|Failed to retrieve non-existent singleton|\[Prism RP\].*([Ff]ailed|FAILED|not found)" godot_vulkan_qa.log; then
+            echo "::error::Script, GDExtension or Prism RP errors detected!"
+            exit 1
+          fi
+
+          # Validation IDs and engine ERROR lines: fatal only if Prism RP introduced them.
+          extract() { { grep -oE "VUID-[A-Za-z0-9_-]+|SYNC-HAZARD-[A-Z_-]+" "$1"; grep -E "^ERROR: " "$1"; } | LC_ALL=C sort -u; }
+          extract godot_baseline.log > baseline_findings.txt || true
+          extract godot_vulkan_qa.log > prism_findings.txt || true
+          echo "--- present in baseline too (not ours):"; LC_ALL=C comm -12 baseline_findings.txt prism_findings.txt
+          LC_ALL=C comm -13 baseline_findings.txt prism_findings.txt > new_findings.txt
+          if [ -s new_findings.txt ]; then
+            echo "::error::Vulkan validation / engine errors introduced by Prism RP:"
+            cat new_findings.txt
+            exit 1
+          fi
+
+      - name: Upload Vulkan QA log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: godot-vulkan-qa-log
+          path: godot_*.log

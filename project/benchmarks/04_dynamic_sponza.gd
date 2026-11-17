@@ -27,7 +27,7 @@ func _build_benchmark_scene() -> void:
 
 	for row in range(6):
 		var z_pos := -7.5 + float(row) * 3.0
-		for side in [-1.0, 1.0]:
+		for side: float in [-1.0, 1.0]:
 			var x_pos := side * 3.2
 			add_box(self, "LowerCol_%d_%d" % [row, int(side)], Vector3(0.55, 3.4, 0.55), Vector3(x_pos, 1.7, z_pos), stone_limestone)
 			add_box(self, "LowerCap_%d_%d" % [row, int(side)], Vector3(0.75, 0.22, 0.75), Vector3(x_pos, 3.45, z_pos), stone_trim)

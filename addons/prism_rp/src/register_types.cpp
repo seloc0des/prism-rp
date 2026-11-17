@@ -1,5 +1,8 @@
 #include "prism_rp/register_types.h"
+#include "prism_rp/chronos_opaque_capture_effect.h"
 #include "prism_rp/chronos_vpu_effect.h"
+#include "prism_rp/lumina_cascades_effect.h"
+#include "prism_rp/meshlet/prism_meshlet_data.h"
 #include "prism_rp/prism_telemetry.h"
 
 #include <gdextension_interface.h>
@@ -8,6 +11,7 @@
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/core/memory.hpp>
 #include <godot_cpp/godot.hpp>
+#include <godot_cpp/variant/callable_method_pointer.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 namespace prism {
@@ -19,13 +23,22 @@ void initialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
         return;
     }
 
-    GDREGISTER_CLASS(PrismTelemetry);
+    // Abstract: only this file creates the instance. Scripts and the editor (which instantiates
+    // classes to read default property values) can't spawn copies that steal the singleton.
+    GDREGISTER_ABSTRACT_CLASS(PrismTelemetry);
     GDREGISTER_CLASS(ChronosVPUCompositorEffect);
+    GDREGISTER_CLASS(ChronosOpaqueCaptureEffect);
+    GDREGISTER_CLASS(LuminaCascadesCompositorEffect);
+    GDREGISTER_CLASS(PrismMeshletData);
+    GDREGISTER_CLASS(PrismMeshletBuilder);
 
     g_telemetry_singleton = memnew(PrismTelemetry);
+    PrismTelemetry::set_singleton(g_telemetry_singleton);
     godot::Engine::get_singleton()->register_singleton("PrismTelemetry", g_telemetry_singleton);
+    // RenderingServer isn't an Engine singleton yet at SCENE init; connect once the main loop runs.
+    callable_mp(g_telemetry_singleton, &PrismTelemetry::connect_frame_hook).call_deferred();
 
-    godot::UtilityFunctions::print("[Prism RP] Registered PrismTelemetry & ChronosVPUCompositorEffect (Vulkan RenderingDevice ready).");
+    godot::UtilityFunctions::print("[Prism RP] Registered PrismTelemetry, ChronosVPUCompositorEffect, ChronosOpaqueCaptureEffect & LuminaCascadesCompositorEffect.");
 }
 
 void uninitialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
@@ -34,7 +47,9 @@ void uninitialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
     }
 
     if (g_telemetry_singleton != nullptr) {
+        g_telemetry_singleton->disconnect_frame_hook();
         godot::Engine::get_singleton()->unregister_singleton("PrismTelemetry");
+        PrismTelemetry::set_singleton(nullptr);
         memdelete(g_telemetry_singleton);
         g_telemetry_singleton = nullptr;
     }
