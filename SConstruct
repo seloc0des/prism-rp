@@ -13,11 +13,11 @@ if env["platform"] == "windows" and not env.get("use_mingw", False):
 else:
     env.Append(CXXFLAGS=["-std=c++20", "-Wall", "-Wextra", "-Wno-unused-parameter"])
 
-env.Append(CPPPATH=["addons/prism_rp/include", "thirdparty/renderdoc"])
+env.Append(CPPPATH=["addons/prism_rp/include", "thirdparty/renderdoc", "thirdparty/meshoptimizer/src"])
 if env["platform"] == "linux":
     env.Append(LIBS=["dl"])  # dlopen/dlsym for the RenderDoc in-app API
 
-sources = Glob("addons/prism_rp/src/*.cpp")
+sources = Glob("addons/prism_rp/src/*.cpp") + Glob("addons/prism_rp/src/meshlet/*.cpp") + Glob("thirdparty/meshoptimizer/src/*.cpp")
 
 arch_suffix = env["arch"]
 lib_filename = "libprism_rp.{}.{}.{}{}".format(
