@@ -122,7 +122,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends blender
-          python3 -m pip install pytest numpy
+          python3 -m pip install pytest numpy OpenEXR
+          blender --version | head -1
 
       - name: Render and check the reference
         run: python3 -m pytest tests/reference -v
