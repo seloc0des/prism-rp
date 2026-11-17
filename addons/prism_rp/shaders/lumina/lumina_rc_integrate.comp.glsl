@@ -24,18 +24,20 @@ layout(push_constant, std430) uniform PushConstants {
 } pc;
 
 vec3 probe_irradiance(ivec2 probe, vec3 n) {
+    // Normalised cosine-weighted average over the probe's directions: E / pi = sum(L cos) / sum(cos).
+    // Exact for uniform radiance, and it doesn't depend on per-texel solid angles (octahedral texels
+    // aren't equal-area; assuming 4pi/N each made uniform light integrate ~18% dark at 16 directions).
     vec3 sum = vec3(0.0);
+    float weight = 0.0;
     for (int y = 0; y < pc.block; ++y) {
         for (int x = 0; x < pc.block; ++x) {
             vec3 dir = lumina_block_direction(ivec2(x, y), pc.block);
             float cos_theta = max(dot(dir, n), 0.0);
             sum += texelFetch(u_cascade0_tex, probe * pc.block + ivec2(x, y), 0).rgb * cos_theta;
+            weight += cos_theta;
         }
     }
-    // Each octahedral texel covers ~4pi/N sr (approximate: octahedral texels are not equal-area).
-    // E = sum(L * cos * dw); diffuse radiance for albedo 1 is E / pi.
-    float d_omega = 4.0 * 3.14159265359 / float(pc.block * pc.block);
-    return sum * d_omega / 3.14159265359;
+    return weight > 1e-5 ? sum / weight : vec3(0.0);
 }
 
 void main() {

@@ -61,9 +61,10 @@ vec3 evaluate_optical_otf(uint kx, uint ky) {
         core_otf + diffraction * 0.92 + halation_b
     );
 
-    if (kx == 0u && ky == 0u) {
-        otf *= 0.35;
-    }
+    // No DC (zero-frequency) suppression: scaling only the DC term subtracts a constant from every
+    // pixel of the grid, which the inverse pass's max(0) then clips away almost everywhere. The bloom's
+    // energy is OTF(0) = 1 + diffraction + halation per channel, times bloom_intensity, plus roughly
+    // 15-20% from the diffraction spikes' negative spatial lobes, which that max(0) also clips.
 
     return otf;
 }
