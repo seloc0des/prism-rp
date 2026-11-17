@@ -28,23 +28,30 @@ else()
     set(PRISM_ARCH "x86_64")
 endif()
 
+# godot-cpp 4.4 picks debug/release features from GODOTCPP_TARGET; keep it in sync with
+# GODOT_TARGET so the binary's features match its file name.
+set(GODOTCPP_TARGET "${GODOT_TARGET}" CACHE STRING "" FORCE)
 add_subdirectory(thirdparty/godot-cpp SYSTEM)
 
 file(GLOB_RECURSE PRISM_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/addons/prism_rp/src/*.cpp"
 )
+file(GLOB MESHOPTIMIZER_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/meshoptimizer/src/*.cpp")
+list(APPEND PRISM_SOURCES ${MESHOPTIMIZER_SOURCES})
 
 add_library(${PROJECT_NAME} SHARED ${PRISM_SOURCES})
 
 target_include_directories(${PROJECT_NAME}
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/addons/prism_rp/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/renderdoc"
         "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/meshoptimizer/src"
 )
 
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
         godot::cpp
+        ${CMAKE_DL_LIBS}
 )
 
 if(MSVC)

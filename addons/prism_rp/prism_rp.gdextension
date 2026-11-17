@@ -1,12 +1,14 @@
 [configuration]
 entry_symbol = "prism_rp_library_init"
-compatibility_minimum = "4.3"
-reloadable = true
+compatibility_minimum = "4.4"
+reloadable = false
 
 [libraries]
 linux.debug.x86_64 = "res://addons/prism_rp/bin/libprism_rp.linux.template_debug.x86_64.so"
 linux.release.x86_64 = "res://addons/prism_rp/bin/libprism_rp.linux.template_release.x86_64.so"
+linux.debug.arm64 = "res://addons/prism_rp/bin/libprism_rp.linux.template_debug.arm64.so"
+linux.release.arm64 = "res://addons/prism_rp/bin/libprism_rp.linux.template_release.arm64.so"
 windows.debug.x86_64 = "res://addons/prism_rp/bin/libprism_rp.windows.template_debug.x86_64.dll"
 windows.release.x86_64 = "res://addons/prism_rp/bin/libprism_rp.windows.template_release.x86_64.dll"
-macos.debug = "res://addons/prism_rp/bin/libprism_rp.macos.template_debug.universal.dylib"
-macos.release = "res://addons/prism_rp/bin/libprism_rp.macos.template_release.universal.dylib"
+windows.debug.arm64 = "res://addons/prism_rp/bin/libprism_rp.windows.template_debug.arm64.dll"
+windows.release.arm64 = "res://addons/prism_rp/bin/libprism_rp.windows.template_release.arm64.dll"

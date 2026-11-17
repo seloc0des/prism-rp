@@ -10,12 +10,23 @@ layout(set = 0, binding = 1) uniform sampler2D u_prev_color_tex;
 layout(set = 0, binding = 2) uniform sampler2D u_depth_tex;
 layout(set = 0, binding = 3) uniform sampler2D u_dilated_velocity_tex;
 layout(r8, set = 0, binding = 4) uniform writeonly image2D u_reactive_mask_out;
+// Opaque-only color from ChronosOpaqueCaptureEffect (PRE_TRANSPARENT). Only read when flag bit 0 is set.
+layout(set = 0, binding = 5) uniform sampler2D u_opaque_color_tex;
 
 layout(push_constant, std430) uniform PushConstants {
     ivec2 resolution;
     float reactive_sensitivity;
     float luma_spark_threshold;
+    vec2 jitter_delta_uv;   // (current - previous) camera jitter, UV units
+    vec2 depth_params;      // see prism_linearize_depth
+    float transparency_scale;
+    uint flags;             // bit 0: opaque capture available this frame
+    float _pad0;
+    float _pad1;
 } pc;
+
+// Tonemapped so the comparison weighs a faint particle over a dark wall like one over the sky.
+vec3 reactive_tonemap(vec3 c) { return c / (1.0 + max(c.r, max(c.g, c.b))); }
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -36,8 +47,10 @@ void main() {
         1.0
     );
 
+    // Dilated velocity is jitter-free; both color frames here are raw (jittered),
+    // so remove the jitter delta again to reproject raw-to-raw. prev = uv + velocity.
     vec2 velocity = texelFetch(u_dilated_velocity_tex, pixel, 0).rg;
-    vec2 prev_uv = uv - velocity;
+    vec2 prev_uv = uv + velocity - pc.jitter_delta_uv;
     float shock_reactivity = 0.0;
 
     if (all(greaterThanEqual(prev_uv, vec2(0.0))) && all(lessThanEqual(prev_uv, vec2(1.0)))) {
@@ -54,19 +67,31 @@ void main() {
         shock_reactivity = 1.0;
     }
 
-    float center_depth = texelFetch(u_depth_tex, pixel, 0).r;
+    // Relative linear-depth discontinuity, so edges weigh the same near and far from the camera.
+    float center_depth = prism_linearize_depth(texelFetch(u_depth_tex, pixel, 0).r, pc.depth_params);
     float max_depth_diff = 0.0;
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
             if (x == 0 && y == 0) continue;
             ivec2 sc = clamp(pixel + ivec2(x, y), ivec2(0), pc.resolution - ivec2(1));
-            float nd = texelFetch(u_depth_tex, sc, 0).r;
-            max_depth_diff = max(max_depth_diff, abs(nd - center_depth));
+            float nd = prism_linearize_depth(texelFetch(u_depth_tex, sc, 0).r, pc.depth_params);
+            max_depth_diff = max(max_depth_diff, abs(nd - center_depth) / max(min(nd, center_depth), 1e-4));
         }
     }
-    float edge_reactivity = clamp(max_depth_diff * 45.0, 0.0, 0.65);
+    float edge_reactivity = clamp((max_depth_diff - 0.05) * 3.0, 0.0, 0.65);
 
-    float combined = max(max(spark_reactivity, shock_reactivity), edge_reactivity);
+    // Transparent surfaces and particles write neither depth nor motion vectors, so the history
+    // reprojects the background under them and ghosts. Flag every pixel the transparent pass
+    // changed (opaque-only vs. final), like FSR 2's generated reactive mask.
+    float transparency_reactivity = 0.0;
+    if ((pc.flags & 1u) != 0u) {
+        vec3 opaque_rgb = max(texelFetch(u_opaque_color_tex, pixel, 0).rgb, vec3(0.0));
+        vec3 diff = abs(reactive_tonemap(max(curr_rgb, vec3(0.0))) - reactive_tonemap(opaque_rgb));
+        float delta = max(diff.r, max(diff.g, diff.b));
+        transparency_reactivity = clamp(smoothstep(0.01, 0.20, delta) * pc.transparency_scale, 0.0, 0.9);
+    }
+
+    float combined = max(max(spark_reactivity, shock_reactivity), max(edge_reactivity, transparency_reactivity));
     float final_reactive = clamp(combined * pc.reactive_sensitivity, 0.0, 1.0);
 
     imageStore(u_reactive_mask_out, pixel, vec4(final_reactive, 0.0, 0.0, 0.0));

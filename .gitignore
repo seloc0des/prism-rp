@@ -1,6 +1,5 @@
-# Godot 4
+# Godot 4 (.import files are committed, per Godot's recommendation)
 .godot/
-*.import
 export.cfg
 export_presets.cfg
 
@@ -15,6 +14,7 @@ export_presets.cfg
 *.pdb
 *.ilk
 build/
+.cache/
 build_cmake/
 compile_commands.json
 
@@ -28,6 +28,7 @@ addons/prism_rp/bin/*.framework
 *.rdc
 *.spv
 godot_vulkan_qa.log
+tests/artifacts/
 __pycache__/
 *.py[cod]
 

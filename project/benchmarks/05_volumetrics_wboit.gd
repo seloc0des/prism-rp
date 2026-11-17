@@ -32,7 +32,7 @@ func _build_benchmark_scene() -> void:
 	shaft_sun.rotation_degrees = Vector3(-58.0, 24.0, 0.0)
 	shaft_sun.light_color = Color(1.0, 0.93, 0.80)
 	shaft_sun.light_energy = 5.2
-	shaft_sun.volumetric_fog_energy = 2.4
+	shaft_sun.light_volumetric_fog_energy = 2.4
 	shaft_sun.shadow_enabled = true
 	add_child(shaft_sun)
 
@@ -65,9 +65,14 @@ func _build_benchmark_scene() -> void:
 	var spark_mesh := QuadMesh.new()
 	spark_mesh.size = Vector2(0.06, 0.06)
 	var spark_mat := StandardMaterial3D.new()
-	spark_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	spark_mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	spark_mat.albedo_color = Color(1.0, 0.65, 0.22) * 14.0
+	# BILLBOARD_PARTICLES keeps the per-particle scale from the process material.
+	spark_mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	# HDR sparks via emission (unshaded materials ignore emission; scaling the albedo
+	# Color by 14 also scaled its alpha).
+	spark_mat.albedo_color = Color.BLACK
+	spark_mat.emission_enabled = true
+	spark_mat.emission = Color(1.0, 0.65, 0.22)
+	spark_mat.emission_energy_multiplier = 14.0
 
 	spark_emitter = GPUParticles3D.new()
 	spark_emitter.name = "HighVelocitySparkFountain"

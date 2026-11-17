@@ -5,20 +5,21 @@ import sys
 from pathlib import Path
 
 env = SConscript("thirdparty/godot-cpp/SConstruct")
+# Clone so our C++20 and warning flags do not leak into the godot-cpp library build.
+env = env.Clone()
 
 if env["platform"] == "windows" and not env.get("use_mingw", False):
     env.Append(CXXFLAGS=["/std:c++20", "/Zc:__cplusplus", "/W4"])
 else:
     env.Append(CXXFLAGS=["-std=c++20", "-Wall", "-Wextra", "-Wno-unused-parameter"])
 
-env.Append(CPPPATH=[
-    "addons/prism_rp/include",
-    "thirdparty/meshoptimizer/src",
-])
+env.Append(CPPPATH=["addons/prism_rp/include", "thirdparty/renderdoc", "thirdparty/meshoptimizer/src"])
+if env["platform"] == "linux":
+    env.Append(LIBS=["dl"])  # dlopen/dlsym for the RenderDoc in-app API
 
-sources = Glob("addons/prism_rp/src/*.cpp")
+sources = Glob("addons/prism_rp/src/*.cpp") + Glob("addons/prism_rp/src/meshlet/*.cpp") + Glob("thirdparty/meshoptimizer/src/*.cpp")
 
-arch_suffix = "universal" if env["platform"] == "macos" else env["arch"]
+arch_suffix = env["arch"]
 lib_filename = "libprism_rp.{}.{}.{}{}".format(
     env["platform"],
     env["target"],

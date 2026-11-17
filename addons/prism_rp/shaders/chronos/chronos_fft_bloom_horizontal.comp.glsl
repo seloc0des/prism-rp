@@ -28,14 +28,24 @@ vec2 cmul(vec2 a, vec2 b) {
     return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
 
-vec3 prefilter_acescg_highlights(vec2 uv) {
-    vec2 texel = 1.0 / vec2(textureSize(u_hdr_color_tex, 0));
-    vec3 c0 = prism_linear_srgb_to_acescg(max(textureLod(u_hdr_color_tex, uv + vec2(-0.5, -0.5) * texel, 0.0).rgb, vec3(0.0)));
-    vec3 c1 = prism_linear_srgb_to_acescg(max(textureLod(u_hdr_color_tex, uv + vec2( 0.5, -0.5) * texel, 0.0).rgb, vec3(0.0)));
-    vec3 c2 = prism_linear_srgb_to_acescg(max(textureLod(u_hdr_color_tex, uv + vec2(-0.5,  0.5) * texel, 0.0).rgb, vec3(0.0)));
-    vec3 c3 = prism_linear_srgb_to_acescg(max(textureLod(u_hdr_color_tex, uv + vec2( 0.5,  0.5) * texel, 0.0).rgb, vec3(0.0)));
+// Each bloom texel covers a (source_size / 224)-pixel footprint. A 4x4 grid of bilinear taps
+// spread across that footprint integrates it (each tap averages 2x2 texels), which keeps small
+// highlights from popping in and out as they move between bloom texels.
+vec3 prefilter_acescg_highlights(vec2 uv, float active_span) {
+    vec2 src_size = vec2(textureSize(u_hdr_color_tex, 0));
+    vec2 footprint_uv = 1.0 / vec2(active_span);
+    vec2 min_step = 1.0 / src_size;
 
-    vec3 color = (c0 + c1 + c2 + c3) * 0.25 * pc.exposure_scale;
+    vec3 color = vec3(0.0);
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            vec2 offset = (vec2(x, y) + 0.5) / 4.0 - 0.5;
+            vec2 tap_uv = uv + offset * max(footprint_uv, 2.0 * min_step);
+            vec3 tap = textureLod(u_hdr_color_tex, tap_uv, 0.0).rgb;
+            color += prism_linear_srgb_to_acescg(max(tap, vec3(0.0)));
+        }
+    }
+    color *= (1.0 / 16.0) * pc.exposure_scale;
     color = min(color, vec3(64.0));
 
     float luma = prism_acescg_luminance(color);
@@ -64,10 +74,10 @@ void main() {
     vec2 coord1 = vec2(float(x1), float(row)) - vec2(pad_margin);
 
     if (all(greaterThanEqual(coord0, vec2(0.0))) && all(lessThan(coord0, vec2(active_span)))) {
-        rgb0 = prefilter_acescg_highlights((coord0 + 0.5) / active_span);
+        rgb0 = prefilter_acescg_highlights((coord0 + 0.5) / active_span, active_span);
     }
     if (all(greaterThanEqual(coord1, vec2(0.0))) && all(lessThan(coord1, vec2(active_span)))) {
-        rgb1 = prefilter_acescg_highlights((coord1 + 0.5) / active_span);
+        rgb1 = prefilter_acescg_highlights((coord1 + 0.5) / active_span, active_span);
     }
 
     s_r_a[x0] = vec2(rgb0.r, 0.0);
