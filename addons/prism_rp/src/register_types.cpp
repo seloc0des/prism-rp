@@ -19,10 +19,13 @@ void initialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
         return;
     }
 
-    GDREGISTER_CLASS(PrismTelemetry);
+    // Abstract: only this file creates the instance. Scripts and the editor (which instantiates
+    // classes to read default property values) can't spawn copies that steal the singleton.
+    GDREGISTER_ABSTRACT_CLASS(PrismTelemetry);
     GDREGISTER_CLASS(ChronosVPUCompositorEffect);
 
     g_telemetry_singleton = memnew(PrismTelemetry);
+    PrismTelemetry::set_singleton(g_telemetry_singleton);
     godot::Engine::get_singleton()->register_singleton("PrismTelemetry", g_telemetry_singleton);
 
     godot::UtilityFunctions::print("[Prism RP] Registered PrismTelemetry & ChronosVPUCompositorEffect (Vulkan RenderingDevice ready).");
@@ -35,6 +38,7 @@ void uninitialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
 
     if (g_telemetry_singleton != nullptr) {
         godot::Engine::get_singleton()->unregister_singleton("PrismTelemetry");
+        PrismTelemetry::set_singleton(nullptr);
         memdelete(g_telemetry_singleton);
         g_telemetry_singleton = nullptr;
     }

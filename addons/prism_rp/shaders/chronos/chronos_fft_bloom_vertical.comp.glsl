@@ -12,6 +12,10 @@ layout(push_constant, std430) uniform PushConstants {
     float diffraction_strength;
     float halation_strength;
     float aperture_blades;
+    float aspect_ratio;     // source width / height: the frame is squeezed into a square grid
+    float _pad0;
+    float _pad1;
+    float _pad2;
 } pc;
 
 shared vec2 s_r_a[256];
@@ -30,15 +34,20 @@ vec3 evaluate_optical_otf(uint kx, uint ky) {
     float fx = (kx >= 128u) ? float(int(kx) - 256) : float(kx);
     float fy = (ky >= 128u) ? float(int(ky) - 256) : float(ky);
 
-    vec2 freq = vec2(fx, fy) / 128.0;
+    // The full frame maps to a square grid, so grid x is stretched by the aspect ratio relative
+    // to display pixels. Scaling fx by 1/aspect keeps the PSF round on screen.
+    vec2 freq = vec2(fx / max(pc.aspect_ratio, 1e-3), fy) / 128.0;
     float r = length(freq);
-    float theta = atan(fy, fx);
+    float theta = atan(freq.y, freq.x);
 
     float r_scaled = r * max(pc.bloom_radius, 0.25);
     float core_otf = 1.0 / pow(1.0 + 18.0 * r_scaled * r_scaled, 1.65);
 
-    float blades = max(pc.aperture_blades, 4.0);
-    float spike_angular = pow(abs(cos(blades * 0.5 * theta)), 24.0);
+    // An N-blade aperture gives N spikes for even N and 2N for odd N. Using the even spike count
+    // keeps the OTF symmetric (OTF(-f) == OTF(f)), so the inverse FFT stays real-valued.
+    float blades = max(round(pc.aperture_blades), 4.0);
+    float spike_count = (mod(blades, 2.0) == 0.0) ? blades : 2.0 * blades;
+    float spike_angular = pow(abs(cos(spike_count * 0.5 * theta)), 24.0);
     float spike_radial = exp(-r_scaled * 3.2) / (1.0 + 6.0 * r_scaled);
     float diffraction = pc.diffraction_strength * spike_angular * spike_radial;
 

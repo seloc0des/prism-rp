@@ -2,8 +2,8 @@
 
 Building **Prism RP** for Godot 4.x uses a dual-track engineering strategy:
 
-* **Track A — Drop-In `CompositorEffect` Plugin (Weeks 1–10):** Ships **Chronos VPU** (SVGF denoising, reactive-mask temporal upscaling, ACEScg optics) and **Lumina-Cascades** (screen-space and SDF radiance cascades) as a pure C++20 GDExtension usable immediately in existing Godot Forward+ projects.
-* **Track B — Native `RendererSceneRenderRD` Backend (Weeks 11–24):** Implements the full **64-bit Visibility Buffer**, tile-sorted compute material shading, and **Virtual Shadow Pages** as a selectable rendering driver (`prism_rp`).
+* **Track A: Drop-In `CompositorEffect` Plugin (Weeks 1-11):** Ships **Chronos VPU** (SVGF denoising, reactive-mask temporal upscaling, ACEScg optics) and **Lumina-Cascades** (screen-space and SDF radiance cascades) as a pure C++20 GDExtension usable immediately in existing Godot Forward+ projects.
+* **Track B: Native `RendererSceneRenderRD` Backend (Weeks 12-24):** Implements the full **64-bit Visibility Buffer**, tile-sorted compute material shading, and **Virtual Shadow Pages** as a selectable rendering driver (`prism_rp`).
 
 ## Hardware Tier Frame Budgets
 * **Tier 1 (Steam Deck / RDNA2):** 720p internal -> 1080p output, **16.6 ms** total frame budget (60 FPS, **13.50 ms** Prism RP target).
@@ -17,11 +17,11 @@ Building **Prism RP** for Godot 4.x uses a dual-track engineering strategy:
 ### Phase 0: Architecture Spike, Repo Scaffold & Automated Visual QA Harness (Weeks 1–2)
 * Stand up C++20 GDExtension build (`SCons` and `CMake`) with `glslangValidator` SPIR-V verification.
 * Build 5 canonical test scenes (`01_cornell_box`, `02_foliage_overdraw`, `03_thin_geometry_aliasing`, `04_dynamic_sponza`, `05_volumetrics_wboit`).
-* **Gate 0 DoD:** CI builds cleanly on Windows, Linux, and macOS; headless Vulkan boot passes with zero `VK_LAYER_KHRONOS_validation` errors.
+* **Gate 0 DoD:** CI builds cleanly on Windows, Linux, and macOS; a lavapipe Vulkan boot of all 5 scenes (under Xvfb, not `--headless`, which uses the dummy renderer) passes with zero `VK_LAYER_KHRONOS_validation` errors.
 
 ### Phase 1: Chronos VPU Core & ACEScg Color Pipeline (Weeks 3–6 — Track A)
 * Implement `ChronosVPUCompositorEffect` on `RenderSceneBuffersRD`.
-* Deliver scene-referred **ACEScg (AP1)** color management, 3x3 closest-depth dilated velocity vectors, `R8_UNORM` Reactive Mask generation, native Compute TAAU + FSR 3.1 / XeSS / DLSS backend abstraction, 256x256 Radix-2 Stockham FFT diffraction bloom with red halation, and ACES 2.0 ODTs (sRGB, Display P3, HDR10).
+* Deliver scene-referred **ACEScg (AP1)** color management, 3x3 closest-depth dilated velocity vectors, `R8_UNORM` Reactive Mask generation, native compute TAA (Godot 4.4 compositor effects can't output an upscaled frame) + FSR 3.1 / XeSS / DLSS backend abstraction, 256x256 Radix-2 Stockham FFT diffraction bloom with red halation, and an SDR filmic look (ACES 1.3 gamut compression). Display P3 / HDR10 ODTs wait on HDR swapchain support in Godot.
 * **Gate 1 DoD:** NVIDIA FLIP perceptual error **< 0.08** at 50% render scale vs. 4K supersampled reference; zero particle ghosting; Chronos VPU pass time **< 1.65 ms** on Tier 2 at 1440p.
 
 ### Phase 2: Lumina-Cascades GI & SVGF Denoiser (Weeks 7–11 — Track A)

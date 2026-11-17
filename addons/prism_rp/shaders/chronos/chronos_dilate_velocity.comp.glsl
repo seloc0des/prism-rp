@@ -11,18 +11,22 @@ layout(rg16f, set = 0, binding = 2) uniform writeonly image2D u_dilated_velocity
 
 layout(push_constant, std430) uniform PushConstants {
     ivec2 resolution;
-    float near_plane;
-    float _pad;
+    // Godot only strips its own TAA jitter from motion vectors. Jitter applied through the
+    // camera frustum shows up in them, so we add back (current - previous) jitter in UV units.
+    vec2 jitter_delta_uv;
 } pc;
 
+// Godot convention (scene_forward_clustered.glsl): velocity = prev_uv - curr_uv,
+// so the previous-frame position of a pixel is uv + velocity.
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     if (pixel.x >= pc.resolution.x || pixel.y >= pc.resolution.y) {
         return;
     }
 
-    float closest_depth = 0.0;
-    ivec2 closest_offset = ivec2(0);
+    // Reverse-Z: the closest surface has the largest depth value.
+    float closest_depth = -1.0;
+    ivec2 closest_coord = pixel;
 
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
@@ -30,11 +34,11 @@ void main() {
             float d = texelFetch(u_depth_tex, sample_coord, 0).r;
             if (d > closest_depth) {
                 closest_depth = d;
-                closest_offset = ivec2(x, y);
+                closest_coord = sample_coord;
             }
         }
     }
 
-    vec2 dilated_velocity = texelFetch(u_velocity_tex, pixel + closest_offset, 0).rg;
+    vec2 dilated_velocity = texelFetch(u_velocity_tex, closest_coord, 0).rg + pc.jitter_delta_uv;
     imageStore(u_dilated_velocity_out, pixel, vec4(dilated_velocity, 0.0, 0.0));
 }

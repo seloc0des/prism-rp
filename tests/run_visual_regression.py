@@ -2,10 +2,14 @@
 """
 Prism RP Automated Visual Regression & Frame-Budget Gatekeeper
 
-Captures deterministic frames across the 5 canonical Prism RP benchmark scenes via
-RenderDoc CLI (`renderdoccmd`), extracts rendered backbuffers and per-pass GPU
-durations, evaluates perceptual image error with NVIDIA FLIP (`flip-evaluator`),
-and enforces Tier 1 / Tier 2 / Tier 3 frame-time budgets.
+Runs the 5 canonical Prism RP benchmark scenes deterministically (--fixed-fps 60), has the
+benchmark rig save the displayed frame and PrismTelemetry GPU timings at the capture frame,
+evaluates perceptual image error with NVIDIA FLIP (`flip-evaluator`), and enforces
+Tier 1 / Tier 2 / Tier 3 frame-time budgets.
+
+With --renderdoc, Godot runs under `renderdoccmd capture`; the rig triggers a capture through
+RenderDoc's in-app API and, if RenderDoc's Python module is importable, per-pass GPU durations
+are read from the capture and take precedence over the in-engine timestamps.
 """
 
 from __future__ import annotations
@@ -159,11 +163,26 @@ def try_import_renderdoc_module() -> Any | None:
         return None
 
 
-def extract_from_rdc_python_api(
-    rd_mod: Any,
-    rdc_path: Path,
-    output_png: Path,
-) -> dict[str, float]:
+def map_to_canonical_stage(subpass_name: str) -> str:
+    """Mirror of PrismTelemetry::_map_to_canonical_stage (prism_telemetry.cpp)."""
+    name = subpass_name.lower()
+    if name == "chronos_aces2_odt" or name.startswith("aces2_"):
+        return "aces2_optics"
+    prefixes = [
+        (("chronos_",), "chronos_vpu"),
+        (("lumina_", "svgf_"), "lumina_cascades_gi"),
+        (("meshlet_", "visbuf_"), "gpu_meshlet_cull"),
+        (("tile_shade_", "material_"), "tile_material_shade"),
+        (("vcsp_", "shadow_"), "virtual_shadow_pages"),
+        (("froxel_", "wboit_"), "froxel_volumetrics"),
+    ]
+    for starts, stage in prefixes:
+        if name.startswith(starts):
+            return stage
+    return ""
+
+
+def extract_timings_from_rdc(rd_mod: Any, rdc_path: Path) -> dict[str, float]:
     cap = rd_mod.OpenCaptureFile()
     status = cap.OpenFile(str(rdc_path), "", None)
     if status != rd_mod.ResultCode.Succeeded:
@@ -190,12 +209,9 @@ def extract_from_rdc_python_api(
 
             def walk_actions(actions: list[Any], active_region: str | None = None) -> None:
                 for action in actions:
-                    name = action.customName.lower() if action.customName else ""
-                    region = active_region
-                    for canonical_pass in HARDWARE_TIERS["tier2"].pass_budgets_ms:
-                        if canonical_pass in name or canonical_pass.replace("_", " ") in name:
-                            region = canonical_pass
-                            break
+                    # Debug labels come from PrismTelemetry::begin_pass (e.g. "chronos_taau").
+                    name = action.customName if action.customName else ""
+                    region = map_to_canonical_stage(name) or active_region
 
                     if region and action.eventId in eid_to_ms:
                         pass_timings_ms[region] = pass_timings_ms.get(region, 0.0) + eid_to_ms[action.eventId]
@@ -205,22 +221,6 @@ def extract_from_rdc_python_api(
 
             walk_actions(controller.GetRootActions())
 
-        textures = controller.GetTextures()
-        swapchain_tex = next(
-            (t for t in textures if (t.creationFlags & rd_mod.TextureCategory.SwapBuffer)),
-            None,
-        )
-        if swapchain_tex is None and textures:
-            swapchain_tex = textures[-1]
-
-        if swapchain_tex is not None:
-            tex_save = rd_mod.TextureSave()
-            tex_save.resourceId = swapchain_tex.resourceId
-            tex_save.destType = rd_mod.FileType.PNG
-            tex_save.mip = 0
-            tex_save.slice.sliceIndex = 0
-            tex_save.alpha = rd_mod.AlphaMapping.Preserve
-            controller.SaveTexture(tex_save, str(output_png))
     finally:
         controller.Shutdown()
         cap.Shutdown()
@@ -228,9 +228,9 @@ def extract_from_rdc_python_api(
     return pass_timings_ms
 
 
-def capture_scene_with_renderdoc(
-    renderdoccmd: str,
+def capture_scene(
     godot_bin: str,
+    renderdoccmd: str | None,
     project_dir: Path,
     scene_name: str,
     scene_res_path: str,
@@ -241,18 +241,19 @@ def capture_scene_with_renderdoc(
     scene_art_dir = artifacts_dir / tier.name / scene_name
     scene_art_dir.mkdir(parents=True, exist_ok=True)
 
-    capture_template = scene_art_dir / f"{scene_name}"
     telemetry_json = scene_art_dir / "telemetry.json"
     captured_png = scene_art_dir / "captured.png"
-
-    for stale in scene_art_dir.glob("*.rdc"):
-        stale.unlink()
+    for stale in [telemetry_json, captured_png, *scene_art_dir.glob("*.rdc")]:
+        stale.unlink(missing_ok=True)
 
     render_scale = round(tier.internal_width / float(tier.target_width), 4)
-    godot_args = [
+    cmd: list[str] = [
         godot_bin,
         "--rendering-driver", "vulkan",
         "--resolution", f"{tier.target_width}x{tier.target_height}",
+        # Deterministic timing: fixed delta for physics/particles, no vsync pacing.
+        "--fixed-fps", "60",
+        "--disable-vsync",
         "--path", str(project_dir),
         scene_res_path,
         "--",
@@ -260,16 +261,18 @@ def capture_scene_with_renderdoc(
         f"--prism-render-scale={render_scale}",
         f"--qa-capture-frame={capture_frame}",
         f"--qa-telemetry-out={telemetry_json}",
+        f"--qa-screenshot-out={captured_png}",
         f"--quit-after={capture_frame + 3}",
     ]
 
-    cmd: list[str] = [
-        renderdoccmd,
-        "capture",
-        "--wait-for-exit",
-        "--capture-file", str(capture_template),
-        *godot_args,
-    ]
+    if renderdoccmd:
+        cmd = [
+            renderdoccmd,
+            "capture",
+            "--wait-for-exit",
+            "--capture-file", str(scene_art_dir / scene_name),
+            *cmd,
+        ]
 
     if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
         xvfb = shutil.which("xvfb-run")
@@ -287,41 +290,30 @@ def capture_scene_with_renderdoc(
 
     proc = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
     combined_log = f"{proc.stdout}\n{proc.stderr}"
-    (scene_art_dir / "godot_renderdoc.log").write_text(combined_log, encoding="utf-8")
+    log_path = scene_art_dir / "godot.log"
+    log_path.write_text(combined_log, encoding="utf-8")
 
     validation_errors = [
         line.strip()
         for line in combined_log.splitlines()
-        if re.search(r"(VUID-|Validation Error|SYNC-HAZARD|ERROR: Can't open dynamic library)", line)
+        if re.search(r"(VUID-|Validation Error|SYNC-HAZARD|Can't open dynamic library|SCRIPT ERROR|Parse Error)", line)
     ]
 
-    rdc_files = sorted(scene_art_dir.glob(f"{scene_name}*.rdc"))
-    if not rdc_files:
-        raise RuntimeError(
-            f"RenderDoc produced no .rdc capture for {scene_name} (exit={proc.returncode}). "
-            f"Inspect {scene_art_dir / 'godot_renderdoc.log'}."
-        )
-
-    target_rdc = rdc_files[-1]
-    pass_timings_ms: dict[str, float] = {}
-
-    rd_mod = try_import_renderdoc_module()
-    if rd_mod is not None:
-        pass_timings_ms = extract_from_rdc_python_api(rd_mod, target_rdc, captured_png)
-
     if not captured_png.exists():
-        subprocess.run(
-            [
-                renderdoccmd,
-                "thumb",
-                "--out", str(captured_png),
-                "--max-size", "0",
-                str(target_rdc),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
+        raise RuntimeError(
+            f"No screenshot was written for {scene_name} (exit={proc.returncode}). Inspect {log_path}."
         )
+
+    pass_timings_ms: dict[str, float] = {}
+    if renderdoccmd:
+        rdc_files = sorted(scene_art_dir.glob(f"{scene_name}*.rdc"))
+        rd_mod = try_import_renderdoc_module()
+        if not rdc_files:
+            print(f"  !! RenderDoc produced no capture for {scene_name}; using in-engine timestamps.", file=sys.stderr)
+        elif rd_mod is None:
+            print("  !! RenderDoc Python module not importable (set RENDERDOC_PYTHON_PATH); using in-engine timestamps.", file=sys.stderr)
+        else:
+            pass_timings_ms = extract_timings_from_rdc(rd_mod, rdc_files[-1])
 
     if telemetry_json.exists():
         telemetry_data = json.loads(telemetry_json.read_text(encoding="utf-8"))
@@ -332,12 +324,12 @@ def capture_scene_with_renderdoc(
 
 
 def save_flip_magma_heatmap(error_map: np.ndarray, out_path: Path) -> None:
-    e = np.clip(error_map, 0.0, 1.0)
+    e = np.clip(np.squeeze(error_map), 0.0, 1.0)
     r = np.clip(1.8 * e - 0.15, 0.0, 1.0)
     g = np.clip(2.2 * (e - 0.45), 0.0, 1.0)
     b = np.clip(np.sin(e * np.pi) * 0.85 + np.maximum(0.0, (e - 0.75) * 3.0), 0.0, 1.0)
     rgb_u8 = (np.stack([r, g, b], axis=-1) * 255.0).astype(np.uint8)
-    Image.fromarray(rgb_u8, mode="RGB").save(out_path)
+    Image.fromarray(rgb_u8).save(out_path)
 
 
 def evaluate_flip_diff(
@@ -346,20 +338,22 @@ def evaluate_flip_diff(
     diff_heatmap_png: Path,
 ) -> tuple[float, float]:
     with Image.open(golden_png) as g_img, Image.open(captured_png) as c_img:
-        g_rgb = g_img.convert("RGB")
-        c_rgb = c_img.convert("RGB")
-        if g_rgb.size != c_rgb.size:
-            c_rgb = c_rgb.resize(g_rgb.size, Image.Resampling.BICUBIC)
-            c_rgb.save(captured_png)
+        if g_img.size != c_img.size:
+            raise ValueError(
+                f"Resolution mismatch: golden {g_img.size} vs captured {c_img.size}. "
+                "Re-run with --update-golden if the tier resolution changed."
+            )
 
     dynamic_range = "HDR" if golden_png.suffix.lower() == ".exr" else "LDR"
+    # applyMagma=False returns the scalar per-pixel error (HxW); the default is an RGB heatmap.
     flip_error_map, mean_flip_error, _params = flip.evaluate(
         str(golden_png),
         str(captured_png),
         dynamic_range,
+        applyMagma=False,
     )
 
-    error_arr = np.asarray(flip_error_map, dtype=np.float32)
+    error_arr = np.squeeze(np.asarray(flip_error_map, dtype=np.float32))
     max_flip_error = float(np.max(error_arr)) if error_arr.size > 0 else 0.0
     save_flip_magma_heatmap(error_arr, diff_heatmap_png)
 
@@ -404,11 +398,13 @@ def run_regression_suite(args: argparse.Namespace) -> int:
         ["godot", "godot4", "Godot_v4.4.1-stable_linux.x86_64", "godot.windows.editor.x86_64.exe"],
         "Godot 4 executable",
     )
-    renderdoccmd = resolve_executable(
-        args.renderdoc_bin,
-        ["renderdoccmd", "renderdoccmd.exe"],
-        "RenderDoc CLI (renderdoccmd)",
-    )
+    renderdoccmd: str | None = None
+    if args.renderdoc:
+        renderdoccmd = resolve_executable(
+            args.renderdoc_bin,
+            ["renderdoccmd", "renderdoccmd.exe"],
+            "RenderDoc CLI (renderdoccmd)",
+        )
 
     selected_scenes = args.scenes if args.scenes else list(CANONICAL_SCENES.keys())
     for s in selected_scenes:
@@ -420,18 +416,18 @@ def run_regression_suite(args: argparse.Namespace) -> int:
 
     print(f"=== Prism RP Visual & Frame-Budget QA ({tier.name.upper()}: {tier.description}) ===")
     print(f"Godot Binary : {godot_bin}")
-    print(f"RenderDoc CLI: {renderdoccmd}")
+    print(f"RenderDoc CLI: {renderdoccmd or 'disabled (pass --renderdoc to enable)'}")
     print(f"FLIP Gate    : mean <= {args.max_flip:.4f} | Pass Regression Gate: <= +{args.max_pass_delta_ms:.2f} ms\n")
 
     results: list[SceneEvalResult] = []
 
     for scene_name in selected_scenes:
         scene_res_path = CANONICAL_SCENES[scene_name]
-        print(f"[{scene_name}] Capturing frame {args.capture_frame} via RenderDoc...")
+        print(f"[{scene_name}] Capturing frame {args.capture_frame}...")
 
-        captured_png, pass_timings_ms, validation_errors = capture_scene_with_renderdoc(
-            renderdoccmd=renderdoccmd,
+        captured_png, pass_timings_ms, validation_errors = capture_scene(
             godot_bin=godot_bin,
+            renderdoccmd=renderdoccmd,
             project_dir=project_dir,
             scene_name=scene_name,
             scene_res_path=scene_res_path,
@@ -467,10 +463,15 @@ def run_regression_suite(args: argparse.Namespace) -> int:
                 f"Missing golden reference image: {golden_png}. Run with --update-golden to initialize."
             )
         else:
-            mean_flip, max_flip = evaluate_flip_diff(golden_png, captured_png, diff_heatmap_png)
-            eval_res.mean_flip_error = round(mean_flip, 6)
-            eval_res.max_flip_error = round(max_flip, 6)
-            if mean_flip > args.max_flip:
+            try:
+                mean_flip, max_flip = evaluate_flip_diff(golden_png, captured_png, diff_heatmap_png)
+            except ValueError as exc:
+                eval_res.failures.append(str(exc))
+                mean_flip, max_flip = None, None
+            if mean_flip is not None:
+                eval_res.mean_flip_error = round(mean_flip, 6)
+                eval_res.max_flip_error = round(max_flip, 6)
+            if mean_flip is not None and mean_flip > args.max_flip:
                 eval_res.failures.append(
                     f"Mean FLIP error {mean_flip:.5f} exceeds threshold {args.max_flip:.5f} "
                     f"(heatmap: {diff_heatmap_png})"
@@ -554,7 +555,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--renderdoc-bin",
         default=None,
-        help="Path to renderdoccmd binary (auto-detected from PATH if omitted).",
+        help="Path to renderdoccmd binary (auto-detected from PATH if omitted; used with --renderdoc).",
+    )
+    parser.add_argument(
+        "--renderdoc",
+        action="store_true",
+        help="Run Godot under renderdoccmd and read per-pass GPU durations from the capture.",
     )
     parser.add_argument(
         "--project-dir",
@@ -569,7 +575,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--artifacts-dir",
         default="tests/artifacts",
-        help="Relative path for captured .rdc files, FLIP heatmaps, and JSON reports.",
+        help="Relative path for screenshots, .rdc captures, FLIP heatmaps, and JSON reports.",
     )
     parser.add_argument(
         "--capture-frame",

@@ -15,6 +15,8 @@ layout(push_constant, std430) uniform PushConstants {
     ivec2 resolution;
     float reactive_sensitivity;
     float luma_spark_threshold;
+    vec2 jitter_delta_uv;   // (current - previous) camera jitter, UV units
+    vec2 depth_params;      // see prism_linearize_depth
 } pc;
 
 void main() {
@@ -36,8 +38,10 @@ void main() {
         1.0
     );
 
+    // Dilated velocity is jitter-free; both color frames here are raw (jittered),
+    // so remove the jitter delta again to reproject raw-to-raw. prev = uv + velocity.
     vec2 velocity = texelFetch(u_dilated_velocity_tex, pixel, 0).rg;
-    vec2 prev_uv = uv - velocity;
+    vec2 prev_uv = uv + velocity - pc.jitter_delta_uv;
     float shock_reactivity = 0.0;
 
     if (all(greaterThanEqual(prev_uv, vec2(0.0))) && all(lessThanEqual(prev_uv, vec2(1.0)))) {
@@ -54,17 +58,18 @@ void main() {
         shock_reactivity = 1.0;
     }
 
-    float center_depth = texelFetch(u_depth_tex, pixel, 0).r;
+    // Relative linear-depth discontinuity, so edges weigh the same near and far from the camera.
+    float center_depth = prism_linearize_depth(texelFetch(u_depth_tex, pixel, 0).r, pc.depth_params);
     float max_depth_diff = 0.0;
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
             if (x == 0 && y == 0) continue;
             ivec2 sc = clamp(pixel + ivec2(x, y), ivec2(0), pc.resolution - ivec2(1));
-            float nd = texelFetch(u_depth_tex, sc, 0).r;
-            max_depth_diff = max(max_depth_diff, abs(nd - center_depth));
+            float nd = prism_linearize_depth(texelFetch(u_depth_tex, sc, 0).r, pc.depth_params);
+            max_depth_diff = max(max_depth_diff, abs(nd - center_depth) / max(min(nd, center_depth), 1e-4));
         }
     }
-    float edge_reactivity = clamp(max_depth_diff * 45.0, 0.0, 0.65);
+    float edge_reactivity = clamp((max_depth_diff - 0.05) * 3.0, 0.0, 0.65);
 
     float combined = max(max(spark_reactivity, shock_reactivity), edge_reactivity);
     float final_reactive = clamp(combined * pc.reactive_sensitivity, 0.0, 1.0);

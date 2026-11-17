@@ -1,9 +1,11 @@
 #ifndef PRISM_COMMON_GLSL
 #define PRISM_COMMON_GLSL
 
-// Reconstruct linear view-space depth from Godot's reverse-Z infinite far plane depth buffer
-float prism_linearize_depth_reverse_z(float depth, float near_plane) {
-    return near_plane / max(depth, 1e-6);
+// Linear view distance from Godot's reverse-Z [0, 1] depth buffer. depth_params is
+// (proj[3][2], proj[2][2]) of the depth-corrected projection (RenderSceneData.get_cam_projection),
+// which gives distance = proj[3][2] / (depth + proj[2][2]): near at depth 1, far at depth 0.
+float prism_linearize_depth(float depth, vec2 depth_params) {
+    return depth_params.x / max(depth + depth_params.y, 1e-6);
 }
 
 // --- Primary Color Space Conversion Matrices (D65 Bradford-Adapted) ---
