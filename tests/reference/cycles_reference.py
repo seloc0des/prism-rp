@@ -157,18 +157,18 @@ def build_camera(cam, width, height):
 
 
 def set_output_format(settings, multilayer_exr):
-    """Blender 4.x has a distinct OPEN_EXR_MULTILAYER file format; Blender 5.0 replaced it with
-    media_type = 'MULTI_LAYER_IMAGE' plus file_format = 'OPEN_EXR'."""
+    """Blender 5.0 added image_settings.media_type, which restricts the allowed file formats:
+    'MULTI_LAYER_IMAGE' allows only OPEN_EXR_MULTILAYER, 'IMAGE' allows PNG etc. Set it first when
+    it exists; Blender 4.x has no media_type and accepts the format directly."""
+    has_media_type = hasattr(settings, "media_type")
     if multilayer_exr:
-        try:
-            settings.file_format = "OPEN_EXR_MULTILAYER"
-        except TypeError:
+        if has_media_type:
             settings.media_type = "MULTI_LAYER_IMAGE"
-            settings.file_format = "OPEN_EXR"
+        settings.file_format = "OPEN_EXR_MULTILAYER"
         settings.color_depth = "32"
         settings.exr_codec = "ZIP"
     else:
-        if hasattr(settings, "media_type"):
+        if has_media_type:
             settings.media_type = "IMAGE"
         settings.file_format = "PNG"
         settings.color_depth = "8"
