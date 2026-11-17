@@ -63,6 +63,29 @@ jobs:
           path: build/spirv/*.spv
           if-no-files-found: error
 
+  unit-tests:
+    name: Python unit tests (harness, push-constant layouts, GDScript API names)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install glslang and Python dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslang-tools
+          pip install pytest pyyaml flip-evaluator numpy pillow
+
+      - name: Run unit tests
+        run: python -m pytest tests/unit -v
+
   build-gdextension:
     name: Build C++20 (${{ matrix.os }} / ${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -114,16 +137,25 @@ jobs:
             thirdparty/godot-cpp/gen
           key: godot-cpp-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.target }}-${{ steps.godot_cpp.outputs.sha }}
 
-      - name: Compile Prism RP via SCons (C++20)
-        run: |
-          scons platform=${{ matrix.platform }} arch=${{ matrix.arch }} target=${{ matrix.target }} -j4
-
-      - name: Verify CMake C++20 configuration (Linux)
+      # CMake builds first: they write to the same bin/ path, and the uploaded artifact should be
+      # the SCons build that follows.
+      - name: Verify CMake C++20 build (Linux, with shader validation)
         if: matrix.platform == 'linux' && matrix.target == 'template_debug'
         run: |
           sudo apt-get update && sudo apt-get install -y ninja-build glslang-tools
           cmake -B build_cmake -G Ninja -DGODOT_TARGET=template_debug -DPRISM_RP_VALIDATE_SHADERS=ON
           cmake --build build_cmake -j4
+
+      - name: Verify CMake C++20 build (Windows / macOS)
+        if: matrix.platform != 'linux' && matrix.target == 'template_debug'
+        shell: bash
+        run: |
+          cmake -B build_cmake -DGODOT_TARGET=template_debug -DPRISM_RP_VALIDATE_SHADERS=OFF -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build_cmake --config Debug -j 4
+
+      - name: Compile Prism RP via SCons (C++20)
+        run: |
+          scons platform=${{ matrix.platform }} arch=${{ matrix.arch }} target=${{ matrix.target }} -j4
 
       - name: Upload GDExtension binary artifact
         uses: actions/upload-artifact@v4
