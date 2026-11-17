@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -10,10 +11,20 @@
 #include <godot_cpp/classes/rendering_device.hpp>
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/variant/string.hpp>
+#include <godot_cpp/variant/vector2.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
 namespace prism {
 
+// Chronos VPU, Godot 4.4 output contract:
+//  - Runs at POST_TRANSPARENT, i.e. before Godot's own TAA/FSR2, upscale and tonemap.
+//  - Everything resolves at the internal (render) resolution; Godot then upscales to the
+//    output size. The compositor API has no way to hand Godot an upscaled frame.
+//  - Writes linear Rec.709 back into the color buffer. With the SDR look enabled, that is
+//    display-referred linear SDR, so the Environment must use TONE_MAPPER_LINEAR at exposure 1.
+//  - Sub-pixel jitter: Godot only jitters when its own TAA/FSR2 runs (which would run after
+//    us). Apply jitter through the camera instead (Camera3D PROJECTION_FRUSTUM +
+//    frustum_offset); Chronos reads it from the frame's projection matrix.
 class ChronosVPUCompositorEffect : public godot::CompositorEffect {
     GDCLASS(ChronosVPUCompositorEffect, godot::CompositorEffect)
 
@@ -65,7 +76,9 @@ public:
 
     void reset_taau_history();
 
-    // Color, optical bloom, and reactive tuning parameters
+    // Color, optical bloom, and reactive tuning parameters.
+    // Display P3 / HDR10 need a wide-gamut or HDR swapchain, which Godot 4.4 doesn't have:
+    // they're accepted for forward compatibility, warn, and render as SDR sRGB.
     void set_output_display_mode(int32_t p_mode);
     [[nodiscard]] int32_t get_output_display_mode() const;
 
@@ -109,8 +122,8 @@ private:
     struct alignas(16) DilateVelocityPushConstants {
         int32_t resolution_x = 0;
         int32_t resolution_y = 0;
-        float near_plane = 0.05f;
-        float _pad = 0.0f;
+        float jitter_delta_uv_x = 0.0f;
+        float jitter_delta_uv_y = 0.0f;
     };
     static_assert(sizeof(DilateVelocityPushConstants) == 16);
 
@@ -119,8 +132,12 @@ private:
         int32_t resolution_y = 0;
         float reactive_sensitivity = 1.0f;
         float luma_spark_threshold = 2.5f;
+        float jitter_delta_uv_x = 0.0f;
+        float jitter_delta_uv_y = 0.0f;
+        float depth_param_a = 0.05f;
+        float depth_param_b = 0.0f;
     };
-    static_assert(sizeof(ReactiveMaskPushConstants) == 16);
+    static_assert(sizeof(ReactiveMaskPushConstants) == 32);
 
     struct alignas(16) TAAUPushConstants {
         int32_t internal_res_x = 0;
@@ -131,10 +148,10 @@ private:
         float jitter_y = 0.0f;
         float feedback_min = 0.05f;
         float feedback_max = 0.95f;
-        float sharpness = 0.25f;
         float motion_scale = 18.0f;
         uint32_t frame_index = 0;
         uint32_t flags = 0;
+        float _pad = 0.0f;
     };
     static_assert(sizeof(TAAUPushConstants) == 48);
 
@@ -151,8 +168,12 @@ private:
         float diffraction_strength = 0.45f;
         float halation_strength = 0.35f;
         float aperture_blades = 6.0f;
+        float aspect_ratio = 1.0f;
+        float _pad0 = 0.0f;
+        float _pad1 = 0.0f;
+        float _pad2 = 0.0f;
     };
-    static_assert(sizeof(FFTVerticalKernelPushConstants) == 16);
+    static_assert(sizeof(FFTVerticalKernelPushConstants) == 32);
 
     struct alignas(16) FFTInvHorizPushConstants {
         float bloom_intensity = 0.18f;
@@ -162,24 +183,23 @@ private:
     };
     static_assert(sizeof(FFTInvHorizPushConstants) == 16);
 
-    struct alignas(16) ACESODTPushConstants {
+    struct alignas(16) CompositePushConstants {
         int32_t resolution_x = 0;
         int32_t resolution_y = 0;
         float exposure_scale = 1.0f;
-        float peak_luminance = 100.0f;
-        int32_t display_mode = 0;
+        float sharpness = 0.0f;
         int32_t debug_view_mode = 0;
-        uint32_t frame_index = 0;
         uint32_t flags = 0;
+        float _pad0 = 0.0f;
+        float _pad1 = 0.0f;
     };
-    static_assert(sizeof(ACESODTPushConstants) == 32);
+    static_assert(sizeof(CompositePushConstants) == 32);
 
     struct PerViewTargets {
         godot::RID dilated_velocity;                 // RG16F @ internal_size
         godot::RID reactive_mask;                    // R8_UNORM @ internal_size
-        godot::RID prev_color_history;               // RGBA16F @ internal_size (pre-TAAU shock reference)
-        std::array<godot::RID, 2> taau_history;      // RGBA16F ping-pong @ target_size (linear HDR + confidence)
-        godot::RID taau_final_display;               // RGBA16F @ target_size (post-ACES2 ODT output)
+        godot::RID prev_color_history;               // RGBA16F @ internal_size: raw frame copy (shock reference + composite input when TAA is off)
+        std::array<godot::RID, 2> taau_history;      // RGBA16F ping-pong @ internal_size (linear HDR + confidence)
         godot::RID fft_ping_rg;                      // RGBA32F 256x256 complex
         godot::RID fft_ping_b;                       // RGBA32F 256x256 complex
         godot::RID fft_pong_rg;                      // RGBA32F 256x256 complex
@@ -187,14 +207,12 @@ private:
         godot::RID bloom_spatial;                    // RGBA16F 256x256 spatial bloom + halation
         uint32_t taau_write_index = 0;
         bool has_valid_history = false;
+        bool has_prev_jitter = false;
+        godot::Vector2 prev_jitter_uv;
     };
 
     bool _ensure_render_resources();
-    bool _ensure_view_targets(
-        const godot::Vector2i &p_internal_size,
-        const godot::Vector2i &p_target_size,
-        uint32_t p_view_count
-    );
+    bool _ensure_view_targets(const godot::Vector2i &p_internal_size, uint32_t p_view_count);
     void _release_render_resources();
     void _release_view_targets();
 
@@ -243,7 +261,6 @@ private:
 
     std::vector<PerViewTargets> view_targets;
     godot::Vector2i cached_internal_size = godot::Vector2i(0, 0);
-    godot::Vector2i cached_target_size = godot::Vector2i(0, 0);
     uint32_t frame_counter = 0;
 
     bool dilate_velocity_enabled = true;

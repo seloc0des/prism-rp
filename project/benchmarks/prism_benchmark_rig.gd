@@ -11,11 +11,18 @@ var camera: Camera3D
 var world_environment: WorldEnvironment
 var chronos_effect: CompositorEffect
 
+## Sub-pixel camera jitter for Chronos TAA. Godot only jitters when its own TAA/FSR2 is on,
+## and those run after compositor effects, so the rig jitters through the camera frustum and
+## Chronos reads the offset back from the projection matrix.
+@export var jitter_enabled := true
+const JITTER_PHASES := 8
+
 var frame_index: int = 0
 var active_tier: String = "tier2"
 var render_scale: float = 0.75
 var qa_capture_frame: int = -1
 var qa_telemetry_out: String = ""
+var qa_screenshot_out: String = ""
 var quit_after_frame: int = -1
 
 func _ready() -> void:
@@ -30,14 +37,43 @@ func _process(_delta: float) -> void:
 	_update_deterministic_camera(frame_index)
 	_step_benchmark_frame(frame_index)
 
+	if frame_index == qa_capture_frame:
+		_capture_qa_frame()
+
 	if quit_after_frame > 0 and frame_index >= quit_after_frame:
-		if Engine.has_singleton(&"PrismTelemetry") and not qa_telemetry_out.is_empty():
-			var telemetry := Engine.get_singleton(&"PrismTelemetry")
-			telemetry.call(&"export_json", qa_telemetry_out)
+		if qa_capture_frame < 0:
+			_export_telemetry()
 		get_tree().quit(0)
 		return
 
 	frame_index += 1
+
+func _get_telemetry() -> Object:
+	if Engine.has_singleton(&"PrismTelemetry"):
+		return Engine.get_singleton(&"PrismTelemetry")
+	return null
+
+func _export_telemetry() -> void:
+	var telemetry := _get_telemetry()
+	if telemetry != null and not qa_telemetry_out.is_empty():
+		telemetry.call(&"export_json", qa_telemetry_out)
+
+## Saves the displayed frame and the GPU telemetry once the capture frame has been drawn.
+## With RenderDoc attached, it also captures the next frame via the in-app API.
+func _capture_qa_frame() -> void:
+	var telemetry := _get_telemetry()
+	if telemetry != null and telemetry.call(&"is_renderdoc_attached"):
+		telemetry.call(&"trigger_renderdoc_capture")
+
+	await RenderingServer.frame_post_draw
+
+	if not qa_screenshot_out.is_empty():
+		var img := get_viewport().get_texture().get_image()
+		DirAccess.make_dir_recursive_absolute(qa_screenshot_out.get_base_dir())
+		var err := img.save_png(qa_screenshot_out)
+		if err != OK:
+			push_error("[Prism RP QA] Failed to save screenshot to %s (error %d)" % [qa_screenshot_out, err])
+	_export_telemetry()
 
 func _build_benchmark_scene() -> void:
 	pass
@@ -55,15 +91,12 @@ func _parse_cmdline_args() -> void:
 			qa_capture_frame = arg.get_slice("=", 1).to_int()
 		elif arg.begins_with("--qa-telemetry-out="):
 			qa_telemetry_out = arg.get_slice("=", 1)
+		elif arg.begins_with("--qa-screenshot-out="):
+			qa_screenshot_out = arg.get_slice("=", 1)
 		elif arg.begins_with("--quit-after="):
 			quit_after_frame = arg.get_slice("=", 1).to_int()
-
-	if Engine.has_singleton(&"PrismTelemetry"):
-		var telemetry := Engine.get_singleton(&"PrismTelemetry")
-		if qa_capture_frame >= 0:
-			telemetry.call(&"set_qa_capture_frame", qa_capture_frame)
-		if not qa_telemetry_out.is_empty():
-			telemetry.call(&"set_telemetry_output_path", qa_telemetry_out)
+		elif arg == "--prism-no-jitter":
+			jitter_enabled = false
 
 func _configure_viewport_scaling() -> void:
 	var vp := get_viewport()
@@ -80,7 +113,10 @@ func _setup_environment_and_chronos_vpu() -> void:
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.08, 0.09, 0.11)
 	env.ambient_light_energy = 0.35
+	# Chronos' SDR look writes display-referred linear values; Godot must then only apply
+	# the sRGB encode, which is what the Linear tonemapper at exposure 1.0 does.
 	env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
+	env.tonemap_exposure = 1.0
 	env.glow_enabled = false
 	env.sdfgi_enabled = true
 	env.sdfgi_use_occlusion = true
@@ -113,6 +149,11 @@ func _setup_camera_rig() -> void:
 	camera.near = 0.05
 	camera.far = 250.0
 	camera.current = true
+	if jitter_enabled and chronos_effect != null:
+		# Frustum projection so frustum_offset can carry the sub-pixel jitter. With the default
+		# KEEP_HEIGHT, `size` is the near-plane height; matching it to the FOV keeps the framing.
+		camera.projection = Camera3D.PROJECTION_FRUSTUM
+		camera.size = 2.0 * camera.near * tan(deg_to_rad(camera_fov) * 0.5)
 	add_child(camera)
 
 func _update_deterministic_camera(frame: int) -> void:
@@ -127,6 +168,26 @@ func _update_deterministic_camera(frame: int) -> void:
 	)
 	camera.position = base_camera_position + offset
 	camera.look_at(camera_look_target, Vector3.UP)
+	if camera.projection == Camera3D.PROJECTION_FRUSTUM:
+		camera.frustum_offset = _jitter_frustum_offset(frame)
+
+## Halton(2, 3) sub-pixel jitter in internal pixels, converted to near-plane world units.
+func _jitter_frustum_offset(frame: int) -> Vector2:
+	var phase := (frame % JITTER_PHASES) + 1
+	var jitter_px := Vector2(_halton(phase, 2) - 0.5, _halton(phase, 3) - 0.5)
+	var internal_height := maxf(get_viewport().get_visible_rect().size.y * render_scale, 1.0)
+	return jitter_px * (camera.size / internal_height)
+
+func _halton(index: int, base: int) -> float:
+	var result := 0.0
+	var f := 1.0
+	var i := index
+	while i > 0:
+		f /= float(base)
+		result += f * float(i % base)
+		@warning_ignore("integer_division")
+		i = i / base
+	return result
 
 func create_pbr_material(
 	albedo: Color,

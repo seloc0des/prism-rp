@@ -15,13 +15,13 @@ layout(rgba16f, set = 0, binding = 5) uniform writeonly image2D u_taau_output;
 layout(push_constant, std430) uniform PushConstants {
     ivec2 internal_resolution;
     ivec2 target_resolution;
-    vec2 jitter_offset;
+    vec2 jitter_offset;     // current camera jitter in internal pixels (+x right, +y down)
     float feedback_min;
     float feedback_max;
-    float sharpness;
     float motion_scale;
     uint frame_index;
-    uint flags;
+    uint flags;             // bit 0: history reset
+    float _pad;
 } pc;
 
 vec4 sample_history_catmull_rom_5tap(sampler2D tex, vec2 uv, vec2 tex_size) {
@@ -93,7 +93,6 @@ void main() {
 
     vec2 src_pixel_pos = dst_uv * internal_size_f;
     ivec2 src_center_pixel = clamp(ivec2(floor(src_pixel_pos)), ivec2(0), pc.internal_resolution - ivec2(1));
-    vec2 unjittered_src_pos = src_pixel_pos - pc.jitter_offset;
 
     vec3 moment1 = vec3(0.0);
     vec3 moment2 = vec3(0.0);
@@ -102,8 +101,6 @@ void main() {
 
     vec3 cross_min = vec3(1e6);
     vec3 cross_max = vec3(-1e6);
-    vec3 cross_neighbors[4];
-    int cross_idx = 0;
 
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
@@ -118,12 +115,10 @@ void main() {
             if (is_cross) {
                 cross_min = min(cross_min, tap_ycocg);
                 cross_max = max(cross_max, tap_ycocg);
-                if (x != 0 || y != 0) {
-                    cross_neighbors[cross_idx++] = tap_rgb;
-                }
             }
 
-            vec2 delta = (vec2(sample_coord) + 0.5) - unjittered_src_pos;
+            // A jittered sample at pixel center c shows the scene point at c - jitter.
+            vec2 delta = (vec2(sample_coord) + 0.5 - pc.jitter_offset) - src_pixel_pos;
             float w_spatial = blackman_harris_weight(length(delta));
             float w_karis = 1.0 / (1.0 + max(tap_ycocg.x, 0.0));
             float w = max(w_spatial * w_karis, 1e-5);
@@ -147,7 +142,8 @@ void main() {
     vec3 box_min = min(cross_min, mean_ycocg - gamma * stddev);
     vec3 box_max = max(cross_max, mean_ycocg + gamma * stddev);
 
-    vec2 prev_uv = dst_uv - velocity;
+    // Godot velocity = prev_uv - curr_uv (dilation already removed camera jitter).
+    vec2 prev_uv = dst_uv + velocity;
     bool history_reset = (pc.flags & 1u) != 0u;
     bool in_bounds = !history_reset &&
         all(greaterThanEqual(prev_uv, vec2(0.0))) &&
@@ -187,24 +183,6 @@ void main() {
         history_confidence = 0.125;
     }
 
-    if ((pc.flags & 2u) != 0u && pc.sharpness > 0.001) {
-        vec3 n_top    = cross_neighbors[0];
-        vec3 n_left   = cross_neighbors[1];
-        vec3 n_right  = cross_neighbors[2];
-        vec3 n_bottom = cross_neighbors[3];
-
-        vec3 min_ring = min(min(n_top, n_bottom), min(n_left, n_right));
-        vec3 max_ring = max(max(n_top, n_bottom), max(n_left, n_right));
-
-        vec3 min_bound = min(min_ring, resolved_rgb);
-        vec3 max_bound = max(max_ring, resolved_rgb);
-        vec3 amp = clamp(min(min_bound, 2.0 - max_bound) / max(max_bound, vec3(1e-4)), vec3(0.0), vec3(1.0));
-        vec3 w_rcas = -sqrt(amp) * (pc.sharpness * 0.25);
-
-        vec3 sharpened = (resolved_rgb + (n_top + n_bottom + n_left + n_right) * w_rcas) /
-                         max(vec3(1.0) + 4.0 * w_rcas, vec3(0.25));
-        resolved_rgb = clamp(sharpened, min_bound, max_bound);
-    }
-
+    // No sharpening here: this output is next frame's history. Sharpening runs in the composite pass.
     imageStore(u_taau_output, dst_pixel, vec4(max(resolved_rgb, vec3(0.0)), history_confidence));
 }

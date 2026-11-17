@@ -27,7 +27,10 @@ public:
     PrismTelemetry();
     ~PrismTelemetry() override;
 
+    // The singleton is owned by register_types.cpp. The class is registered as abstract so
+    // scripts and the editor can't create extra instances that would replace it.
     static PrismTelemetry *get_singleton();
+    static void set_singleton(PrismTelemetry *p_instance);
 
     void configure_from_cmdline();
     void begin_frame(uint64_t p_frame_index);
@@ -38,16 +41,16 @@ public:
     );
     void end_pass();
 
-    void collect_and_maybe_export();
+    void collect_timestamps();
 
     void set_enabled(bool p_enabled);
     [[nodiscard]] bool is_enabled() const;
 
-    void set_qa_capture_frame(int64_t p_frame);
-    [[nodiscard]] int64_t get_qa_capture_frame() const;
+    [[nodiscard]] godot::String get_active_tier() const;
 
-    void set_telemetry_output_path(const godot::String &p_path);
-    [[nodiscard]] godot::String get_telemetry_output_path() const;
+    // RenderDoc in-app API: only works when the process was launched under RenderDoc.
+    [[nodiscard]] bool is_renderdoc_attached();
+    bool trigger_renderdoc_capture();
 
     [[nodiscard]] double get_pass_gpu_ms(const godot::String &p_pass_name) const;
     [[nodiscard]] godot::Dictionary get_telemetry_dictionary() const;
@@ -59,6 +62,7 @@ protected:
 private:
     static godot::String _map_to_canonical_stage(const godot::String &p_subpass_name);
     void _ensure_rendering_device();
+    void *_get_renderdoc_api();
 
     static PrismTelemetry *singleton;
 
@@ -74,9 +78,9 @@ private:
     std::vector<std::string> insertion_order;
 
     godot::String active_tier = "tier2";
-    int64_t qa_capture_frame = -1;
-    godot::String qa_telemetry_out_path;
-    bool qa_exported = false;
+
+    void *renderdoc_api = nullptr;
+    bool renderdoc_probed = false;
 };
 
 class ScopedPassTimer {

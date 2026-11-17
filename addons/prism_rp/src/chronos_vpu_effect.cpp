@@ -116,7 +116,7 @@ void ChronosVPUCompositorEffect::_bind_methods() {
     godot::ClassDB::bind_method(godot::D_METHOD("set_output_display_mode", "mode"), &ChronosVPUCompositorEffect::set_output_display_mode);
     godot::ClassDB::bind_method(godot::D_METHOD("get_output_display_mode"), &ChronosVPUCompositorEffect::get_output_display_mode);
     ADD_PROPERTY(
-        godot::PropertyInfo(godot::Variant::INT, "output_display_mode", godot::PROPERTY_HINT_ENUM, "SDR sRGB:0,Display P3:1,HDR10 Rec.2020 PQ:2"),
+        godot::PropertyInfo(godot::Variant::INT, "output_display_mode", godot::PROPERTY_HINT_ENUM, "SDR sRGB:0,Display P3 (unsupported in Godot 4.4):1,HDR10 PQ (unsupported in Godot 4.4):2"),
         "set_output_display_mode",
         "get_output_display_mode"
     );
@@ -124,7 +124,7 @@ void ChronosVPUCompositorEffect::_bind_methods() {
     godot::ClassDB::bind_method(godot::D_METHOD("set_debug_view_mode", "mode"), &ChronosVPUCompositorEffect::set_debug_view_mode);
     godot::ClassDB::bind_method(godot::D_METHOD("get_debug_view_mode"), &ChronosVPUCompositorEffect::get_debug_view_mode);
     ADD_PROPERTY(
-        godot::PropertyInfo(godot::Variant::INT, "debug_view_mode", godot::PROPERTY_HINT_ENUM, "Final Output:0,Dilated Velocity:1,Reactive Mask:2,FFT Bloom & Halation:3,TAAU Confidence:4"),
+        godot::PropertyInfo(godot::Variant::INT, "debug_view_mode", godot::PROPERTY_HINT_ENUM, "Final Output:0,Dilated Velocity:1,Reactive Mask:2,FFT Bloom & Halation:3,TAA Confidence:4"),
         "set_debug_view_mode",
         "get_debug_view_mode"
     );
@@ -135,6 +135,7 @@ void ChronosVPUCompositorEffect::_bind_methods() {
 
     godot::ClassDB::bind_method(godot::D_METHOD("set_peak_luminance_nits", "nits"), &ChronosVPUCompositorEffect::set_peak_luminance_nits);
     godot::ClassDB::bind_method(godot::D_METHOD("get_peak_luminance_nits"), &ChronosVPUCompositorEffect::get_peak_luminance_nits);
+    // Reserved for HDR output; has no effect while only SDR is supported.
     ADD_PROPERTY(godot::PropertyInfo(godot::Variant::FLOAT, "peak_luminance_nits", godot::PROPERTY_HINT_RANGE, "80.0,4000.0,10.0"), "set_peak_luminance_nits", "get_peak_luminance_nits");
 
     godot::ClassDB::bind_method(godot::D_METHOD("set_bloom_threshold", "threshold"), &ChronosVPUCompositorEffect::set_bloom_threshold);
@@ -197,7 +198,14 @@ void ChronosVPUCompositorEffect::reset_taau_history() {
     taau_reset_requested = true;
 }
 
-void ChronosVPUCompositorEffect::set_output_display_mode(int32_t p_mode) { output_display_mode = p_mode; }
+void ChronosVPUCompositorEffect::set_output_display_mode(int32_t p_mode) {
+    if (p_mode != DISPLAY_MODE_SDR_SRGB && p_mode != output_display_mode) {
+        godot::UtilityFunctions::push_warning(
+            "[Prism RP] Display P3 / HDR10 output needs an HDR swapchain, which Godot 4.4 lacks. Rendering SDR sRGB."
+        );
+    }
+    output_display_mode = p_mode;
+}
 int32_t ChronosVPUCompositorEffect::get_output_display_mode() const { return output_display_mode; }
 
 void ChronosVPUCompositorEffect::set_debug_view_mode(int32_t p_mode) { debug_view_mode = p_mode; }
@@ -247,7 +255,9 @@ godot::RID ChronosVPUCompositorEffect::get_taau_output_rid(int32_t p_view) const
     if (p_view < 0 || static_cast<size_t>(p_view) >= view_targets.size()) {
         return godot::RID();
     }
-    return view_targets[static_cast<size_t>(p_view)].taau_final_display;
+    // Most recently written TAA history (the ping-pong index already advanced past it).
+    const PerViewTargets &vt = view_targets[static_cast<size_t>(p_view)];
+    return vt.taau_history[1u - vt.taau_write_index];
 }
 
 godot::RID ChronosVPUCompositorEffect::get_bloom_texture_rid(int32_t p_view) const {
@@ -291,18 +301,14 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
         return;
     }
 
+    // Everything runs at the internal resolution: Godot upscales to the target size after us.
     const godot::Vector2i internal_size = scene_buffers->get_internal_size();
-    godot::Vector2i target_size = scene_buffers->get_target_size();
-    if (target_size.x <= 0 || target_size.y <= 0) {
-        target_size = internal_size;
-    }
-
     const uint32_t view_count = scene_buffers->get_view_count();
     if (internal_size.x <= 0 || internal_size.y <= 0 || view_count == 0) {
         return;
     }
 
-    if (!_ensure_view_targets(internal_size, target_size, view_count)) {
+    if (!_ensure_view_targets(internal_size, view_count)) {
         return;
     }
 
@@ -310,23 +316,37 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
         telemetry->begin_frame(frame_counter);
     }
 
-    float near_plane = 0.05f;
-    float jitter_x = 0.0f;
-    float jitter_y = 0.0f;
+    // Camera jitter and depth linearization come from the depth-corrected projection Godot
+    // renders this frame with (flip-Y, reverse-Z [0,1]). An off-center frustum shifts the image
+    // by -0.5 * proj[2].xy in UV units (+y down, matching Godot's velocity convention).
+    godot::Vector2 jitter_uv(0.0f, 0.0f);
+    float depth_param_a = 0.05f;
+    float depth_param_b = 0.0f;
 
     godot::RenderSceneData *scene_data = p_render_data->get_render_scene_data();
     if (scene_data != nullptr) {
         const godot::Projection cam_proj = scene_data->get_cam_projection();
-        near_plane = static_cast<float>(cam_proj.get_z_near());
-        jitter_x = static_cast<float>(cam_proj.columns[2].x) * 0.5f * static_cast<float>(internal_size.x);
-        jitter_y = static_cast<float>(cam_proj.columns[2].y) * 0.5f * static_cast<float>(internal_size.y);
+        jitter_uv = godot::Vector2(
+            -0.5f * static_cast<float>(cam_proj.columns[2].x),
+            -0.5f * static_cast<float>(cam_proj.columns[2].y)
+        );
+        depth_param_a = static_cast<float>(cam_proj.columns[3].z);
+        depth_param_b = static_cast<float>(cam_proj.columns[2].z);
     }
 
+    // Only the sub-pixel part counts as TAA jitter, so a deliberately off-center frustum
+    // (VR eyes, lens shift) isn't treated as a huge jitter.
+    const godot::Vector2 internal_size_f(static_cast<float>(internal_size.x), static_cast<float>(internal_size.y));
+    const godot::Vector2 jitter_full_px = jitter_uv * internal_size_f;
+    const godot::Vector2 jitter_px(
+        jitter_full_px.x - std::round(jitter_full_px.x),
+        jitter_full_px.y - std::round(jitter_full_px.y)
+    );
+
     const float exposure_scale = std::exp2(exposure_ev);
-    const uint32_t internal_groups_x = static_cast<uint32_t>((internal_size.x + 7) / 8);
-    const uint32_t internal_groups_y = static_cast<uint32_t>((internal_size.y + 7) / 8);
-    const uint32_t target_groups_x = static_cast<uint32_t>((target_size.x + 7) / 8);
-    const uint32_t target_groups_y = static_cast<uint32_t>((target_size.y + 7) / 8);
+    const float aspect_ratio = internal_size_f.x / internal_size_f.y;
+    const uint32_t groups_x = static_cast<uint32_t>((internal_size.x + 7) / 8);
+    const uint32_t groups_y = static_cast<uint32_t>((internal_size.y + 7) / 8);
 
     const bool reset_history_this_frame = taau_reset_requested;
     taau_reset_requested = false;
@@ -341,6 +361,11 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
             continue;
         }
 
+        // (current - previous) jitter: Godot's velocity includes camera-applied jitter.
+        const godot::Vector2 jitter_delta_uv = vt.has_prev_jitter ? (jitter_uv - vt.prev_jitter_uv) : godot::Vector2(0.0f, 0.0f);
+        vt.prev_jitter_uv = jitter_uv;
+        vt.has_prev_jitter = true;
+
         const bool first_frame_for_view = !vt.has_valid_history || reset_history_this_frame;
         if (!vt.has_valid_history) {
             rd->texture_copy(
@@ -354,8 +379,12 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
             vt.has_valid_history = true;
         }
 
-        // PASS 1: 3x3 Closest-Depth Velocity Dilation -> RG16F (@ internal_size)
-        if (dilate_velocity_enabled || reactive_mask_enabled || taau_enabled || debug_view_mode == DEBUG_VIEW_DILATED_VELOCITY) {
+        // TAA consumes dilated velocity and the reactive mask, so it forces both passes on.
+        const bool run_dilate = dilate_velocity_enabled || taau_enabled || reactive_mask_enabled || debug_view_mode == DEBUG_VIEW_DILATED_VELOCITY;
+        const bool run_reactive = reactive_mask_enabled || taau_enabled || debug_view_mode == DEBUG_VIEW_REACTIVE_MASK;
+
+        // PASS 1: 3x3 closest-depth velocity dilation (jitter removed) -> RG16F
+        if (run_dilate) {
             ScopedPassTimer timer("chronos_dilate_velocity", godot::Color(0.20f, 0.75f, 0.95f, 1.0f));
             godot::TypedArray<godot::RDUniform> uniforms;
             uniforms.push_back(make_sampler_texture_uniform(0, nearest_sampler, depth_tex));
@@ -364,20 +393,23 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
 
             const godot::RID uset = godot::UniformSetCacheRD::get_cache(dilate_shader, 0, uniforms);
             if (uset.is_valid()) {
-                DilateVelocityPushConstants pc{ internal_size.x, internal_size.y, near_plane, 0.0f };
+                DilateVelocityPushConstants pc{
+                    internal_size.x, internal_size.y,
+                    static_cast<float>(jitter_delta_uv.x), static_cast<float>(jitter_delta_uv.y)
+                };
                 const auto pc_bytes = make_push_constant_bytes(pc);
 
                 const int64_t cl = rd->compute_list_begin();
                 rd->compute_list_bind_compute_pipeline(cl, dilate_pipeline);
                 rd->compute_list_bind_uniform_set(cl, uset, 0);
                 rd->compute_list_set_push_constant(cl, pc_bytes, static_cast<uint32_t>(pc_bytes.size()));
-                rd->compute_list_dispatch(cl, internal_groups_x, internal_groups_y, 1);
+                rd->compute_list_dispatch(cl, groups_x, groups_y, 1);
                 rd->compute_list_end();
             }
         }
 
-        // PASS 2: Temporal Reactive Mask Generation -> R8_UNORM (@ internal_size)
-        if (reactive_mask_enabled || taau_enabled || debug_view_mode == DEBUG_VIEW_REACTIVE_MASK) {
+        // PASS 2: temporal reactive mask -> R8_UNORM
+        if (run_reactive) {
             ScopedPassTimer timer("chronos_reactive_mask", godot::Color(0.95f, 0.55f, 0.15f, 1.0f));
             godot::TypedArray<godot::RDUniform> uniforms;
             uniforms.push_back(make_sampler_texture_uniform(0, nearest_sampler, color_tex));
@@ -388,18 +420,25 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
 
             const godot::RID uset = godot::UniformSetCacheRD::get_cache(reactive_shader, 0, uniforms);
             if (uset.is_valid()) {
-                ReactiveMaskPushConstants pc{ internal_size.x, internal_size.y, reactive_sensitivity, 2.5f };
+                ReactiveMaskPushConstants pc{
+                    internal_size.x, internal_size.y,
+                    reactive_sensitivity, 2.5f,
+                    static_cast<float>(jitter_delta_uv.x), static_cast<float>(jitter_delta_uv.y),
+                    depth_param_a, depth_param_b
+                };
                 const auto pc_bytes = make_push_constant_bytes(pc);
 
                 const int64_t cl = rd->compute_list_begin();
                 rd->compute_list_bind_compute_pipeline(cl, reactive_pipeline);
                 rd->compute_list_bind_uniform_set(cl, uset, 0);
                 rd->compute_list_set_push_constant(cl, pc_bytes, static_cast<uint32_t>(pc_bytes.size()));
-                rd->compute_list_dispatch(cl, internal_groups_x, internal_groups_y, 1);
+                rd->compute_list_dispatch(cl, groups_x, groups_y, 1);
                 rd->compute_list_end();
             }
         }
 
+        // Raw frame copy: next frame's shock reference, and this frame's composite/bloom input
+        // when TAA is off (so the color buffer is never sampled and written in the same pass).
         rd->texture_copy(
             color_tex,
             vt.prev_color_history,
@@ -409,14 +448,14 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
             0, 0, 0, 0
         );
 
-        // PASS 3: Native Compute TAAU Temporal Upscaler (@ target_size)
-        const uint32_t write_idx = vt.taau_write_index;
-        const uint32_t read_idx = 1u - write_idx;
-        godot::RID active_linear_hdr = color_tex;
-        godot::Vector2i active_resolution = internal_size;
+        // PASS 3: compute TAA at internal resolution
+        godot::RID resolved_linear_hdr = vt.prev_color_history;
+        bool resolved_has_confidence = false;
 
         if (taau_enabled) {
             ScopedPassTimer timer("chronos_taau", godot::Color(0.25f, 0.88f, 0.45f, 1.0f));
+            const uint32_t write_idx = vt.taau_write_index;
+            const uint32_t read_idx = 1u - write_idx;
             const godot::RID history_read_tex = vt.taau_history[read_idx];
             const godot::RID history_write_tex = vt.taau_history[write_idx];
 
@@ -430,23 +469,21 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
 
             const godot::RID uset = godot::UniformSetCacheRD::get_cache(taau_shader, 0, u_taau);
             if (uset.is_valid()) {
-                uint32_t taau_flags = 0;
-                if (first_frame_for_view) taau_flags |= 1u;
-                if (taau_sharpness > 0.001f) taau_flags |= 2u;
+                const uint32_t taau_flags = first_frame_for_view ? 1u : 0u;
 
                 TAAUPushConstants pc{
                     internal_size.x,
                     internal_size.y,
-                    target_size.x,
-                    target_size.y,
-                    jitter_x,
-                    jitter_y,
+                    internal_size.x,
+                    internal_size.y,
+                    static_cast<float>(jitter_px.x),
+                    static_cast<float>(jitter_px.y),
                     taau_feedback_min,
                     taau_feedback_max,
-                    taau_sharpness,
                     18.0f,
                     frame_counter,
-                    taau_flags
+                    taau_flags,
+                    0.0f
                 };
                 const auto pc_bytes = make_push_constant_bytes(pc);
 
@@ -454,21 +491,22 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
                 rd->compute_list_bind_compute_pipeline(cl, taau_pipeline);
                 rd->compute_list_bind_uniform_set(cl, uset, 0);
                 rd->compute_list_set_push_constant(cl, pc_bytes, static_cast<uint32_t>(pc_bytes.size()));
-                rd->compute_list_dispatch(cl, target_groups_x, target_groups_y, 1);
+                rd->compute_list_dispatch(cl, groups_x, groups_y, 1);
                 rd->compute_list_end();
 
                 vt.taau_write_index = read_idx;
-                active_linear_hdr = history_write_tex;
-                active_resolution = target_size;
+                resolved_linear_hdr = history_write_tex;
+                resolved_has_confidence = true;
             }
         }
 
-        // PASS 4: 3-Stage 256x256 Radix-2 Stockham FFT Bloom & Red Halation
-        if (fft_bloom_enabled || debug_view_mode == DEBUG_VIEW_FFT_BLOOM) {
+        // PASS 4: 256x256 radix-2 Stockham FFT bloom & red halation
+        const bool run_bloom = fft_bloom_enabled || debug_view_mode == DEBUG_VIEW_FFT_BLOOM;
+        if (run_bloom) {
             ScopedPassTimer timer("chronos_fft_bloom", godot::Color(0.85f, 0.35f, 0.90f, 1.0f));
             {
                 godot::TypedArray<godot::RDUniform> u_horiz;
-                u_horiz.push_back(make_sampler_texture_uniform(0, linear_sampler, active_linear_hdr));
+                u_horiz.push_back(make_sampler_texture_uniform(0, linear_sampler, resolved_linear_hdr));
                 u_horiz.push_back(make_image_uniform(1, vt.fft_ping_rg));
                 u_horiz.push_back(make_image_uniform(2, vt.fft_ping_b));
 
@@ -495,7 +533,7 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
 
                 const godot::RID uset = godot::UniformSetCacheRD::get_cache(fft_vert_shader, 0, u_vert);
                 if (uset.is_valid()) {
-                    FFTVerticalKernelPushConstants pc{ 1.0f, 0.45f, halation_intensity, aperture_blades };
+                    FFTVerticalKernelPushConstants pc{ 1.0f, 0.45f, halation_intensity, aperture_blades, aspect_ratio, 0.0f, 0.0f, 0.0f };
                     const auto pc_bytes = make_push_constant_bytes(pc);
 
                     const int64_t cl = rd->compute_list_begin();
@@ -528,66 +566,45 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
             }
         }
 
-        // PASS 5: ACEScg Bloom Composite & ACES 2.0 Output Display Transform
-        const godot::RID display_target_tex = taau_enabled ? vt.taau_final_display : color_tex;
-        if (taau_enabled) {
-            rd->texture_copy(
-                active_linear_hdr,
-                vt.taau_final_display,
-                godot::Vector3(0, 0, 0),
-                godot::Vector3(0, 0, 0),
-                godot::Vector3(target_size.x, target_size.y, 1),
-                0, 0, 0, 0
-            );
-        }
-
-        if (fft_bloom_enabled || aces_odt_enabled || debug_view_mode != DEBUG_VIEW_FINAL) {
+        // PASS 5: composite (sharpen, bloom, optional SDR look) -> linear Rec.709 into the color buffer.
+        // Must run whenever TAA ran, or the resolved frame would never reach the screen.
+        const bool sharpen = taau_enabled && resolved_has_confidence && taau_sharpness > 0.001f;
+        if (taau_enabled || fft_bloom_enabled || aces_odt_enabled || exposure_ev != 0.0f || debug_view_mode != DEBUG_VIEW_FINAL) {
             ScopedPassTimer timer("chronos_aces2_odt", godot::Color(0.95f, 0.82f, 0.22f, 1.0f));
-            godot::TypedArray<godot::RDUniform> u_odt;
-            u_odt.push_back(make_image_uniform(0, display_target_tex));
-            u_odt.push_back(make_sampler_texture_uniform(1, linear_sampler, vt.bloom_spatial));
-            u_odt.push_back(make_sampler_texture_uniform(2, nearest_sampler, vt.dilated_velocity));
-            u_odt.push_back(make_sampler_texture_uniform(3, nearest_sampler, vt.reactive_mask));
+            godot::TypedArray<godot::RDUniform> u_comp;
+            u_comp.push_back(make_sampler_texture_uniform(0, nearest_sampler, resolved_linear_hdr));
+            u_comp.push_back(make_sampler_texture_uniform(1, linear_sampler, vt.bloom_spatial));
+            u_comp.push_back(make_sampler_texture_uniform(2, nearest_sampler, vt.dilated_velocity));
+            u_comp.push_back(make_sampler_texture_uniform(3, nearest_sampler, vt.reactive_mask));
+            u_comp.push_back(make_image_uniform(4, color_tex));
 
-            const godot::RID uset = godot::UniformSetCacheRD::get_cache(aces_odt_shader, 0, u_odt);
+            const godot::RID uset = godot::UniformSetCacheRD::get_cache(aces_odt_shader, 0, u_comp);
             if (uset.is_valid()) {
                 uint32_t flags = 0;
                 if (fft_bloom_enabled) flags |= 1u;
                 if (aces_odt_enabled) flags |= 2u;
+                if (sharpen) flags |= 4u;
+                if (resolved_has_confidence) flags |= 8u;
 
-                ACESODTPushConstants pc{
-                    active_resolution.x,
-                    active_resolution.y,
+                CompositePushConstants pc{
+                    internal_size.x,
+                    internal_size.y,
                     exposure_scale,
-                    peak_luminance_nits,
-                    output_display_mode,
+                    taau_sharpness,
                     debug_view_mode,
-                    frame_counter,
-                    flags
+                    flags,
+                    0.0f,
+                    0.0f
                 };
                 const auto pc_bytes = make_push_constant_bytes(pc);
-
-                const uint32_t odt_groups_x = static_cast<uint32_t>((active_resolution.x + 7) / 8);
-                const uint32_t odt_groups_y = static_cast<uint32_t>((active_resolution.y + 7) / 8);
 
                 const int64_t cl = rd->compute_list_begin();
                 rd->compute_list_bind_compute_pipeline(cl, aces_odt_pipeline);
                 rd->compute_list_bind_uniform_set(cl, uset, 0);
                 rd->compute_list_set_push_constant(cl, pc_bytes, static_cast<uint32_t>(pc_bytes.size()));
-                rd->compute_list_dispatch(cl, odt_groups_x, odt_groups_y, 1);
+                rd->compute_list_dispatch(cl, groups_x, groups_y, 1);
                 rd->compute_list_end();
             }
-        }
-
-        if (taau_enabled && target_size == internal_size) {
-            rd->texture_copy(
-                vt.taau_final_display,
-                color_tex,
-                godot::Vector3(0, 0, 0),
-                godot::Vector3(0, 0, 0),
-                godot::Vector3(internal_size.x, internal_size.y, 1),
-                0, 0, 0, 0
-            );
         }
     }
 
@@ -682,14 +699,8 @@ godot::RID ChronosVPUCompositorEffect::_create_2d_texture(
     return rd->texture_create(fmt, view);
 }
 
-bool ChronosVPUCompositorEffect::_ensure_view_targets(
-    const godot::Vector2i &p_internal_size,
-    const godot::Vector2i &p_target_size,
-    uint32_t p_view_count
-) {
-    if (cached_internal_size == p_internal_size &&
-        cached_target_size == p_target_size &&
-        view_targets.size() == p_view_count) {
+bool ChronosVPUCompositorEffect::_ensure_view_targets(const godot::Vector2i &p_internal_size, uint32_t p_view_count) {
+    if (cached_internal_size == p_internal_size && view_targets.size() == p_view_count) {
         return true;
     }
 
@@ -697,8 +708,6 @@ bool ChronosVPUCompositorEffect::_ensure_view_targets(
 
     const uint32_t iw = static_cast<uint32_t>(p_internal_size.x);
     const uint32_t ih = static_cast<uint32_t>(p_internal_size.y);
-    const uint32_t tw = static_cast<uint32_t>(p_target_size.x);
-    const uint32_t th = static_cast<uint32_t>(p_target_size.y);
 
     const uint32_t rw_sample_copy_usage =
         godot::RenderingDevice::TEXTURE_USAGE_STORAGE_BIT |
@@ -719,9 +728,8 @@ bool ChronosVPUCompositorEffect::_ensure_view_targets(
         vt.dilated_velocity = _create_2d_texture(iw, ih, godot::RenderingDevice::DATA_FORMAT_R16G16_SFLOAT, rw_sample_copy_usage);
         vt.reactive_mask = _create_2d_texture(iw, ih, godot::RenderingDevice::DATA_FORMAT_R8_UNORM, rw_sample_copy_usage);
         vt.prev_color_history = _create_2d_texture(iw, ih, godot::RenderingDevice::DATA_FORMAT_R16G16B16A16_SFLOAT, history_usage);
-        vt.taau_history[0] = _create_2d_texture(tw, th, godot::RenderingDevice::DATA_FORMAT_R16G16B16A16_SFLOAT, rw_sample_copy_usage);
-        vt.taau_history[1] = _create_2d_texture(tw, th, godot::RenderingDevice::DATA_FORMAT_R16G16B16A16_SFLOAT, rw_sample_copy_usage);
-        vt.taau_final_display = _create_2d_texture(tw, th, godot::RenderingDevice::DATA_FORMAT_R16G16B16A16_SFLOAT, rw_sample_copy_usage);
+        vt.taau_history[0] = _create_2d_texture(iw, ih, godot::RenderingDevice::DATA_FORMAT_R16G16B16A16_SFLOAT, rw_sample_copy_usage);
+        vt.taau_history[1] = _create_2d_texture(iw, ih, godot::RenderingDevice::DATA_FORMAT_R16G16B16A16_SFLOAT, rw_sample_copy_usage);
         vt.fft_ping_rg = _create_2d_texture(kFFTGridSize, kFFTGridSize, godot::RenderingDevice::DATA_FORMAT_R32G32B32A32_SFLOAT, fft_storage_usage);
         vt.fft_ping_b = _create_2d_texture(kFFTGridSize, kFFTGridSize, godot::RenderingDevice::DATA_FORMAT_R32G32B32A32_SFLOAT, fft_storage_usage);
         vt.fft_pong_rg = _create_2d_texture(kFFTGridSize, kFFTGridSize, godot::RenderingDevice::DATA_FORMAT_R32G32B32A32_SFLOAT, fft_storage_usage);
@@ -729,10 +737,11 @@ bool ChronosVPUCompositorEffect::_ensure_view_targets(
         vt.bloom_spatial = _create_2d_texture(kFFTGridSize, kFFTGridSize, godot::RenderingDevice::DATA_FORMAT_R16G16B16A16_SFLOAT, rw_sample_copy_usage);
         vt.taau_write_index = 0;
         vt.has_valid_history = false;
+        vt.has_prev_jitter = false;
 
         if (!vt.dilated_velocity.is_valid() || !vt.reactive_mask.is_valid() ||
             !vt.prev_color_history.is_valid() || !vt.taau_history[0].is_valid() ||
-            !vt.taau_history[1].is_valid() || !vt.taau_final_display.is_valid() ||
+            !vt.taau_history[1].is_valid() ||
             !vt.fft_ping_rg.is_valid() || !vt.fft_ping_b.is_valid() ||
             !vt.fft_pong_rg.is_valid() || !vt.fft_pong_b.is_valid() ||
             !vt.bloom_spatial.is_valid()) {
@@ -743,7 +752,6 @@ bool ChronosVPUCompositorEffect::_ensure_view_targets(
     }
 
     cached_internal_size = p_internal_size;
-    cached_target_size = p_target_size;
     taau_reset_requested = true;
     return true;
 }
@@ -799,7 +807,6 @@ void ChronosVPUCompositorEffect::_release_view_targets() {
             free_tex(vt.prev_color_history);
             free_tex(vt.taau_history[0]);
             free_tex(vt.taau_history[1]);
-            free_tex(vt.taau_final_display);
             free_tex(vt.fft_ping_rg);
             free_tex(vt.fft_ping_b);
             free_tex(vt.fft_pong_rg);
@@ -809,7 +816,6 @@ void ChronosVPUCompositorEffect::_release_view_targets() {
     }
     view_targets.clear();
     cached_internal_size = godot::Vector2i(0, 0);
-    cached_target_size = godot::Vector2i(0, 0);
 }
 
 godot::String ChronosVPUCompositorEffect::_load_and_preprocess_glsl(
@@ -852,12 +858,12 @@ godot::String ChronosVPUCompositorEffect::_load_and_preprocess_glsl(
                     ? candidate_local
                     : candidate_shared;
 
-                resolved_source += _load_and_preprocess_glsl(target_include, p_visited_paths) + "\n";
+                resolved_source += _load_and_preprocess_glsl(target_include, p_visited_paths) + godot::String("\n");
                 continue;
             }
         }
 
-        resolved_source += line + "\n";
+        resolved_source += line + godot::String("\n");
     }
 
     return resolved_source;
