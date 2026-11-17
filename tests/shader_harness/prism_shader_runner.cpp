@@ -1,26 +1,36 @@
 // Prism RP compute-shader test runner.
 //
 // Runs a sequence of compute dispatches on any Vulkan 1.3 device (in CI and dev containers that is
-// Mesa's lavapipe, a CPU implementation) and dumps images back to disk, so shader math can be
-// checked numerically without Godot or a GPU. Driven by a JSON job file written by
+// Mesa's lavapipe, a CPU implementation) and dumps images and buffers back to disk, so shader math
+// can be checked numerically without Godot or a GPU. Driven by a JSON job file written by
 // tests/shader_harness/harness.py:
 //
 // {
-//   "images":     { "<name>": { "format": "rgba16f", "width": 64, "height": 32, "data": "in.bin" | null } },
+//   "images":     { "<name>": { "format": "rgba16f", "width": 64, "height": 32, "mips": 1, "layers": 1,
+//                               "array": false, "data": "in.bin" | null } },
+//   "buffers":    { "<name>": { "size": 256, "data": "in.bin" | null } },
 //   "dispatches": [ { "spv": "x.spv", "push_constants": "<hex>", "groups": [x, y, z],
-//                     "bindings": [ { "binding": 0, "image": "<name>", "kind": "sampled_nearest" } ] } ],
-//   "outputs":    { "<name>": "out.bin" }
+//                     "indirect": { "buffer": "<name>", "offset": 0 },          (optional, replaces groups)
+//                     "bindings": [ { "binding": 0, "image": "<name>", "kind": "sampled_nearest" },
+//                                   { "binding": 1, "image": "<name>", "kind": "storage", "mip": 2 },
+//                                   { "binding": 2, "images": ["a", "b"], "kind": "sampled_linear" },
+//                                   { "binding": 3, "buffer": "<name>", "kind": "storage_buffer" } ] } ],
+//   "outputs":    { "<name>": "out.bin" }                                     (images or buffers)
 // }
 //
-// kind: sampled_nearest | sampled_linear (combined image sampler, clamp to edge) | storage.
-// Images stay in VK_IMAGE_LAYOUT_GENERAL for their whole life, so one image can be sampled in one
-// dispatch and written in the next; a full memory barrier separates consecutive dispatches.
+// kind: sampled_nearest | sampled_linear (combined image sampler, clamp to edge, all mips) |
+//       storage (one mip, all layers) | storage_buffer | uniform_buffer.
+// Image data and readback hold every mip, mip-major then layer-major; image input may also be just
+// mip 0 (the other mips start at zero). Missing data means zero-filled. Images stay in
+// VK_IMAGE_LAYOUT_GENERAL for their whole life, so one image can be sampled in one dispatch and
+// written in the next; a full memory barrier separates consecutive dispatches.
 // With PRISM_VALIDATION=1 the Khronos validation layer is enabled and any error fails the run.
 
 #include <vulkan/vulkan.h>
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -68,6 +78,8 @@ FormatInfo format_info(const std::string &name) {
         { "rgba32f", { VK_FORMAT_R32G32B32A32_SFLOAT, 16 } },
         { "r8", { VK_FORMAT_R8_UNORM, 1 } },
         { "rgba8", { VK_FORMAT_R8G8B8A8_UNORM, 4 } },
+        { "r32ui", { VK_FORMAT_R32_UINT, 4 } },
+        { "rg32ui", { VK_FORMAT_R32G32_UINT, 8 } },
     };
     auto it = table.find(name);
     if (it == table.end()) {
@@ -123,27 +135,68 @@ struct Buffer {
 struct Image {
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
-    VkImageView view = VK_NULL_HANDLE;
+    VkImageView view_all = VK_NULL_HANDLE;        // every mip and layer (sampled bindings)
+    std::vector<VkImageView> mip_views;           // one per mip, every layer (storage bindings)
     FormatInfo info{};
-    uint32_t width = 0, height = 0;
+    uint32_t width = 0, height = 0, mips = 1, layers = 1;
+    bool array = false;
     Buffer staging;   // host-visible, used for upload and readback
+
+    uint32_t mip_width(uint32_t m) const { return std::max(1u, width >> m); }
+    uint32_t mip_height(uint32_t m) const { return std::max(1u, height >> m); }
+    VkDeviceSize mip_bytes(uint32_t m) const {
+        return static_cast<VkDeviceSize>(mip_width(m)) * mip_height(m) * layers * info.texel_size;
+    }
+    VkDeviceSize total_bytes() const {
+        VkDeviceSize total = 0;
+        for (uint32_t m = 0; m < mips; ++m) total += mip_bytes(m);
+        return total;
+    }
+    std::vector<VkBufferImageCopy> regions() const {
+        std::vector<VkBufferImageCopy> out;
+        VkDeviceSize offset = 0;
+        for (uint32_t m = 0; m < mips; ++m) {
+            VkBufferImageCopy r{};
+            r.bufferOffset = offset;
+            r.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, m, 0, layers };
+            r.imageExtent = { mip_width(m), mip_height(m), 1 };
+            out.push_back(r);
+            offset += mip_bytes(m);
+        }
+        return out;
+    }
 };
 
-Buffer make_host_buffer(const Context &ctx, VkDeviceSize size) {
+struct DeviceBuffer {
+    Buffer device;
+    Buffer staging;
+};
+
+Buffer make_buffer(const Context &ctx, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags flags) {
     Buffer b;
     b.size = size;
     VkBufferCreateInfo ci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     ci.size = size;
-    ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    ci.usage = usage;
     VK_CHECK(vkCreateBuffer(ctx.device, &ci, nullptr, &b.buffer));
     VkMemoryRequirements req;
     vkGetBufferMemoryRequirements(ctx.device, b.buffer, &req);
     VkMemoryAllocateInfo ai{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
     ai.allocationSize = req.size;
-    ai.memoryTypeIndex = ctx.memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    ai.memoryTypeIndex = ctx.memory_type(req.memoryTypeBits, flags);
     VK_CHECK(vkAllocateMemory(ctx.device, &ai, nullptr, &b.memory));
     VK_CHECK(vkBindBufferMemory(ctx.device, b.buffer, b.memory, 0));
     return b;
+}
+
+Buffer make_host_buffer(const Context &ctx, VkDeviceSize size) {
+    return make_buffer(ctx, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+}
+
+void destroy_buffer(const Context &ctx, Buffer &b) {
+    vkDestroyBuffer(ctx.device, b.buffer, nullptr);
+    vkFreeMemory(ctx.device, b.memory, nullptr);
 }
 
 void init_context(Context &ctx) {
@@ -211,15 +264,26 @@ void init_context(Context &ctx) {
     qci.queueCount = 1;
     qci.pQueuePriorities = &priority;
 
+    // Texture arrays indexed with nonuniformEXT (the Track B material passes) need descriptor
+    // indexing; enable what the device has.
+    VkPhysicalDeviceVulkan12Features supported12{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+    VkPhysicalDeviceFeatures2 supported{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+    supported.pNext = &supported12;
+    vkGetPhysicalDeviceFeatures2(ctx.physical, &supported);
+
+    VkPhysicalDeviceVulkan12Features features12{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+    features12.runtimeDescriptorArray = supported12.runtimeDescriptorArray;
+    features12.shaderSampledImageArrayNonUniformIndexing = supported12.shaderSampledImageArrayNonUniformIndexing;
+    VkPhysicalDeviceFeatures2 features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+    features.pNext = &features12;
     // Godot enables these for storage images written without a format qualifier match check.
-    VkPhysicalDeviceFeatures features{};
-    features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
-    features.shaderStorageImageReadWithoutFormat = VK_TRUE;
+    features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+    features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
 
     VkDeviceCreateInfo dci{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
+    dci.pNext = &features;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    dci.pEnabledFeatures = &features;
     VK_CHECK(vkCreateDevice(ctx.physical, &dci, nullptr, &ctx.device));
     vkGetDeviceQueue(ctx.device, ctx.queue_family, 0, &ctx.queue);
 
@@ -228,18 +292,32 @@ void init_context(Context &ctx) {
     std::cerr << "device: " << props.deviceName << "\n";
 }
 
-Image make_image(const Context &ctx, const std::string &format, uint32_t w, uint32_t h) {
+VkImageView make_view(const Context &ctx, const Image &img, uint32_t base_mip, uint32_t mip_count) {
+    VkImageViewCreateInfo vci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    vci.image = img.image;
+    vci.viewType = img.array ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = img.info.format;
+    vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, base_mip, mip_count, 0, img.layers };
+    VkImageView view;
+    VK_CHECK(vkCreateImageView(ctx.device, &vci, nullptr, &view));
+    return view;
+}
+
+Image make_image(const Context &ctx, const json &spec) {
     Image img;
-    img.info = format_info(format);
-    img.width = w;
-    img.height = h;
+    img.info = format_info(spec.at("format"));
+    img.width = spec.at("width");
+    img.height = spec.at("height");
+    img.mips = spec.value("mips", 1u);
+    img.layers = spec.value("layers", 1u);
+    img.array = spec.value("array", img.layers > 1);
 
     VkImageCreateInfo ci{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
     ci.imageType = VK_IMAGE_TYPE_2D;
     ci.format = img.info.format;
-    ci.extent = { w, h, 1 };
-    ci.mipLevels = 1;
-    ci.arrayLayers = 1;
+    ci.extent = { img.width, img.height, 1 };
+    ci.mipLevels = img.mips;
+    ci.arrayLayers = img.layers;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -254,14 +332,11 @@ Image make_image(const Context &ctx, const std::string &format, uint32_t w, uint
     VK_CHECK(vkAllocateMemory(ctx.device, &ai, nullptr, &img.memory));
     VK_CHECK(vkBindImageMemory(ctx.device, img.image, img.memory, 0));
 
-    VkImageViewCreateInfo vci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-    vci.image = img.image;
-    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format = img.info.format;
-    vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    VK_CHECK(vkCreateImageView(ctx.device, &vci, nullptr, &img.view));
-
-    img.staging = make_host_buffer(ctx, static_cast<VkDeviceSize>(w) * h * img.info.texel_size);
+    img.view_all = make_view(ctx, img, 0, img.mips);
+    for (uint32_t m = 0; m < img.mips; ++m) {
+        img.mip_views.push_back(make_view(ctx, img, m, 1));
+    }
+    img.staging = make_host_buffer(ctx, img.total_bytes());
     return img;
 }
 
@@ -271,7 +346,7 @@ VkSampler make_sampler(const Context &ctx, VkFilter filter) {
     sci.minFilter = filter;
     sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
     sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sci.maxLod = 0.0f;
+    sci.maxLod = VK_LOD_CLAMP_NONE;
     VkSampler s;
     VK_CHECK(vkCreateSampler(ctx.device, &sci, nullptr, &s));
     return s;
@@ -280,8 +355,26 @@ VkSampler make_sampler(const Context &ctx, VkFilter filter) {
 void full_barrier(VkCommandBuffer cmd) {
     VkMemoryBarrier mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
     mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
-    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+            VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+}
+
+// Copies a data file into a mapped staging buffer. `allowed_short` is a smaller size that is also
+// accepted (an image's mip 0); anything not covered stays zero.
+void fill_staging(const Context &ctx, const Buffer &staging, const json &spec, const std::string &what, VkDeviceSize allowed_short) {
+    void *mapped = nullptr;
+    VK_CHECK(vkMapMemory(ctx.device, staging.memory, 0, staging.size, 0, &mapped));
+    std::memset(mapped, 0, staging.size);
+    if (spec.contains("data") && !spec.at("data").is_null()) {
+        const std::vector<char> data = read_file(spec.at("data"));
+        if (data.size() != staging.size && data.size() != allowed_short) {
+            throw std::runtime_error(what + ": data is " + std::to_string(data.size()) + " bytes, expected " +
+                    std::to_string(staging.size));
+        }
+        std::memcpy(mapped, data.data(), data.size());
+    }
+    vkUnmapMemory(ctx.device, staging.memory);
 }
 
 int run(const json &job) {
@@ -308,35 +401,39 @@ int run(const json &job) {
     // Images: create, move to GENERAL, upload or clear.
     std::map<std::string, Image> images;
     for (const auto &[name, spec] : job.at("images").items()) {
-        Image img = make_image(ctx, spec.at("format"), spec.at("width"), spec.at("height"));
-        void *mapped = nullptr;
-        VK_CHECK(vkMapMemory(ctx.device, img.staging.memory, 0, img.staging.size, 0, &mapped));
-        if (spec.contains("data") && !spec.at("data").is_null()) {
-            const std::vector<char> data = read_file(spec.at("data"));
-            if (data.size() != img.staging.size) {
-                throw std::runtime_error("image '" + name + "': data is " + std::to_string(data.size()) +
-                        " bytes, expected " + std::to_string(img.staging.size));
-            }
-            std::memcpy(mapped, data.data(), data.size());
-        } else {
-            std::memset(mapped, 0, img.staging.size);
-        }
-        vkUnmapMemory(ctx.device, img.staging.memory);
+        Image img = make_image(ctx, spec);
+        fill_staging(ctx, img.staging, spec, "image '" + name + "'", img.mip_bytes(0));
 
         VkImageMemoryBarrier ib{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
         ib.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
         ib.srcQueueFamilyIndex = ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         ib.image = img.image;
-        ib.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        ib.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, img.mips, 0, img.layers };
         ib.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &ib);
 
-        VkBufferImageCopy region{};
-        region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-        region.imageExtent = { img.width, img.height, 1 };
-        vkCmdCopyBufferToImage(cmd, img.staging.buffer, img.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+        const std::vector<VkBufferImageCopy> regions = img.regions();
+        vkCmdCopyBufferToImage(cmd, img.staging.buffer, img.image, VK_IMAGE_LAYOUT_GENERAL,
+                static_cast<uint32_t>(regions.size()), regions.data());
         images.emplace(name, img);
+    }
+
+    // Buffers: create, upload or clear.
+    std::map<std::string, DeviceBuffer> buffers;
+    if (job.contains("buffers")) {
+        for (const auto &[name, spec] : job.at("buffers").items()) {
+            const VkDeviceSize size = spec.at("size");
+            DeviceBuffer b;
+            b.device = make_buffer(ctx, size,
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, 0);
+            b.staging = make_host_buffer(ctx, size);
+            fill_staging(ctx, b.staging, spec, "buffer '" + name + "'", size);
+            VkBufferCopy region{ 0, 0, size };
+            vkCmdCopyBuffer(cmd, b.staging.buffer, b.device.buffer, 1, &region);
+            buffers.emplace(name, b);
+        }
     }
     full_barrier(cmd);
 
@@ -356,35 +453,49 @@ int run(const json &job) {
         VK_CHECK(vkCreateShaderModule(ctx.device, &smci, nullptr, &module));
         modules.push_back(module);
 
-        std::vector<VkDescriptorSetLayoutBinding> bindings;
-        std::vector<VkDescriptorImageInfo> image_infos;
-        std::vector<VkDescriptorType> types;
         const json &binds = d.at("bindings");
-        image_infos.reserve(binds.size());
-        uint32_t sampled = 0, storage = 0;
-        for (const json &b : binds) {
+        std::vector<VkDescriptorSetLayoutBinding> bindings;
+        std::vector<std::vector<VkDescriptorImageInfo>> image_infos(binds.size());
+        std::vector<VkDescriptorBufferInfo> buffer_infos(binds.size());
+        std::map<VkDescriptorType, uint32_t> type_counts;
+        for (size_t i = 0; i < binds.size(); ++i) {
+            const json &b = binds[i];
             const std::string kind = b.at("kind");
-            const Image &img = images.at(b.at("image").get<std::string>());
             VkDescriptorSetLayoutBinding lb{};
             lb.binding = b.at("binding");
             lb.descriptorCount = 1;
             lb.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-            VkDescriptorImageInfo info{};
-            info.imageView = img.view;
-            info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            if (kind == "storage") {
-                lb.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-                ++storage;
-            } else if (kind == "sampled_nearest" || kind == "sampled_linear") {
-                lb.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                info.sampler = (kind == "sampled_linear") ? linear : nearest;
-                ++sampled;
+            if (kind == "storage_buffer" || kind == "uniform_buffer") {
+                lb.descriptorType = (kind == "storage_buffer") ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                const DeviceBuffer &buf = buffers.at(b.at("buffer").get<std::string>());
+                buffer_infos[i] = { buf.device.buffer, 0, VK_WHOLE_SIZE };
             } else {
-                throw std::runtime_error("unknown binding kind: " + kind);
+                std::vector<std::string> names;
+                if (b.contains("images")) {
+                    names = b.at("images").get<std::vector<std::string>>();
+                } else {
+                    names.push_back(b.at("image").get<std::string>());
+                }
+                lb.descriptorCount = static_cast<uint32_t>(names.size());
+                for (const std::string &n : names) {
+                    const Image &img = images.at(n);
+                    VkDescriptorImageInfo info{};
+                    info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+                    if (kind == "storage") {
+                        lb.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                        info.imageView = img.mip_views.at(b.value("mip", 0u));
+                    } else if (kind == "sampled_nearest" || kind == "sampled_linear") {
+                        lb.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                        info.imageView = img.view_all;
+                        info.sampler = (kind == "sampled_linear") ? linear : nearest;
+                    } else {
+                        throw std::runtime_error("unknown binding kind: " + kind);
+                    }
+                    image_infos[i].push_back(info);
+                }
             }
+            type_counts[lb.descriptorType] += lb.descriptorCount;
             bindings.push_back(lb);
-            image_infos.push_back(info);
-            types.push_back(lb.descriptorType);
         }
 
         VkDescriptorSetLayoutCreateInfo dslci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
@@ -416,8 +527,7 @@ int run(const json &job) {
         pipelines.push_back(pipeline);
 
         std::vector<VkDescriptorPoolSize> sizes;
-        if (sampled) sizes.push_back({ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sampled });
-        if (storage) sizes.push_back({ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, storage });
+        for (const auto &[type, n] : type_counts) sizes.push_back({ type, n });
         VkDescriptorPoolCreateInfo dpci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         dpci.maxSets = 1;
         dpci.poolSizeCount = static_cast<uint32_t>(sizes.size());
@@ -438,9 +548,13 @@ int run(const json &job) {
             VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
             w.dstSet = set;
             w.dstBinding = bindings[i].binding;
-            w.descriptorCount = 1;
-            w.descriptorType = types[i];
-            w.pImageInfo = &image_infos[i];
+            w.descriptorCount = bindings[i].descriptorCount;
+            w.descriptorType = bindings[i].descriptorType;
+            if (image_infos[i].empty()) {
+                w.pBufferInfo = &buffer_infos[i];
+            } else {
+                w.pImageInfo = image_infos[i].data();
+            }
             writes.push_back(w);
         }
         vkUpdateDescriptorSets(ctx.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
@@ -450,18 +564,28 @@ int run(const json &job) {
         if (!pc.empty()) {
             vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, static_cast<uint32_t>(pc.size()), pc.data());
         }
-        const json &g = d.at("groups");
-        vkCmdDispatch(cmd, g.at(0), g.at(1), g.at(2));
+        if (d.contains("indirect") && !d.at("indirect").is_null()) {
+            const json &ind = d.at("indirect");
+            vkCmdDispatchIndirect(cmd, buffers.at(ind.at("buffer").get<std::string>()).device.buffer, ind.value("offset", 0u));
+        } else {
+            const json &g = d.at("groups");
+            vkCmdDispatch(cmd, g.at(0), g.at(1), g.at(2));
+        }
         full_barrier(cmd);
     }
 
     // Readback.
     for (const auto &[name, path] : job.at("outputs").items()) {
-        const Image &img = images.at(name);
-        VkBufferImageCopy region{};
-        region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-        region.imageExtent = { img.width, img.height, 1 };
-        vkCmdCopyImageToBuffer(cmd, img.image, VK_IMAGE_LAYOUT_GENERAL, img.staging.buffer, 1, &region);
+        if (images.count(name)) {
+            const Image &img = images.at(name);
+            const std::vector<VkBufferImageCopy> regions = img.regions();
+            vkCmdCopyImageToBuffer(cmd, img.image, VK_IMAGE_LAYOUT_GENERAL, img.staging.buffer,
+                    static_cast<uint32_t>(regions.size()), regions.data());
+        } else {
+            const DeviceBuffer &b = buffers.at(name);
+            VkBufferCopy region{ 0, 0, b.device.size };
+            vkCmdCopyBuffer(cmd, b.device.buffer, b.staging.buffer, 1, &region);
+        }
     }
     VkMemoryBarrier hb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER };
     hb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -479,12 +603,12 @@ int run(const json &job) {
     VK_CHECK(vkWaitForFences(ctx.device, 1, &fence, VK_TRUE, UINT64_MAX));
 
     for (const auto &[name, path] : job.at("outputs").items()) {
-        const Image &img = images.at(name);
+        const Buffer &staging = images.count(name) ? images.at(name).staging : buffers.at(name).staging;
         void *mapped = nullptr;
-        VK_CHECK(vkMapMemory(ctx.device, img.staging.memory, 0, img.staging.size, 0, &mapped));
+        VK_CHECK(vkMapMemory(ctx.device, staging.memory, 0, staging.size, 0, &mapped));
         std::ofstream out(path.get<std::string>(), std::ios::binary);
-        out.write(static_cast<const char *>(mapped), static_cast<std::streamsize>(img.staging.size));
-        vkUnmapMemory(ctx.device, img.staging.memory);
+        out.write(static_cast<const char *>(mapped), static_cast<std::streamsize>(staging.size));
+        vkUnmapMemory(ctx.device, staging.memory);
     }
 
     // The process exits right after; the OS reclaims everything. Tearing down the device keeps
@@ -497,11 +621,15 @@ int run(const json &job) {
     for (auto p : pools) vkDestroyDescriptorPool(ctx.device, p, nullptr);
     for (auto m : modules) vkDestroyShaderModule(ctx.device, m, nullptr);
     for (auto &[name, img] : images) {
-        vkDestroyImageView(ctx.device, img.view, nullptr);
+        vkDestroyImageView(ctx.device, img.view_all, nullptr);
+        for (auto v : img.mip_views) vkDestroyImageView(ctx.device, v, nullptr);
         vkDestroyImage(ctx.device, img.image, nullptr);
         vkFreeMemory(ctx.device, img.memory, nullptr);
-        vkDestroyBuffer(ctx.device, img.staging.buffer, nullptr);
-        vkFreeMemory(ctx.device, img.staging.memory, nullptr);
+        destroy_buffer(ctx, img.staging);
+    }
+    for (auto &[name, b] : buffers) {
+        destroy_buffer(ctx, b.device);
+        destroy_buffer(ctx, b.staging);
     }
     vkDestroySampler(ctx.device, nearest, nullptr);
     vkDestroySampler(ctx.device, linear, nullptr);

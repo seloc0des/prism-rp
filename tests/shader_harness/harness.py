@@ -29,7 +29,7 @@ INCLUDE_DIR = SHADER_ROOT / "include"
 BUILD_DIR = REPO / "build" / "shader_harness"
 RUNNER = BUILD_DIR / "prism_shader_runner"
 
-# format -> (channels, numpy storage dtype, normalized unorm)
+# format -> (channels, numpy storage dtype, normalized unorm). Integer formats (uint32) come back as uint32.
 FORMATS = {
     "r32f": (1, np.float32, False),
     "rg16f": (2, np.float16, False),
@@ -37,6 +37,8 @@ FORMATS = {
     "rgba32f": (4, np.float32, False),
     "r8": (1, np.uint8, True),
     "rgba8": (4, np.uint8, True),
+    "r32ui": (1, np.uint32, False),
+    "rg32ui": (2, np.uint32, False),
 }
 
 
@@ -56,8 +58,10 @@ def build_runner() -> Path:
 
 
 def compile_shader(rel_path: str) -> Path:
-    src = SHADER_ROOT / rel_path
-    out = BUILD_DIR / "spv" / (rel_path.replace("/", "__") + ".spv")
+    """`rel_path` is relative to addons/prism_rp/shaders, or absolute (test-only shaders)."""
+    src = Path(rel_path) if Path(rel_path).is_absolute() else SHADER_ROOT / rel_path
+    tag = str(src.relative_to(REPO)) if src.is_relative_to(REPO) else str(src)
+    out = BUILD_DIR / "spv" / (tag.replace("/", "__") + ".spv")
     out.parent.mkdir(parents=True, exist_ok=True)
     newest_input = max([src.stat().st_mtime] + [p.stat().st_mtime for p in INCLUDE_DIR.glob("*.glsl")])
     if not out.exists() or out.stat().st_mtime < newest_input:
@@ -71,16 +75,22 @@ class Img:
     format: str
     width: int = 0
     height: int = 0
-    data: np.ndarray | None = None   # (height, width, channels) float values (unorm: 0..1)
+    data: np.ndarray | None = None   # mip 0: (height, width, channels), or (layers, height, width, channels)
+    mips: int = 1
+    layers: int = 1
+    array: bool | None = None        # 2D-array view; defaults to layers > 1
 
     def __post_init__(self):
         if self.data is not None:
-            channels = FORMATS[self.format][0]
-            arr = np.asarray(self.data, dtype=np.float64)
-            if arr.ndim == 2:
+            channels, dtype, _ = FORMATS[self.format]
+            arr = np.asarray(self.data, dtype=np.uint64 if dtype == np.uint32 else np.float64)
+            if arr.ndim == 2 or (arr.ndim == 3 and self.layers > 1):
                 arr = arr[..., None]
-            assert arr.shape[2] == channels, f"{self.format} needs {channels} channels, got {arr.shape}"
-            self.height, self.width = arr.shape[:2]
+            if arr.ndim == 3:
+                arr = arr[None]
+            assert arr.shape[0] == self.layers, f"expected {self.layers} layers, got {arr.shape}"
+            assert arr.shape[3] == channels, f"{self.format} needs {channels} channels, got {arr.shape}"
+            self.height, self.width = arr.shape[1:3]
             self.data = arr
 
     def to_bytes(self) -> bytes:
@@ -90,13 +100,32 @@ class Img:
             arr = np.clip(np.round(arr * 255.0), 0, 255)
         return np.ascontiguousarray(arr.astype(dtype)).tobytes()
 
+    def mip_shape(self, m: int) -> tuple[int, int, int, int]:
+        return (self.layers, max(1, self.height >> m), max(1, self.width >> m), FORMATS[self.format][0])
+
+
+@dataclass
+class Buf:
+    """A storage / uniform / indirect buffer. Comes back from run() as bytes."""
+    size: int = 0
+    data: bytes | None = None
+
+    def __post_init__(self):
+        if self.data is not None:
+            self.size = max(self.size, len(self.data))
+            self.data = bytes(self.data) + bytes(self.size - len(self.data))
+        assert self.size > 0, "buffer needs a size or data"
+
 
 @dataclass
 class Dispatch:
-    shader: str                                   # path relative to addons/prism_rp/shaders
-    bindings: dict[int, tuple[str, str]]          # binding -> (image name, kind)
+    shader: str                                   # path relative to addons/prism_rp/shaders, or absolute
+    # binding -> (image name, kind) | (image name, "storage", mip) | ([image names], sampled kind) |
+    #            (buffer name, "storage_buffer" | "uniform_buffer")
+    bindings: dict[int, tuple]
     pc: bytes = b""
     groups: tuple[int, int, int] = (1, 1, 1)
+    indirect: tuple[str, int] | None = None       # (buffer name, byte offset): vkCmdDispatchIndirect
 
 
 def groups_for(w: int, h: int, local: int = 8) -> tuple[int, int, int]:
@@ -112,22 +141,48 @@ class Harness:
     def __post_init__(self):
         self._runner = build_runner()
 
-    def run(self, images: dict[str, Img], dispatches: list[Dispatch], outputs: list[str]) -> dict[str, np.ndarray]:
+    def run(self, images: dict[str, Img], dispatches: list[Dispatch], outputs: list[str],
+            buffers: dict[str, Buf] | None = None) -> dict:
+        """Returns images as float32 arrays (uint32 for integer formats) shaped (h, w, c), with a leading layer
+        axis when layers > 1 and as a list per mip when mips > 1; buffers come back as bytes."""
+        buffers = buffers or {}
         work = Path(tempfile.mkdtemp(prefix="prism_harness_", dir=self.keep_dir))
-        job = {"images": {}, "dispatches": [], "outputs": {}}
+        job = {"images": {}, "buffers": {}, "dispatches": [], "outputs": {}}
         for name, img in images.items():
-            spec = {"format": img.format, "width": img.width, "height": img.height, "data": None}
+            spec = {"format": img.format, "width": img.width, "height": img.height, "mips": img.mips,
+                    "layers": img.layers, "array": img.layers > 1 if img.array is None else img.array, "data": None}
             if img.data is not None:
                 path = work / f"{name}.in"
                 path.write_bytes(img.to_bytes())
                 spec["data"] = str(path)
             job["images"][name] = spec
+        for name, buf in buffers.items():
+            spec = {"size": buf.size, "data": None}
+            if buf.data is not None:
+                path = work / f"{name}.buf"
+                path.write_bytes(buf.data)
+                spec["data"] = str(path)
+            job["buffers"][name] = spec
         for d in dispatches:
+            binds = []
+            for b, entry in sorted(d.bindings.items()):
+                target, kind = entry[0], entry[1]
+                spec = {"binding": b, "kind": kind}
+                if kind in ("storage_buffer", "uniform_buffer"):
+                    spec["buffer"] = target
+                elif isinstance(target, (list, tuple)):
+                    spec["images"] = list(target)
+                else:
+                    spec["image"] = target
+                if len(entry) > 2:
+                    spec["mip"] = entry[2]
+                binds.append(spec)
             job["dispatches"].append({
                 "spv": str(compile_shader(d.shader)),
                 "push_constants": d.pc.hex(),
                 "groups": list(d.groups),
-                "bindings": [{"binding": b, "image": img, "kind": kind} for b, (img, kind) in sorted(d.bindings.items())],
+                "indirect": None if d.indirect is None else {"buffer": d.indirect[0], "offset": d.indirect[1]},
+                "bindings": binds,
             })
         for name in outputs:
             job["outputs"][name] = str(work / f"{name}.out")
@@ -142,11 +197,24 @@ class Harness:
 
         result = {}
         for name in outputs:
+            raw = (work / f"{name}.out").read_bytes()
+            if name in buffers:
+                result[name] = raw
+                continue
             img = images[name]
             channels, dtype, unorm = FORMATS[img.format]
-            arr = np.frombuffer((work / f"{name}.out").read_bytes(), dtype=dtype).reshape(img.height, img.width, channels)
-            arr = arr.astype(np.float32)
-            result[name] = arr / 255.0 if unorm else arr
+            flat = np.frombuffer(raw, dtype=dtype)
+            mips, offset = [], 0
+            for m in range(img.mips):
+                shape = img.mip_shape(m)
+                count = int(np.prod(shape))
+                arr = flat[offset:offset + count].reshape(shape)
+                offset += count
+                if dtype != np.uint32:
+                    arr = arr.astype(np.float32)
+                    arr = arr / 255.0 if unorm else arr
+                mips.append(arr if img.layers > 1 else arr[0])
+            result[name] = mips if img.mips > 1 else mips[0]
         if self.keep_dir is None:
             shutil.rmtree(work, ignore_errors=True)
         return result

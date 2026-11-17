@@ -48,6 +48,8 @@ UNHOSTED = {
     "vis_hi_z_build",
     "vis_shade_materials",
     "vis_tile_classify",
+    "vsp_clear_pages",
+    "vsp_cull_meshlets",
     "vsp_page_request_and_invalidate",
     "vsp_raster_pages",
     "vsp_sample_shadows",
