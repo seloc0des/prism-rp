@@ -18,6 +18,7 @@ SHADER_ROOT = REPO / "addons" / "prism_rp" / "shaders"
 INCLUDE_DIR = SHADER_ROOT / "include"
 CHRONOS_H = REPO / "addons/prism_rp/include/prism_rp/chronos_vpu_effect.h"
 LUMINA_H = REPO / "addons/prism_rp/include/prism_rp/lumina_cascades_effect.h"
+RD_UTILS_H = REPO / "addons/prism_rp/include/prism_rp/prism_rd_utils.h"
 
 SHADER_TO_STRUCT = {
     "chronos_dilate_velocity": (CHRONOS_H, "DilateVelocityPushConstants"),
@@ -33,6 +34,7 @@ SHADER_TO_STRUCT = {
     "lumina_svgf_temporal": (LUMINA_H, "TemporalPushConstants"),
     "lumina_svgf_atrous": (LUMINA_H, "AtrousPushConstants"),
     "lumina_composite": (LUMINA_H, "CompositePushConstants"),
+    "prism_copy": (RD_UTILS_H, "PushConstants"),
 }
 
 SHADERS = sorted(p for p in SHADER_ROOT.rglob("*.comp.glsl"))

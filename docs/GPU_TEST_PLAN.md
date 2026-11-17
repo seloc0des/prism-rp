@@ -60,7 +60,7 @@ Every capture is frame 48, with the camera orbiting slowly and objects animating
 
 ### Errors first
 
-The report's **Errors** section lists any run with a Vulkan validation message (`VUID-...`, `SYNC-HAZARD`), a script error, or an exception. Anything there matters more than how the images look. The **Prism RP messages** column should be empty except for `chronos_godot_taa_guard`, which must show exactly one warning about Godot TAA.
+The report's **Errors** section lists any run with a Vulkan validation message (`VUID-...`, `SYNC-HAZARD`), a script error, or an exception. Anything there matters more than how the images look. An error that also shows up in that scene's `baseline_godot` run is labeled as coming from the engine or driver; Godot 4.4 trips at least one newer validation check (`VUID-vkQueueSubmit-pSignalSemaphores-00067`, swapchain semaphore reuse) on its own. The **Prism RP messages** column should be empty except for `chronos_godot_taa_guard`, which must show exactly one warning about Godot TAA.
 
 ### Chronos
 

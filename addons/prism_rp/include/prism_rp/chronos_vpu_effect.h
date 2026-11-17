@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "prism_rp/prism_rd_utils.h"
+
 #include <godot_cpp/classes/compositor_effect.hpp>
 #include <godot_cpp/classes/render_data.hpp>
 #include <godot_cpp/classes/rendering_device.hpp>
@@ -205,7 +207,7 @@ private:
     struct PerViewTargets {
         godot::RID dilated_velocity;                 // RG16F @ internal_size
         godot::RID reactive_mask;                    // R8_UNORM @ internal_size
-        godot::RID prev_color_history;               // RGBA16F @ internal_size: raw frame copy (shock reference + composite input when TAA is off)
+        godot::RID prev_color_history;               // RGBA16F @ internal_size: raw frame copy (compute copy) (shock reference + composite input when TAA is off)
         std::array<godot::RID, 2> taau_history;      // RGBA16F ping-pong @ internal_size (linear HDR + confidence)
         godot::RID fft_ping_rg;                      // RGBA32F 256x256 complex
         godot::RID fft_ping_b;                       // RGBA32F 256x256 complex
@@ -255,6 +257,8 @@ private:
 
     godot::RID aces_odt_shader;
     godot::RID aces_odt_pipeline;
+
+    rd_utils::ComputeCopy color_copy;
 
     std::vector<PerViewTargets> view_targets;
     godot::Vector2i cached_internal_size = godot::Vector2i(0, 0);

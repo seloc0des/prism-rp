@@ -27,6 +27,7 @@ Building **Prism RP** for Godot 4.x uses a dual-track engineering strategy:
 ### Phase 2: Lumina-Cascades GI & SVGF Denoiser (Weeks 7–11 — Track A)
 * Build hierarchical **6D Radiance Cascades** (screen-space Levels 0–2 merged into world-space probes Levels 3–5) with `VK_KHR_ray_query` and SDF cone-tracing fallback.
 * Pair with **ReSTIR** reservoir resampling and multi-pass **SVGF** spatiotemporal denoising + 3-iteration À-Trous filter.
+* **Status:** v1 is in (`LuminaCascadesCompositorEffect`): screen-space cascade levels 0-3 with octahedral probes, SVGF temporal + 3-iteration a-trous, applied through an albedo proxy because Forward+ has no albedo buffer. World-space levels, `VK_KHR_ray_query` / SDF fallback and ReSTIR are still to do.
 * **Gate 2 DoD:** Indirect lighting matches offline path-traced reference within **PSNR > 36 dB**; dynamic lights converge within **6 frames**; combined GI + SVGF budget **< 2.40 ms** on Tier 2.
 
 ### Phase 3: Meshlet Asset Pipeline & 64-Bit Visibility Buffer (Weeks 12–16 — Track B)

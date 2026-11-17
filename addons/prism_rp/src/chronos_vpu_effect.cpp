@@ -261,7 +261,7 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
     if (!dilate_pipeline.is_valid() || !reactive_pipeline.is_valid() ||
         !taau_pipeline.is_valid() || !fft_horiz_pipeline.is_valid() ||
         !fft_vert_pipeline.is_valid() || !fft_inv_horiz_pipeline.is_valid() ||
-        !aces_odt_pipeline.is_valid()) {
+        !aces_odt_pipeline.is_valid() || !color_copy.is_valid()) {
         return;
     }
 
@@ -313,10 +313,6 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
         ChronosOpaqueCaptureEffect::consume_capture(scene_buffers->get_instance_id()) &&
         scene_buffers->has_texture(ChronosOpaqueCaptureEffect::kContext, ChronosOpaqueCaptureEffect::kTextureName);
 
-    // Full array textures for copies (texture_copy addresses layers of the underlying image,
-    // so a per-view slice with layer 0 would always copy eye 0).
-    const godot::RID color_full = scene_buffers->get_color_texture();
-
     const float exposure_scale = std::exp2(exposure_ev);
     const float aspect_ratio = internal_size_f.x / internal_size_f.y;
     const bool bloom_contributes = fft_bloom_enabled && bloom_intensity > 0.0f;
@@ -332,7 +328,7 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
         const godot::RID depth_tex = scene_buffers->get_depth_layer(view);
         const godot::RID velocity_tex = scene_buffers->get_velocity_layer(view);
 
-        if (!color_tex.is_valid() || !color_full.is_valid() || !depth_tex.is_valid() || !velocity_tex.is_valid()) {
+        if (!color_tex.is_valid() || !depth_tex.is_valid() || !velocity_tex.is_valid()) {
             continue;
         }
 
@@ -371,14 +367,7 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
 
         const bool first_frame_for_view = !vt.has_valid_history || reset_history_this_frame;
         if (!vt.has_valid_history) {
-            rd->texture_copy(
-                color_full,
-                vt.prev_color_history,
-                godot::Vector3(0, 0, 0),
-                godot::Vector3(0, 0, 0),
-                godot::Vector3(internal_size.x, internal_size.y, 1),
-                0, 0, view, 0
-            );
+            color_copy.copy(rd, nearest_sampler, color_tex, vt.prev_color_history, internal_size);
             vt.has_valid_history = true;
         }
 
@@ -450,14 +439,7 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
 
         // Raw frame copy: next frame's shock reference, and this frame's composite/bloom input
         // when TAA is off (so the color buffer is never sampled and written in the same pass).
-        rd->texture_copy(
-            color_full,
-            vt.prev_color_history,
-            godot::Vector3(0, 0, 0),
-            godot::Vector3(0, 0, 0),
-            godot::Vector3(internal_size.x, internal_size.y, 1),
-            0, 0, view, 0
-        );
+        color_copy.copy(rd, nearest_sampler, color_tex, vt.prev_color_history, internal_size);
 
         // PASS 3: compute TAA at internal resolution
         godot::RID resolved_linear_hdr = vt.prev_color_history;
@@ -651,7 +633,8 @@ bool ChronosVPUCompositorEffect::_ensure_render_resources() {
         build_stage("res://addons/prism_rp/shaders/chronos/chronos_fft_bloom_horizontal.comp.glsl", "chronos_fft_bloom_horiz", fft_horiz_shader, fft_horiz_pipeline) &&
         build_stage("res://addons/prism_rp/shaders/chronos/chronos_fft_bloom_vertical.comp.glsl", "chronos_fft_bloom_vert", fft_vert_shader, fft_vert_pipeline) &&
         build_stage("res://addons/prism_rp/shaders/chronos/chronos_fft_bloom_inv_horizontal.comp.glsl", "chronos_fft_bloom_inv_horiz", fft_inv_horiz_shader, fft_inv_horiz_pipeline) &&
-        build_stage("res://addons/prism_rp/shaders/chronos/chronos_aces2_odt.comp.glsl", "chronos_aces2_odt", aces_odt_shader, aces_odt_pipeline);
+        build_stage("res://addons/prism_rp/shaders/chronos/chronos_aces2_odt.comp.glsl", "chronos_aces2_odt", aces_odt_shader, aces_odt_pipeline) &&
+        color_copy.init(rd);
 
     if (!ok) {
         _release_render_resources();
@@ -686,9 +669,10 @@ bool ChronosVPUCompositorEffect::_ensure_view_targets(const godot::Vector2i &p_i
         godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT |
         godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT;
 
+    // Written by the compute copy (the scene color buffer can't be a texture_copy source).
     const uint32_t history_usage =
-        godot::RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT |
-        godot::RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT;
+        godot::RenderingDevice::TEXTURE_USAGE_STORAGE_BIT |
+        godot::RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT;
 
     const uint32_t fft_storage_usage =
         godot::RenderingDevice::TEXTURE_USAGE_STORAGE_BIT;
@@ -743,6 +727,7 @@ void ChronosVPUCompositorEffect::_release_render_resources() {
     free_pipeline_and_shader(fft_vert_pipeline, fft_vert_shader);
     free_pipeline_and_shader(fft_inv_horiz_pipeline, fft_inv_horiz_shader);
     free_pipeline_and_shader(aces_odt_pipeline, aces_odt_shader);
+    color_copy.release(rd);
 
     if (nearest_sampler.is_valid()) {
         rd->free_rid(nearest_sampler);

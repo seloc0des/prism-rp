@@ -2,7 +2,7 @@
 
 **Prism RP** is a modular, GPU-driven rendering and temporal post-processing project built on Godot's `RenderingDevice`. The long-term goal is to close the visual and scalability gap between Godot 4 Forward+ and high-end engines (Unreal Engine 5's Nanite/Lumen/Substrate, Unity HDRP) while staying lightweight, cross-platform and MIT-licensed.
 
-Most of that is still ahead. Today the repository ships one working piece, the **Chronos VPU** compositor effect, plus the build, CI and QA scaffolding the rest will be measured against. The table marks what exists and what is planned; `ROADMAP.md` has the schedule.
+Most of that is still ahead. Today the repository ships two compositor effects, **Chronos VPU** (temporal post) and a first version of **Lumina-Cascades** (screen-space GI), plus the build, CI and QA scaffolding the rest will be measured against. Neither effect has been validated on a real GPU yet: `docs/GPU_TEST_PLAN.md` is that step. The table marks what exists and what is planned; `ROADMAP.md` has the schedule.
 
 ## Status
 
@@ -10,7 +10,7 @@ Most of that is still ahead. Today the repository ships one working piece, the *
 | :--- | :--- | :--- |
 | **Video & Temporal Post** | **Chronos VPU**: dilated motion vectors, reactive mask, compute TAA, FFT diffraction bloom with red halation, SDR filmic look | Implemented (GDExtension `CompositorEffect`) |
 | Upscaler backends | FSR 3.1 / XeSS / DLSS behind one interface | Planned (Phase 1) |
-| **Global Illumination** | **Lumina-Cascades**: screen-space + world-space radiance cascades with ReSTIR and SVGF | Planned (Phase 2) |
+| **Global Illumination** | **Lumina-Cascades**: screen-space + world-space radiance cascades with ReSTIR and SVGF | v1 implemented: screen-space cascades + SVGF. World-space cascades, ray-query fallback and ReSTIR planned (Phase 2) |
 | **Geometry & Culling** | **GPU Meshlet Pipeline** (`VK_EXT_mesh_shader` + compute fallback) into a 64-bit Visibility Buffer | Planned (Phase 3) |
 | **Material Shading** | **Tile-Sorted Compute Shading** into a Thin G-Buffer | Planned (Phase 4) |
 | **Shadows** | **Virtualized Clipmap Shadow Pages (VCSP)** driven by visibility-buffer page faults | Planned (Phase 4) |
@@ -37,6 +37,35 @@ compositor.compositor_effects = [ChronosOpaqueCaptureEffect.new(), ChronosVPUCom
 ### Telemetry
 
 `PrismTelemetry` records per-pass GPU timestamps once per frame, on the render thread. It is on by default in debug and editor builds and off in `template_release`. Pass `--prism-telemetry=on` (after `--`) or call `PrismTelemetry.set_enabled(true)` to profile a release build. The bloom shows up as three stages (`chronos_fft_bloom_forward_rows`, `chronos_fft_bloom_columns_convolve`, `chronos_fft_bloom_inverse_rows`), so the Chronos budget can be broken down per dispatch.
+
+## Lumina-Cascades v1
+
+`LuminaCascadesCompositorEffect` adds one bounce of indirect diffuse light, computed from what is on screen. It runs at `POST_OPAQUE`, so Chronos (if present) processes the result like any other lighting.
+
+Screen probes with octahedral direction maps trace rays against the depth buffer in up to 4 cascade levels. Level 0 has a probe every `probe_spacing` pixels with 16 directions; each level up doubles the spacing and quadruples the directions, so every level costs the same memory. Levels merge top-down, each pixel gathers cosine-weighted irradiance from its 4 nearest probes, and SVGF (temporal accumulation, then variance-guided a-trous) removes the noise.
+
+Things to know before using it:
+
+* **Forward+ only.** It reads Godot's `normal_roughness` buffer, which only Forward+ renders.
+* **Turn SDFGI off** (and VoxelGI, LightmapGI) on the same Environment, or the indirect light is counted twice.
+* **The albedo is approximated.** Forward+ has no albedo buffer and a compositor effect can't reach material lighting, so the bounce is applied as `albedo_proxy * irradiance`: the pixel's own hue at a mid-grey reflectance. Set `albedo_mode` to white to judge the lighting by itself. A real albedo comes with Track B's G-buffer.
+* **Screen-space limits.** Anything off screen or hidden behind geometry doesn't contribute, and there is one bounce. World-space cascades and the ray-query fallback are the next steps.
+
+Every stage has a switch (`gi_enabled`, `temporal_enabled`, `atrous_iterations`, `cascade_count`) and there are six debug views (raw and denoised irradiance, history length, variance, normals, albedo proxy).
+
+```gdscript
+var compositor := Compositor.new()
+compositor.compositor_effects = [
+    LuminaCascadesCompositorEffect.new(),
+    ChronosOpaqueCaptureEffect.new(),
+    ChronosVPUCompositorEffect.new(),
+]
+$WorldEnvironment.compositor = compositor
+```
+
+## Editor dock
+
+Enable **Prism RP** under Project Settings > Plugins. The dock finds the Chronos and Lumina effects in the open scene's `WorldEnvironment` and `Camera3D` compositors and lets you switch debug views, reload shaders, reset history and watch per-pass GPU timings. Stage toggles and tuning stay in the Inspector on the `Compositor` resource. A debug view chosen in the dock is stored on the effect, so set it back to Final Output before saving the scene.
 
 ## Quick-Start Setup
 
@@ -80,6 +109,20 @@ compositor.compositor_effects = [ChronosOpaqueCaptureEffect.new(), ChronosVPUCom
    python3 tests/run_visual_regression.py --tier tier2 --max-flip 0.015 --max-pass-delta-ms 0.25
    ```
    The benchmark rig saves the displayed frame and the PrismTelemetry GPU timings at the capture frame. Add `--renderdoc` to run under `renderdoccmd`: the rig triggers a capture through RenderDoc's in-app API, and if RenderDoc's Python module can be imported (`RENDERDOC_PYTHON_PATH`), per-pass durations come from the capture instead.
+
+6. **Validate everything on a real GPU in one go**: `python3 tests/run_gpu_validation.py --tier tier2` runs every scene through 22 configurations (each Chronos and Lumina stage, every debug view, the guards) plus Gate 1, and writes one `report.md`. `docs/GPU_TEST_PLAN.md` says what each image should show.
+
+7. **Unit tests** (no GPU needed; `glslangValidator` for the push-constant checks):
+   ```bash
+   pip install pytest pyyaml flip-evaluator numpy pillow
+   ```
+   ```bash
+   python3 -m pytest tests/unit
+   ```
+
+## Releases
+
+Push a tag like `v0.2.0` and `.github/workflows/release.yml` builds debug and release binaries for Linux (x86_64, arm64), Windows (x86_64, arm64) and macOS (universal), checks that every library the `.gdextension` names is there, zips `addons/prism_rp` and publishes a GitHub release. Running the workflow by hand produces the zip as an artifact without releasing.
 
 ## Exporting projects
 

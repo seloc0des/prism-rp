@@ -1,12 +1,14 @@
 #include "prism_rp/prism_rd_utils.h"
 
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/uniform_set_cache_rd.hpp>
 #include <godot_cpp/classes/rd_sampler_state.hpp>
 #include <godot_cpp/classes/rd_shader_source.hpp>
 #include <godot_cpp/classes/rd_shader_spirv.hpp>
 #include <godot_cpp/classes/rd_texture_format.hpp>
 #include <godot_cpp/classes/rd_texture_view.hpp>
 #include <godot_cpp/variant/packed_string_array.hpp>
+#include <godot_cpp/variant/typed_array.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 namespace prism::rd_utils {
@@ -172,6 +174,36 @@ void dispatch_compute(godot::RenderingDevice *p_rd, const godot::RID &p_pipeline
     p_rd->compute_list_set_push_constant(cl, p_push_constants, static_cast<uint32_t>(p_push_constants.size()));
     p_rd->compute_list_dispatch(cl, p_groups_x, p_groups_y, p_groups_z);
     p_rd->compute_list_end();
+}
+
+bool ComputeCopy::init(godot::RenderingDevice *p_rd) {
+    if (is_valid()) {
+        return true;
+    }
+    return build_compute_stage(p_rd, "res://addons/prism_rp/shaders/util/prism_copy.comp.glsl", "prism_copy", shader, pipeline);
+}
+
+void ComputeCopy::release(godot::RenderingDevice *p_rd) {
+    free_compute_stage(p_rd, pipeline, shader);
+}
+
+void ComputeCopy::copy(godot::RenderingDevice *p_rd, const godot::RID &p_nearest_sampler, const godot::RID &p_src,
+        const godot::RID &p_dst, const godot::Vector2i &p_size) const {
+    if (!is_valid() || p_size.x <= 0 || p_size.y <= 0) {
+        return;
+    }
+    godot::TypedArray<godot::RDUniform> u;
+    u.push_back(make_sampler_texture_uniform(0, p_nearest_sampler, p_src));
+    u.push_back(make_image_uniform(1, p_dst));
+    const godot::RID uset = godot::UniformSetCacheRD::get_cache(shader, 0, u);
+    if (!uset.is_valid()) {
+        return;
+    }
+    PushConstants pc;
+    pc.size_x = p_size.x;
+    pc.size_y = p_size.y;
+    dispatch_compute(p_rd, pipeline, uset, make_push_constant_bytes(pc),
+        static_cast<uint32_t>((p_size.x + 7) / 8), static_cast<uint32_t>((p_size.y + 7) / 8));
 }
 
 } // namespace prism::rd_utils
