@@ -10,6 +10,8 @@ layout(set = 0, binding = 1) uniform sampler2D u_prev_color_tex;
 layout(set = 0, binding = 2) uniform sampler2D u_depth_tex;
 layout(set = 0, binding = 3) uniform sampler2D u_dilated_velocity_tex;
 layout(r8, set = 0, binding = 4) uniform writeonly image2D u_reactive_mask_out;
+// Opaque-only color from ChronosOpaqueCaptureEffect (PRE_TRANSPARENT). Only read when flag bit 0 is set.
+layout(set = 0, binding = 5) uniform sampler2D u_opaque_color_tex;
 
 layout(push_constant, std430) uniform PushConstants {
     ivec2 resolution;
@@ -17,7 +19,14 @@ layout(push_constant, std430) uniform PushConstants {
     float luma_spark_threshold;
     vec2 jitter_delta_uv;   // (current - previous) camera jitter, UV units
     vec2 depth_params;      // see prism_linearize_depth
+    float transparency_scale;
+    uint flags;             // bit 0: opaque capture available this frame
+    float _pad0;
+    float _pad1;
 } pc;
+
+// Tonemapped so the comparison weighs a faint particle over a dark wall like one over the sky.
+vec3 reactive_tonemap(vec3 c) { return c / (1.0 + max(c.r, max(c.g, c.b))); }
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -71,7 +80,18 @@ void main() {
     }
     float edge_reactivity = clamp((max_depth_diff - 0.05) * 3.0, 0.0, 0.65);
 
-    float combined = max(max(spark_reactivity, shock_reactivity), edge_reactivity);
+    // Transparent surfaces and particles write neither depth nor motion vectors, so the history
+    // reprojects the background under them and ghosts. Flag every pixel the transparent pass
+    // changed (opaque-only vs. final), like FSR 2's generated reactive mask.
+    float transparency_reactivity = 0.0;
+    if ((pc.flags & 1u) != 0u) {
+        vec3 opaque_rgb = max(texelFetch(u_opaque_color_tex, pixel, 0).rgb, vec3(0.0));
+        vec3 diff = abs(reactive_tonemap(max(curr_rgb, vec3(0.0))) - reactive_tonemap(opaque_rgb));
+        float delta = max(diff.r, max(diff.g, diff.b));
+        transparency_reactivity = clamp(smoothstep(0.01, 0.20, delta) * pc.transparency_scale, 0.0, 0.9);
+    }
+
+    float combined = max(max(spark_reactivity, shock_reactivity), max(edge_reactivity, transparency_reactivity));
     float final_reactive = clamp(combined * pc.reactive_sensitivity, 0.0, 1.0);
 
     imageStore(u_reactive_mask_out, pixel, vec4(final_reactive, 0.0, 0.0, 0.0));

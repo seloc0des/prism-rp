@@ -106,6 +106,11 @@ public:
     void set_reactive_sensitivity(float p_sensitivity);
     [[nodiscard]] float get_reactive_sensitivity() const;
 
+    // Weight of the particle/transparency term in the reactive mask. Needs a
+    // ChronosOpaqueCaptureEffect in the same Compositor; without one this has no effect.
+    void set_transparency_reactive_scale(float p_scale);
+    [[nodiscard]] float get_transparency_reactive_scale() const;
+
     // Hot-reload & downstream RID accessors
     void reload_shaders();
     [[nodiscard]] godot::RID get_dilated_velocity_rid(int32_t p_view = 0) const;
@@ -136,8 +141,12 @@ private:
         float jitter_delta_uv_y = 0.0f;
         float depth_param_a = 0.05f;
         float depth_param_b = 0.0f;
+        float transparency_scale = 1.0f;
+        uint32_t flags = 0;
+        float _pad0 = 0.0f;
+        float _pad1 = 0.0f;
     };
-    static_assert(sizeof(ReactiveMaskPushConstants) == 32);
+    static_assert(sizeof(ReactiveMaskPushConstants) == 48);
 
     struct alignas(16) TAAUPushConstants {
         int32_t internal_res_x = 0;
@@ -284,6 +293,9 @@ private:
     float halation_intensity = 0.35f;
     float aperture_blades = 6.0f;
     float reactive_sensitivity = 1.0f;
+    float transparency_reactive_scale = 1.0f;
+
+    bool godot_temporal_warned = false;
 };
 
 } // namespace prism

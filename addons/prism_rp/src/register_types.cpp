@@ -1,4 +1,5 @@
 #include "prism_rp/register_types.h"
+#include "prism_rp/chronos_opaque_capture_effect.h"
 #include "prism_rp/chronos_vpu_effect.h"
 #include "prism_rp/prism_telemetry.h"
 
@@ -23,12 +24,14 @@ void initialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
     // classes to read default property values) can't spawn copies that steal the singleton.
     GDREGISTER_ABSTRACT_CLASS(PrismTelemetry);
     GDREGISTER_CLASS(ChronosVPUCompositorEffect);
+    GDREGISTER_CLASS(ChronosOpaqueCaptureEffect);
 
     g_telemetry_singleton = memnew(PrismTelemetry);
     PrismTelemetry::set_singleton(g_telemetry_singleton);
     godot::Engine::get_singleton()->register_singleton("PrismTelemetry", g_telemetry_singleton);
+    g_telemetry_singleton->connect_frame_hook();
 
-    godot::UtilityFunctions::print("[Prism RP] Registered PrismTelemetry & ChronosVPUCompositorEffect (Vulkan RenderingDevice ready).");
+    godot::UtilityFunctions::print("[Prism RP] Registered PrismTelemetry, ChronosVPUCompositorEffect & ChronosOpaqueCaptureEffect (Vulkan RenderingDevice ready).");
 }
 
 void uninitialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
@@ -37,6 +40,7 @@ void uninitialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
     }
 
     if (g_telemetry_singleton != nullptr) {
+        g_telemetry_singleton->disconnect_frame_hook();
         godot::Engine::get_singleton()->unregister_singleton("PrismTelemetry");
         PrismTelemetry::set_singleton(nullptr);
         memdelete(g_telemetry_singleton);

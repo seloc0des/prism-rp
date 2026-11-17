@@ -11,11 +11,9 @@ var camera: Camera3D
 var world_environment: WorldEnvironment
 var chronos_effect: CompositorEffect
 
-## Sub-pixel camera jitter for Chronos TAA. Godot only jitters when its own TAA/FSR2 is on,
-## and those run after compositor effects, so the rig jitters through the camera frustum and
-## Chronos reads the offset back from the projection matrix.
+## Sub-pixel camera jitter for Chronos TAA, supplied by the addon's ChronosJitterCamera.
 @export var jitter_enabled := true
-const JITTER_PHASES := 8
+const JITTER_CAMERA_SCRIPT := "res://addons/prism_rp/scripts/chronos_jitter_camera.gd"
 
 var frame_index: int = 0
 var active_tier: String = "tier2"
@@ -132,7 +130,13 @@ func _setup_environment_and_chronos_vpu() -> void:
 			chronos_effect.set(&"fft_bloom_enabled", true)
 			chronos_effect.set(&"aces_odt_enabled", true)
 			chronos_effect.set(&"output_display_mode", 0)
-			compositor.compositor_effects = [chronos_effect]
+			var effects: Array[CompositorEffect] = []
+			# Opaque-only capture at PRE_TRANSPARENT: lets Chronos flag particles and glass
+			# (no depth / motion vectors) in its reactive mask.
+			if ClassDB.class_exists(&"ChronosOpaqueCaptureEffect"):
+				effects.append(ClassDB.instantiate(&"ChronosOpaqueCaptureEffect") as CompositorEffect)
+			effects.append(chronos_effect)
+			compositor.compositor_effects = effects
 	else:
 		push_warning("[Prism RP QA] ChronosVPUCompositorEffect class not loaded; running baseline Forward+.")
 
@@ -143,17 +147,16 @@ func _setup_environment_and_chronos_vpu() -> void:
 	add_child(world_environment)
 
 func _setup_camera_rig() -> void:
-	camera = Camera3D.new()
+	var use_jitter := jitter_enabled and chronos_effect != null and ResourceLoader.exists(JITTER_CAMERA_SCRIPT)
+	if use_jitter:
+		camera = (load(JITTER_CAMERA_SCRIPT) as GDScript).new() as Camera3D
+	else:
+		camera = Camera3D.new()
 	camera.name = "BenchmarkCamera"
 	camera.fov = camera_fov
 	camera.near = 0.05
 	camera.far = 250.0
 	camera.current = true
-	if jitter_enabled and chronos_effect != null:
-		# Frustum projection so frustum_offset can carry the sub-pixel jitter. With the default
-		# KEEP_HEIGHT, `size` is the near-plane height; matching it to the FOV keeps the framing.
-		camera.projection = Camera3D.PROJECTION_FRUSTUM
-		camera.size = 2.0 * camera.near * tan(deg_to_rad(camera_fov) * 0.5)
 	add_child(camera)
 
 func _update_deterministic_camera(frame: int) -> void:
@@ -168,26 +171,6 @@ func _update_deterministic_camera(frame: int) -> void:
 	)
 	camera.position = base_camera_position + offset
 	camera.look_at(camera_look_target, Vector3.UP)
-	if camera.projection == Camera3D.PROJECTION_FRUSTUM:
-		camera.frustum_offset = _jitter_frustum_offset(frame)
-
-## Halton(2, 3) sub-pixel jitter in internal pixels, converted to near-plane world units.
-func _jitter_frustum_offset(frame: int) -> Vector2:
-	var phase := (frame % JITTER_PHASES) + 1
-	var jitter_px := Vector2(_halton(phase, 2) - 0.5, _halton(phase, 3) - 0.5)
-	var internal_height := maxf(get_viewport().get_visible_rect().size.y * render_scale, 1.0)
-	return jitter_px * (camera.size / internal_height)
-
-func _halton(index: int, base: int) -> float:
-	var result := 0.0
-	var f := 1.0
-	var i := index
-	while i > 0:
-		f /= float(base)
-		result += f * float(i % base)
-		@warning_ignore("integer_division")
-		i = i / base
-	return result
 
 func create_pbr_material(
 	albedo: Color,
