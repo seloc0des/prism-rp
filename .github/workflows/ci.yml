@@ -208,6 +208,9 @@ jobs:
   vulkan-qa:
     name: Vulkan Validation Layer Smoke Test (lavapipe)
     needs: [validate-shaders, build-gdextension]
+    # Only the Linux debug binary is needed: run even if another platform's build failed or was
+    # cancelled (e.g. no macOS runner available). The artifact download fails if Linux didn't build.
+    if: ${{ !cancelled() && needs.validate-shaders.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
