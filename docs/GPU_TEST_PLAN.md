@@ -20,7 +20,7 @@ cd prism-rp && git checkout claude/stoic-gauss-az2a98
 scons platform=linux target=template_debug -j8
 ```
 
-On Windows use `platform=windows`; on macOS, `platform=macos` (MoltenVK).
+On Windows use `platform=windows`. macOS isn't a supported target right now.
 
 ```bash
 ln -s "$(pwd)/addons/prism_rp" project/addons/prism_rp

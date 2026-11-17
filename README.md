@@ -141,7 +141,7 @@ print(data.get_meshlet_count(), " meshlets, ", data.get_triangle_count(), " tria
 
 ## Releases
 
-Push a tag like `v0.2.0` and `.github/workflows/release.yml` builds debug and release binaries for Linux (x86_64, arm64), Windows (x86_64, arm64) and macOS (universal), checks that every library the `.gdextension` names is there, zips `addons/prism_rp` and publishes a GitHub release. Running the workflow by hand produces the zip as an artifact without releasing.
+Push a tag like `v0.2.0` and `.github/workflows/release.yml` builds debug and release binaries for Linux (x86_64, arm64) and Windows (x86_64, arm64), checks that every library the `.gdextension` names is there, zips `addons/prism_rp` and publishes a GitHub release. Running the workflow by hand produces the zip as an artifact without releasing.
 
 ## Exporting projects
 

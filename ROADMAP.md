@@ -17,7 +17,7 @@ Building **Prism RP** for Godot 4.x uses a dual-track engineering strategy:
 ### Phase 0: Architecture Spike, Repo Scaffold & Automated Visual QA Harness (Weeks 1–2)
 * Stand up C++20 GDExtension build (`SCons` and `CMake`) with `glslangValidator` SPIR-V verification.
 * Build 5 canonical test scenes (`01_cornell_box`, `02_foliage_overdraw`, `03_thin_geometry_aliasing`, `04_dynamic_sponza`, `05_volumetrics_wboit`).
-* **Gate 0 DoD:** CI builds cleanly on Windows, Linux, and macOS; a lavapipe Vulkan boot of all 5 scenes (under Xvfb, not `--headless`, which uses the dummy renderer) passes with zero `VK_LAYER_KHRONOS_validation` errors.
+* **Gate 0 DoD:** CI builds cleanly on Windows and Linux (macOS dropped for now); a lavapipe Vulkan boot of all 5 scenes (under Xvfb, not `--headless`, which uses the dummy renderer) passes with zero `VK_LAYER_KHRONOS_validation` errors.
 
 ### Phase 1: Chronos VPU Core & ACEScg Color Pipeline (Weeks 3–6 — Track A)
 * Implement `ChronosVPUCompositorEffect` on `RenderSceneBuffersRD`.

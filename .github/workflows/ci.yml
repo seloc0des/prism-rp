@@ -153,10 +153,7 @@ jobs:
             platform: windows
             arch: x86_64
             target: template_debug
-          - os: macos-latest
-            platform: macos
-            arch: universal
-            target: template_debug
+          # macOS dropped for now (not a target; the CMake/SCons scripts still support it).
 
     steps:
       - name: Checkout repository with submodules
@@ -194,7 +191,7 @@ jobs:
           cmake -B build_cmake -G Ninja -DGODOT_TARGET=template_debug -DPRISM_RP_VALIDATE_SHADERS=ON
           cmake --build build_cmake -j4
 
-      - name: Verify CMake C++20 build (Windows / macOS)
+      - name: Verify CMake C++20 build (Windows)
         if: matrix.platform != 'linux' && matrix.target == 'template_debug'
         shell: bash
         run: |
@@ -216,7 +213,7 @@ jobs:
     name: Vulkan Validation Layer Smoke Test (lavapipe)
     needs: [validate-shaders, build-gdextension]
     # Only the Linux debug binary is needed: run even if another platform's build failed or was
-    # cancelled (e.g. no macOS runner available). The artifact download fails if Linux didn't build.
+    # cancelled. The artifact download fails if Linux didn't build.
     if: ${{ !cancelled() && needs.validate-shaders.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
