@@ -106,6 +106,16 @@ The Chronos, Optics and Lumina columns are GPU milliseconds from the in-engine t
 
 The report ends with a Gate 1 table. It compares Chronos at 50% render scale against a 2x2 supersampled, non-temporal reference using NVIDIA FLIP; the roadmap's bar is a mean below 0.08. Godot caps supersampling at 2x, so for tier 2 this is 2880p rendered down to 1440p rather than a true 4K reference.
 
+### Gate 2
+
+Gate 2 needs Blender 4.x on `PATH` as well. It renders Lumina's irradiance in Godot, exports the same frame, and path-traces it in Cycles with one diffuse bounce:
+
+```bash
+python3 tests/run_gate2.py --scenes 01_cornell_box 04_dynamic_sponza
+```
+
+It prints raw and brightness-fitted PSNR per scene. The fitted number is the one the gate uses (above 36 dB passes); the fitted scale says how far Godot's and Blender's light units are apart, so a scale far from 1 with a good fitted PSNR means calibration, not a GI bug. Cycles on CPU at 512 samples takes a few minutes per scene; `--samples 128` is fine for a first look.
+
 ## After the run
 
 Once the images look right, record the golden images and baseline timings so CI and later runs can catch regressions:

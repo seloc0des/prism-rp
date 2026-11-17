@@ -35,6 +35,10 @@ var render_scale: float = 0.75
 var qa_capture_frame: int = -1
 var qa_telemetry_out: String = ""
 var qa_screenshot_out: String = ""
+## --qa-scene-export=<dir>: write the rendered scene (triangles, materials, lights, camera) for the
+## Gate 2 Cycles reference. --prism-ambient=off zeroes ambient light (indirect-only comparisons).
+var qa_scene_export: String = ""
+var ambient_enabled := true
 var quit_after_frame: int = -1
 
 func _ready() -> void:
@@ -85,6 +89,11 @@ func _capture_qa_frame() -> void:
 		var err := img.save_png(qa_screenshot_out)
 		if err != OK:
 			push_error("[Prism RP QA] Failed to save screenshot to %s (error %d)" % [qa_screenshot_out, err])
+	if not qa_scene_export.is_empty():
+		var size := Vector2i(get_viewport().get_visible_rect().size)
+		var export_err := PrismSceneExport.export_scene(self, camera, world_environment.environment, qa_scene_export, size)
+		if export_err != OK:
+			push_error("[Prism RP QA] Scene export to %s failed (error %d)" % [qa_scene_export, export_err])
 	_export_telemetry()
 
 func _build_benchmark_scene() -> void:
@@ -105,6 +114,10 @@ func _parse_cmdline_args() -> void:
 			qa_telemetry_out = arg.get_slice("=", 1)
 		elif arg.begins_with("--qa-screenshot-out="):
 			qa_screenshot_out = arg.get_slice("=", 1)
+		elif arg.begins_with("--qa-scene-export="):
+			qa_scene_export = arg.get_slice("=", 1)
+		elif arg.begins_with("--prism-ambient="):
+			ambient_enabled = _flag_value(arg)
 		elif arg.begins_with("--quit-after="):
 			quit_after_frame = arg.get_slice("=", 1).to_int()
 		elif arg == "--prism-no-jitter":
@@ -183,7 +196,7 @@ func _setup_environment_and_chronos_vpu() -> void:
 	env.background_color = Color(0.015, 0.018, 0.024)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.08, 0.09, 0.11)
-	env.ambient_light_energy = 0.35
+	env.ambient_light_energy = 0.35 if ambient_enabled else 0.0
 	# Chronos' SDR look writes display-referred linear values; Godot must then only apply
 	# the sRGB encode, which is what the Linear tonemapper at exposure 1.0 does.
 	env.tonemap_mode = Environment.TONE_MAPPER_LINEAR

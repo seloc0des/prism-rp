@@ -111,6 +111,22 @@ jobs:
           vulkaninfo --summary | grep -E "deviceName|apiVersion"
           python -m pytest tests/shader_harness -v
 
+  reference-renderer:
+    name: Gate 2 reference pipeline (Blender Cycles, synthetic Cornell box)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Blender and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends blender
+          python3 -m pip install pytest numpy
+
+      - name: Render and check the reference
+        run: python3 -m pytest tests/reference -v
+
   build-gdextension:
     name: Build C++20 (${{ matrix.os }} / ${{ matrix.target }})
     runs-on: ${{ matrix.os }}
