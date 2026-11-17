@@ -4,25 +4,20 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Load godot-cpp's SConstruct environment (handles platform, target, arch, and SDK flags)
 env = SConscript("thirdparty/godot-cpp/SConstruct")
 
-# Enforce C++20 strictly across all compilers
 if env["platform"] == "windows" and not env.get("use_mingw", False):
     env.Append(CXXFLAGS=["/std:c++20", "/Zc:__cplusplus", "/W4"])
 else:
     env.Append(CXXFLAGS=["-std=c++20", "-Wall", "-Wextra", "-Wno-unused-parameter"])
 
-# Include paths for Prism RP and third-party headers
 env.Append(CPPPATH=[
     "addons/prism_rp/include",
     "thirdparty/meshoptimizer/src",
 ])
 
-# Gather all C++20 implementation files
 sources = Glob("addons/prism_rp/src/*.cpp")
 
-# Construct Godot-standard output binary path
 arch_suffix = "universal" if env["platform"] == "macos" else env["arch"]
 lib_filename = "libprism_rp.{}.{}.{}{}".format(
     env["platform"],
@@ -35,7 +30,6 @@ output_path = os.path.join("addons", "prism_rp", "bin", lib_filename)
 library = env.SharedLibrary(target=output_path, source=sources)
 Default(library)
 
-# --- Custom SCons Target: Validate GLSL 4.60 Shaders to Vulkan 1.3 SPIR-V ---
 STAGE_MAP = {
     ".comp.glsl": "comp",
     ".vert.glsl": "vert",

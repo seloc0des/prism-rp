@@ -21,7 +21,6 @@ void main() {
         return;
     }
 
-    // 3x3 neighborhood closest-depth search (reverse-Z: largest depth value is nearest camera)
     float closest_depth = 0.0;
     ivec2 closest_offset = ivec2(0);
 

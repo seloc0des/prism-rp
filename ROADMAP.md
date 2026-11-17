@@ -6,9 +6,9 @@ Building **Prism RP** for Godot 4.x uses a dual-track engineering strategy:
 * **Track B — Native `RendererSceneRenderRD` Backend (Weeks 11–24):** Implements the full **64-bit Visibility Buffer**, tile-sorted compute material shading, and **Virtual Shadow Pages** as a selectable rendering driver (`prism_rp`).
 
 ## Hardware Tier Frame Budgets
-* **Tier 1 (Steam Deck / RDNA2):** 720p internal -> 1080p output, **16.6 ms** total frame budget (60 FPS).
+* **Tier 1 (Steam Deck / RDNA2):** 720p internal -> 1080p output, **16.6 ms** total frame budget (60 FPS, **13.50 ms** Prism RP target).
 * **Tier 2 (Mid-Range Desktop RTX 3060 / RX 6700):** 1080p internal -> 1440p output, **11.1 ms** total frame budget (90 FPS, **9.15 ms** Prism RP target).
-* **Tier 3 (Enthusiast RT GPU):** 1440p internal -> 4K output, **8.3 ms** total frame budget (120 FPS).
+* **Tier 3 (Enthusiast RT GPU):** 1440p internal -> 4K output, **8.3 ms** total frame budget (120 FPS, **6.80 ms** Prism RP target).
 
 ---
 
@@ -21,7 +21,7 @@ Building **Prism RP** for Godot 4.x uses a dual-track engineering strategy:
 
 ### Phase 1: Chronos VPU Core & ACEScg Color Pipeline (Weeks 3–6 — Track A)
 * Implement `ChronosVPUCompositorEffect` on `RenderSceneBuffersRD`.
-* Deliver scene-referred **ACEScg (AP1)** color management, 3x3 closest-depth dilated velocity vectors, `R8_UNORM` Reactive Mask generation, native compute TAAU + FSR 3.1 / XeSS / DLSS backend abstraction, FFT diffraction bloom with halation, and ACES 2.0 ODTs (sRGB, Display P3, HDR10).
+* Deliver scene-referred **ACEScg (AP1)** color management, 3x3 closest-depth dilated velocity vectors, `R8_UNORM` Reactive Mask generation, native Compute TAAU + FSR 3.1 / XeSS / DLSS backend abstraction, 256x256 Radix-2 Stockham FFT diffraction bloom with red halation, and ACES 2.0 ODTs (sRGB, Display P3, HDR10).
 * **Gate 1 DoD:** NVIDIA FLIP perceptual error **< 0.08** at 50% render scale vs. 4K supersampled reference; zero particle ghosting; Chronos VPU pass time **< 1.65 ms** on Tier 2 at 1440p.
 
 ### Phase 2: Lumina-Cascades GI & SVGF Denoiser (Weeks 7–11 — Track A)
