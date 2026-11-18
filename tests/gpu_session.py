@@ -334,8 +334,14 @@ def stage_gate2(session: Session, godot: str, tier: str, blender: str):
     out = session.out_dir / "gate2"
     proc = run_streamed([sys.executable, str(TESTS / "run_gate2.py"), "--tier", tier, "--godot-bin", godot,
                          "--blender-bin", blender, "--out-dir", str(out)], session.out_dir / "gate2.log", timeout=6 * 3600)
-    psnr = re.findall(r"PSNR[^\d-]*([\d.]+)", proc.stdout)
-    detail = f"PSNR {', '.join(psnr)} dB" if psnr else "see gate2.log"
+    report = out / "gate2.json"
+    if report.exists():
+        rows = json.loads(report.read_text(encoding="utf-8"))
+        detail = "; ".join(f"{r['scene']}: {r['psnr_fitted_db']:.1f} dB fitted ({r.get('psnr_center_db', float('nan')):.1f} "
+                           f"in the centre, scale {r['fitted_scale']:.2f})" for r in rows)
+    else:
+        psnr = re.findall(r"PSNR[^\d-]*([\d.]+)", proc.stdout)
+        detail = f"PSNR {', '.join(psnr)} dB; see gate2.log" if psnr else "see gate2.log"
     if proc.returncode not in (0, 1):
         raise StageFailed(f"exit {proc.returncode}; {detail}")
     return ("ok" if proc.returncode == 0 else "issues"), detail, None

@@ -62,3 +62,39 @@ def test_metrics():
     assert m["psnr_fitted_db"] > 80 and m["psnr_db"] < 25
     assert metrics.srgb_to_linear(np.array([0.0, 1.0]))[1] == pytest.approx(1.0)
     assert metrics.srgb_to_linear(np.array([0.5]))[0] == pytest.approx(0.2140, abs=1e-3)
+
+
+def test_metrics_on_a_float_capture_are_unclipped():
+    ref = np.full((20, 20, 3), 0.5)
+    ref[:5] = 3.0                                       # bright bounce light near an emitter
+    m = metrics.gate2_metrics(ref.copy(), ref, clipped_test=False)
+    assert m["psnr_fitted_db"] == float("inf") and m["fitted_scale"] == pytest.approx(1.0)
+    clipped = metrics.gate2_metrics(np.clip(ref, 0, 1), ref)   # 8-bit path: the reference is clipped too
+    assert clipped["psnr_fitted_db"] == float("inf")
+    edges = ref.copy()
+    edges[:, :2] = 0.0                                  # error only at the frame's edge
+    e = metrics.gate2_metrics(edges, ref, clipped_test=False)
+    assert e["psnr_center_db"] == float("inf") and e["psnr_fitted_db"] < 30
+    assert e["mean_reference"] == pytest.approx(float(ref.mean()))
+
+
+def test_indirect_adds_emitter_light_when_rendered(tmp_path, monkeypatch):
+    import exr
+    images = {"full": np.full((2, 2, 3), 0.7), "direct": np.full((2, 2, 3), 0.5), "emitters": np.full((2, 2, 3), 0.25)}
+    monkeypatch.setattr(exr, "load_rgb", lambda path: images[str(path).rsplit("_", 1)[1].split(".")[0]])
+    prefix = tmp_path / "ref"
+    np.testing.assert_allclose(exr.load_indirect(prefix), 0.2)        # no emitters file: lights' bounce only
+    (tmp_path / "ref_emitters.exr").write_bytes(b"")
+    np.testing.assert_allclose(exr.load_indirect(prefix), 0.45)       # plus the emitters' direct light
+
+
+def test_gate2_results_serialize_and_compare_image(tmp_path):
+    pytest.importorskip("flip_evaluator")   # run_gate2 imports run_visual_regression
+    import json
+    import run_gate2
+    from PIL import Image
+    row = run_gate2.jsonable({"passed": np.bool_(False), "psnr": np.float64(21.4), "errors": [np.int64(3)]})
+    assert json.loads(json.dumps(row)) == {"passed": False, "psnr": 21.4, "errors": [3]}
+    ref = np.random.default_rng(1).random((6, 8, 3))
+    run_gate2.write_comparison(tmp_path / "compare.png", ref, ref * 0.5, 2.0)
+    assert Image.open(tmp_path / "compare.png").size == (24, 6)

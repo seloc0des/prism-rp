@@ -24,7 +24,12 @@ def load_rgb(path: str | Path) -> np.ndarray:
 
 
 def load_indirect(prefix: str | Path) -> np.ndarray:
-    """Bounced light from cycles_reference.py's two renders: <prefix>_full.exr - <prefix>_direct.exr."""
+    """What Lumina has to add, from cycles_reference.py's renders: <prefix>_full.exr - <prefix>_direct.exr
+    (the lights' bounced light), plus <prefix>_emitters.exr (emissive surfaces' direct light) if present."""
     full = load_rgb(f"{prefix}_full.exr")
     direct = load_rgb(f"{prefix}_direct.exr")
-    return np.maximum(full - direct, 0.0)
+    indirect = np.maximum(full - direct, 0.0)
+    emitters = Path(f"{prefix}_emitters.exr")
+    if emitters.exists():
+        indirect = indirect + np.maximum(load_rgb(emitters), 0.0)
+    return indirect
