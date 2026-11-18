@@ -23,11 +23,24 @@ def fit_scale(test: np.ndarray, reference: np.ndarray) -> float:
     return float(t @ r) / denom if denom > 0 else 1.0
 
 
-def gate2_metrics(test: np.ndarray, reference: np.ndarray) -> dict[str, float]:
-    reference = np.clip(reference, 0.0, 1.0)   # the Godot side is an 8-bit capture, clipped at 1
+def central(img: np.ndarray, keep: float = 0.7) -> np.ndarray:
+    h, w = img.shape[:2]
+    y0, x0 = int(h * (1 - keep) / 2), int(w * (1 - keep) / 2)
+    return img[y0:h - y0, x0:w - x0]
+
+
+def gate2_metrics(test: np.ndarray, reference: np.ndarray, clipped_test: bool = True) -> dict[str, float]:
+    """clipped_test: the Godot side is an 8-bit capture, clipped at 1, so the reference is clipped to
+    match. A float capture is compared unclipped (PSNR's peak stays 1.0)."""
+    if clipped_test:
+        reference = np.clip(reference, 0.0, 1.0)
     s = fit_scale(test, reference)
+    fitted = np.clip(test * s, 0.0, 1.0) if clipped_test else test * s
     return {
         "psnr_db": psnr(test, reference),
-        "psnr_fitted_db": psnr(np.clip(test * s, 0.0, 1.0), reference),
+        "psnr_fitted_db": psnr(fitted, reference),
+        "psnr_center_db": psnr(central(fitted), central(reference)),
         "fitted_scale": s,
+        "mean_test": float(np.mean(test)),
+        "mean_reference": float(np.mean(reference)),
     }

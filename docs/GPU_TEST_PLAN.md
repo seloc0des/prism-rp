@@ -157,7 +157,9 @@ Gate 2 needs Blender (4.x or 5.x) on `PATH`; the session runs it automatically w
 python3 tests/run_gate2.py --scenes 01_cornell_box 04_dynamic_sponza
 ```
 
-It prints raw and brightness-fitted PSNR per scene. The fitted number is the one the gate uses (above 36 dB passes); the fitted scale says how far Godot's and Blender's light units are apart, so a scale far from 1 with a good fitted PSNR means calibration, not a GI bug. Cycles on CPU at 512 samples takes a few minutes per scene; `--samples 128` is fine for a first look.
+It prints raw and brightness-fitted PSNR per scene. The fitted number is the one the gate uses (above 36 dB passes); the fitted scale says how far Godot's and Blender's light units are apart, so a scale far from 1 with a good fitted PSNR means calibration, not a GI bug. It also prints the fitted PSNR of the central 70% of the frame: a much better centre means the loss is at the screen edges, where screen-space rays run out. Cycles on CPU at 512 samples takes a few minutes per scene; `--samples 128` is fine for a first look.
+
+What the reference counts as Lumina's job: the scene lights' bounced light, plus the direct light of emissive surfaces (Godot lights nothing from emission, so that light is all Lumina's). Each scene's `compare.png` shows the reference, Lumina (brightness-fitted) and their difference at one exposure, and `gate2.json` has the numbers. CI runs the same comparison on lavapipe at 128 samples (report only), so Lumina changes can be measured before a GPU run.
 
 ## After the run
 

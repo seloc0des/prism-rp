@@ -3,11 +3,16 @@
     blender -b --factory-startup --python tests/reference/cycles_reference.py -- \
         --scene out/scene.json --out out/reference --samples 256 --diffuse-bounces 1
 
-Writes two EXRs and a PNG:
-  <out>_full.exr    with --diffuse-bounces bounces
-  <out>_direct.exr  with no bounces (direct light and emission only)
-  <out>_full.png    for a visual check
-tests/reference/exr.py:load_indirect() returns full - direct: the bounced light alone.
+Writes up to three EXRs and a PNG:
+  <out>_full.exr      the scene's lights with --diffuse-bounces bounces, emissive surfaces off
+  <out>_direct.exr    the same with no bounces
+  <out>_emitters.exr  only if the scene has emissive surfaces: their direct light alone (lights off)
+  <out>_full.png      for a visual check
+tests/reference/exr.py:load_indirect() returns full - direct + emitters: what Lumina has to add on
+top of Godot's own lighting. Godot lights nothing from emissive surfaces, so their light is all
+Lumina's, but only as direct light: Lumina sees an emitter on screen and gathers its radiance, while
+surfaces the emitter lights don't look any brighter to it. Emission is never visible to camera rays,
+so an emitter's own pixels show the light falling on it, like every other surface.
 
 Every material shows white, non-metallic, non-specular to camera rays (Light Path "Is Camera
 Ray") and its real look to every other ray. So the difference is bounced diffuse light for white
@@ -34,6 +39,10 @@ import bpy
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import godot_to_blender as g2b  # noqa: E402
+
+LIGHTS = []             # (light data, energy): the scene's analytic lights
+EMISSION_SWITCHES = []  # per emissive material, the Math node scaling its emission (1 on, 0 off)
+CAMERA_BACKGROUND = []  # the world's background as camera rays see it
 
 
 def parse_args():
@@ -77,7 +86,12 @@ def make_material(name, spec, scene_dir):
     e = spec["emission"]
     if max(e) > 0.0:
         bsdf.inputs["Emission Color"].default_value = (e[0], e[1], e[2], 1.0)
-        bsdf.inputs["Emission Strength"].default_value = 1.0
+        strength = nodes.new("ShaderNodeMath")   # not visible to camera rays; set_sources() toggles it
+        strength.operation = "MULTIPLY"
+        strength.inputs[1].default_value = 1.0
+        links.new(not_cam.outputs["Value"], strength.inputs[0])
+        links.new(strength.outputs["Value"], bsdf.inputs["Emission Strength"])
+        EMISSION_SWITCHES.append(strength)
     if spec.get("albedo_texture"):
         tex = nodes.new("ShaderNodeTexImage")
         tex.image = bpy.data.images.load(os.path.join(scene_dir, spec["albedo_texture"]))
@@ -146,7 +160,18 @@ def build_lights(lights):
             obj.matrix_world = Matrix(rot).to_4x4()
         else:
             continue
+        LIGHTS.append((data, data.energy))
         bpy.context.scene.collection.objects.link(obj)
+
+
+def set_sources(lights_on, emission_on):
+    for data, energy in LIGHTS:
+        data.energy = energy if lights_on else 0.0
+    for strength in EMISSION_SWITCHES:
+        strength.inputs[1].default_value = 1.0 if emission_on else 0.0
+    # The background cancels between the full and direct renders; keep it out of the emitter render.
+    for bg in CAMERA_BACKGROUND:
+        bg.inputs["Strength"].default_value = 1.0 if lights_on else 0.0
 
 
 def build_world(env):
@@ -160,6 +185,7 @@ def build_world(env):
     path = nodes.new("ShaderNodeLightPath")
     bg_cam = nodes.new("ShaderNodeBackground")
     bg_cam.inputs["Color"].default_value = (*env["background"], 1.0)
+    CAMERA_BACKGROUND.append(bg_cam)
     bg_amb = nodes.new("ShaderNodeBackground")
     bg_amb.inputs["Color"].default_value = (*env["ambient"], 1.0)
     mix = nodes.new("ShaderNodeMixShader")
@@ -248,16 +274,23 @@ def main():
     configure_render(args, width, height)
 
     scene = bpy.context.scene
+    set_sources(lights_on=True, emission_on=False)
     set_bounces(scene, args.diffuse_bounces)
     render_to(scene, args.out + "_full.exr")
     set_output_format(scene.render.image_settings, "png")
     bpy.data.images["Render Result"].save_render(args.out + "_full.png", scene=scene)
 
-    # Same seed, no bounces: the direct light and emission cancel in the difference.
+    # Same seed, no bounces: the direct light cancels in the difference.
     set_output_format(scene.render.image_settings, "exr")
     set_bounces(scene, 0)
     render_to(scene, args.out + "_direct.exr")
-    print(f"[prism-reference] wrote {args.out}_full.exr / _direct.exr ({width}x{height}, Blender {bpy.app.version_string})")
+    written = ["_full.exr", "_direct.exr"]
+
+    if EMISSION_SWITCHES:
+        set_sources(lights_on=False, emission_on=True)
+        render_to(scene, args.out + "_emitters.exr")
+        written.append("_emitters.exr")
+    print(f"[prism-reference] wrote {args.out}{' / '.join(written)} ({width}x{height}, Blender {bpy.app.version_string})")
 
 
 main()
