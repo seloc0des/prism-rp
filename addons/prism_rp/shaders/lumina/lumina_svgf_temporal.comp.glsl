@@ -5,8 +5,14 @@
 #include "lumina_common.glsl"
 
 // SVGF temporal accumulation: reproject last frame's accumulated irradiance and luminance moments,
-// reject history across depth/normal discontinuities, blend, and estimate per-pixel variance for
-// the a-trous filter. History length (frames) is kept in history.a.
+// reject history across depth/normal discontinuities, clamp it to this frame's neighbourhood, blend,
+// and estimate per-pixel variance for the a-trous filter. History length (frames) is kept in history.a.
+//
+// The clamp keeps lighting changes from lingering: history may differ from this frame's 3x3 mean by
+// kClampSigma standard deviations plus kClampRelative of the mean. Frame-to-frame noise stays inside
+// that band, so history still averages it; a light switching on or off moves the mean outside it,
+// and the history is pulled to the band's edge and shortened, so the result follows within a frame
+// or two instead of over 1 / alpha_min frames (Gate 2: settled within 6).
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -30,6 +36,10 @@ layout(push_constant, std430) uniform PushConstants {
     float moments_alpha_min;
     float max_history;       // history length cap, in frames
 } pc;
+
+const float kClampSigma = 1.5;
+const float kClampRelative = 0.15;
+const float kClampFloor = 1e-3;   // absolute, so black neighbourhoods still allow a little drift
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -63,9 +73,28 @@ void main() {
             vec4 hist = textureLod(u_prev_history_tex, prev_uv, 0.0);
             vec2 prev_moments = textureLod(u_prev_moments_tex, prev_uv, 0.0).rg;
             history_len = min(hist.a + 1.0, pc.max_history);
+
+            vec3 m1 = vec3(0.0);
+            vec3 m2 = vec3(0.0);
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    ivec2 q = clamp(pixel + ivec2(dx, dy), ivec2(0), pc.internal_resolution - 1);
+                    vec3 c = texelFetch(u_irradiance_tex, q, 0).rgb;
+                    m1 += c;
+                    m2 += c * c;
+                }
+            }
+            m1 *= 1.0 / 9.0;
+            m2 *= 1.0 / 9.0;
+            vec3 band = kClampSigma * sqrt(max(m2 - m1 * m1, vec3(0.0))) + kClampRelative * m1 + vec3(kClampFloor);
+            vec3 clamped = clamp(hist.rgb, m1 - band, m1 + band);
+            if (any(greaterThan(abs(clamped - hist.rgb), 0.5 * band))) {
+                history_len = min(history_len, 2.0);   // a lighting change: converge again quickly
+            }
+
             float alpha = max(1.0 / history_len, pc.alpha_min);
             float alpha_m = max(1.0 / history_len, pc.moments_alpha_min);
-            color = mix(hist.rgb, current, alpha);
+            color = mix(clamped, current, alpha);
             moments = mix(prev_moments, moments, alpha_m);
         }
     }

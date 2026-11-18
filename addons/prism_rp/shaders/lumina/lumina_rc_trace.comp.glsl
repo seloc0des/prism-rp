@@ -63,6 +63,22 @@ void main() {
     // Per-texel jitter along the ray; SVGF integrates it over frames.
     float jitter = prism_interleaved_gradient_noise(vec2(texel), pc.frame_index);
 
+    // A hit needs the ray to cross from in front of the depth buffer to behind it between two steps.
+    // A ray that is already behind a surface when it reaches it on screen passed behind that object;
+    // counting it as a hit (it lies within the thickness) gave it the lit front face's colour.
+    // Levels above 0 start their interval away from the probe, where the ray may already be behind a
+    // surface; any crossing before that point is the previous level's hit, so start from the real state.
+    bool was_in_front = true;
+    vec3 p_start = origin + dir * t0;
+    if (p_start.z < -1e-3) {
+        vec2 start_uv = lumina_project_to_uv(p_start, pc.proj);
+        if (all(greaterThanEqual(start_uv, vec2(0.0))) && all(lessThanEqual(start_uv, vec2(1.0)))) {
+            float start_depth = textureLod(u_depth_tex, start_uv, 0.0).r;
+            if (!lumina_is_sky(start_depth)) {
+                was_in_front = -p_start.z <= prism_linearize_depth(start_depth, pc.depth_params);
+            }
+        }
+    }
     for (int i = 0; i < pc.steps; ++i) {
         float t = mix(t0, t1, (float(i) + jitter) / float(pc.steps));
         vec3 p = origin + dir * t;
@@ -75,15 +91,23 @@ void main() {
         }
         float scene_depth = textureLod(u_depth_tex, sample_uv, 0.0).r;
         if (lumina_is_sky(scene_depth)) {
+            was_in_front = true;
             continue;
         }
         float scene_z = prism_linearize_depth(scene_depth, pc.depth_params);
         float ray_z = -p.z;
-        if (ray_z > scene_z && (ray_z - scene_z) < pc.thickness * ray_z) {
-            vec3 radiance = max(textureLod(u_radiance_tex, sample_uv, 0.0).rgb, vec3(0.0));
+        bool behind = ray_z > scene_z;
+        if (behind && was_in_front && (ray_z - scene_z) < pc.thickness * ray_z) {
+            // The depth buffer only holds front faces. A ray meeting a surface that faces away from it
+            // has reached that object's back, which the colour buffer doesn't show: it is blocked, and
+            // the lit front face's colour must not leak through (bright, saturated smears behind
+            // objects next to coloured lights).
+            vec3 hit_normal = lumina_decode_normal(textureLod(u_normal_roughness_tex, sample_uv, 0.0));
+            vec3 radiance = dot(hit_normal, dir) < 0.0 ? max(textureLod(u_radiance_tex, sample_uv, 0.0).rgb, vec3(0.0)) : vec3(0.0);
             imageStore(u_cascade_out, texel, vec4(radiance, 0.0));
             return;
         }
+        was_in_front = !behind;
     }
 
     imageStore(u_cascade_out, texel, vec4(0.0, 0.0, 0.0, 1.0));

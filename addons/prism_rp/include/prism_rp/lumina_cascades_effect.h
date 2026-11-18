@@ -19,7 +19,7 @@ namespace prism {
 //                against the depth buffer and pick up radiance from the current opaque lighting.
 //                Level 0: probes every `probe_spacing` px with 16 directions; each level doubles the
 //                spacing and quadruples the directions (constant memory per level).
-//  2. merge:     top-down, interval + transmittance * parent (bilinear over parent probes).
+//  2. merge:     top-down, interval + transmittance * parent (depth-weighted bilinear over parent probes).
 //  3. integrate: cosine-weighted irradiance per pixel from the 4 nearest level-0 probes.
 //  4. SVGF:      temporal accumulation with moments/variance, then variance-guided a-trous.
 //  5. composite: color += albedo_proxy * irradiance (Forward+ has no albedo buffer; see the shader).
@@ -137,8 +137,10 @@ private:
         int32_t parent_block = 0;
         float probe_spacing_px = 0.0f;
         float parent_spacing_px = 0.0f;
+        int32_t internal_resolution[2] = { 0, 0 };
+        float depth_params[2] = { 0.0f, 0.0f };
     };
-    static_assert(sizeof(MergePushConstants) == 32);
+    static_assert(sizeof(MergePushConstants) == 48);
 
     struct alignas(16) IntegratePushConstants {
         int32_t internal_res_x = 0;
