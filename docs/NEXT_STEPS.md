@@ -10,9 +10,10 @@ How it runs:
 
 - Phases 1–3 happen remotely: in the cloud, plus CI on lavapipe (Mesa's CPU Vulkan driver).
 - Phase 4 is one sitting at a GPU machine.
-- Each phase lands as its own PR, and the next phase starts only once that PR's CI is green.
+- Work lands through pull requests whose CI must be green before merging. Everything goes through one working
+  branch, so consecutive phases sometimes share a PR.
 
-## Phase 1: move to Godot 4.7 (remote)
+## Phase 1: move to Godot 4.7 (remote) — done (#3)
 
 1. Move the `thirdparty/godot-cpp` submodule from the 4.4 branch to `10.0.0-stable`. Build against
    `api_version=4.7` in SCons and `GODOTCPP_API_VERSION=4.7` in CMake.
@@ -27,7 +28,7 @@ its baseline, and the lavapipe suites pass.
 **Risks:** the size of the v10 migration is unknown until it builds. Godot 4.6 reportedly changed motion vectors,
 which Chronos depends on; Phase 3 adds a lavapipe check and Phase 4 confirms it on a GPU.
 
-## Phase 2: Chronos for 4.7, HDR-aware output (remote)
+## Phase 2: Chronos for 4.7, HDR-aware output (remote) — done (#3)
 
 Godot 4.7 can drive HDR displays, but Chronos's SDR look clamps to [0, 1] and would throw HDR away.
 
@@ -42,7 +43,7 @@ Godot 4.7 can drive HDR displays, but Chronos's SDR look clamps to [0, 1] and wo
 
 **Done when:** the new and existing Chronos tests pass and CI is green.
 
-## Phase 3: a one-command GPU session (remote)
+## Phase 3: a one-command GPU session (remote) — in review
 
 1. **`tests/gpu_session.py`.** It:
    - checks for a Vulkan GPU and Godot 4.7.2, downloading Godot if it's missing;

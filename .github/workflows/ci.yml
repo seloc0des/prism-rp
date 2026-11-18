@@ -209,6 +209,48 @@ jobs:
           path: addons/prism_rp/bin/*
           if-no-files-found: error
 
+  gpu-session-software:
+    name: GPU session script on lavapipe (software mode, motion-vector check)
+    needs: [build-gdextension]
+    # Only the Linux debug binary is needed; the download fails if Linux didn't build.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux debug GDExtension binary
+        uses: actions/download-artifact@v4
+        with:
+          name: prism-rp-linux-template_debug
+          path: addons/prism_rp/bin
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install lavapipe, validation layers, Xvfb and Python dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-validationlayers vulkan-tools xvfb
+          pip install numpy pillow flip-evaluator OpenEXR
+
+      # The same script you run on a GPU machine, reduced to one scene and no Gate 1/2 or HDR step.
+      # It downloads Godot itself, so that path is tested too.
+      - name: Run the GPU session in software mode
+        run: python3 tests/gpu_session.py --software --skip-build --non-interactive
+
+      - name: Upload the session package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-session-software
+          path: |
+            tests/artifacts/gpu_session/gpu_session_*.zip
+            tests/artifacts/gpu_session/*/session.json
+          if-no-files-found: warn
+
   vulkan-qa:
     name: Vulkan Validation Layer Smoke Test (lavapipe)
     needs: [validate-shaders, build-gdextension]

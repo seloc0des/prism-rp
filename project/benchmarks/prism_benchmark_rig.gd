@@ -40,18 +40,33 @@ var qa_screenshot_out: String = ""
 var qa_scene_export: String = ""
 var ambient_enabled := true
 var quit_after_frame: int = -1
+## --prism-hdr=on: request HDR output on the window (Godot 4.7; needs platform support, e.g. Wayland on Linux).
+var hdr_requested := false
+## --prism-foliage-alpha=hash|scissor: how alpha-tested foliage is drawn (scene 02).
+var foliage_alpha_mode := "scissor"
+## --prism-motion-test=<degrees per frame>: freeze the scene and yaw the camera at a constant rate, so the
+## expected motion vectors are known exactly (tests/check_motion_vectors.py).
+var motion_test := false
+var motion_test_yaw_deg := 0.0
+## --qa-exr-out=<path>: also save the capture frame as a float EXR (the viewport switches to HDR 2D).
+var qa_exr_out: String = ""
+var _prev_camera_basis := Basis.IDENTITY
 
 func _ready() -> void:
 	_parse_cmdline_args()
 	_configure_viewport_scaling()
+	_configure_hdr_output()
 	_setup_environment_and_chronos_vpu()
 	_setup_camera_rig()
 	_build_benchmark_scene()
 	_update_deterministic_camera(0)
 
 func _process(_delta: float) -> void:
+	if camera != null:
+		_prev_camera_basis = camera.global_transform.basis
 	_update_deterministic_camera(frame_index)
-	_step_benchmark_frame(frame_index)
+	if not motion_test:
+		_step_benchmark_frame(frame_index)
 
 	if frame_index == qa_capture_frame:
 		_capture_qa_frame()
@@ -89,6 +104,22 @@ func _capture_qa_frame() -> void:
 		var err := img.save_png(qa_screenshot_out)
 		if err != OK:
 			push_error("[Prism RP QA] Failed to save screenshot to %s (error %d)" % [qa_screenshot_out, err])
+	if not qa_exr_out.is_empty():
+		var hdr_img := get_viewport().get_texture().get_image()
+		DirAccess.make_dir_recursive_absolute(qa_exr_out.get_base_dir())
+		var exr_err := hdr_img.save_exr(qa_exr_out)
+		if exr_err != OK:
+			push_error("[Prism RP QA] Failed to save EXR to %s (error %d)" % [qa_exr_out, exr_err])
+	if motion_test:
+		# The camera that drew the capture frame, and the one before it: tests/check_motion_vectors.py
+		# derives the expected motion vectors from these.
+		var b := camera.global_transform.basis
+		print("[Prism RP QA] motion-test camera fov=%f keep_aspect=%d curr=%s prev=%s" % [
+			camera.fov, camera.keep_aspect, _basis_text(b), _basis_text(_prev_camera_basis)])
+	if hdr_requested:
+		var window := get_window()
+		print("[Prism RP QA] HDR output at capture: enabled=%s max_linear=%f" % [
+			DisplayServer.window_is_hdr_output_enabled(window.get_window_id()), window.get_output_max_linear_value()])
 	if not qa_scene_export.is_empty():
 		var size := Vector2i(get_viewport().get_visible_rect().size)
 		var export_err := PrismSceneExport.export_scene(self, camera, world_environment.environment, qa_scene_export, size)
@@ -134,6 +165,15 @@ func _parse_cmdline_args() -> void:
 			sdfgi_override = arg.get_slice("=", 1).to_lower()
 		elif arg.begins_with("--prism-set="):
 			_parse_property_overrides(arg.substr("--prism-set=".length()))
+		elif arg.begins_with("--prism-hdr="):
+			hdr_requested = _flag_value(arg)
+		elif arg.begins_with("--prism-foliage-alpha="):
+			foliage_alpha_mode = arg.get_slice("=", 1).to_lower()
+		elif arg.begins_with("--prism-motion-test="):
+			motion_test = true
+			motion_test_yaw_deg = arg.get_slice("=", 1).to_float()
+		elif arg.begins_with("--qa-exr-out="):
+			qa_exr_out = arg.get_slice("=", 1)
 
 func _flag_value(arg: String) -> bool:
 	var value := arg.get_slice("=", 1).to_lower()
@@ -189,6 +229,25 @@ func _configure_viewport_scaling() -> void:
 	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
 	vp.scaling_3d_scale = render_scale
 	vp.use_taa = godot_taa
+	if not qa_exr_out.is_empty():
+		vp.use_hdr_2d = true  # keep the captured frame in floating point
+
+func _configure_hdr_output() -> void:
+	var window := get_window()
+	var supported := DisplayServer.has_feature(DisplayServer.FEATURE_HDR_OUTPUT) \
+		and DisplayServer.window_is_hdr_output_supported(window.get_window_id())
+	if hdr_requested:
+		window.hdr_output_requested = true
+		print("[Prism RP QA] HDR output: supported=%s requested=true" % supported)
+
+func _basis_text(b: Basis) -> String:
+	return "[%f,%f,%f;%f,%f,%f;%f,%f,%f]" % [b.x.x, b.x.y, b.x.z, b.y.x, b.y.y, b.y.z, b.z.x, b.z.y, b.z.z]
+
+## Alpha mode for alpha-tested foliage materials, per --prism-foliage-alpha.
+func foliage_transparency() -> BaseMaterial3D.Transparency:
+	if foliage_alpha_mode == "hash":
+		return BaseMaterial3D.TRANSPARENCY_ALPHA_HASH
+	return BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
 
 func _setup_environment_and_chronos_vpu() -> void:
 	var env := Environment.new()
@@ -268,6 +327,11 @@ func _update_deterministic_camera(frame: int) -> void:
 		sin(phase * 0.5) * orbit_amplitude.y,
 		(cos(phase) - 1.0) * orbit_amplitude.z
 	)
+	if motion_test:
+		camera.position = base_camera_position
+		camera.look_at(camera_look_target, Vector3.UP)
+		camera.rotate_y(deg_to_rad(motion_test_yaw_deg * float(frame)))
+		return
 	camera.position = base_camera_position + offset
 	camera.look_at(camera_look_target, Vector3.UP)
 

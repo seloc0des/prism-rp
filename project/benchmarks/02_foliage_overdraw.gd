@@ -29,7 +29,7 @@ func _build_benchmark_scene() -> void:
 	leaf_mat.roughness = 0.48
 	leaf_mat.metallic = 0.0
 	leaf_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	leaf_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	leaf_mat.transparency = foliage_transparency()  # --prism-foliage-alpha=hash|scissor
 	leaf_mat.alpha_scissor_threshold = 0.45
 	leaf_mat.backlight_enabled = true
 	leaf_mat.backlight = Color(0.32, 0.48, 0.14)

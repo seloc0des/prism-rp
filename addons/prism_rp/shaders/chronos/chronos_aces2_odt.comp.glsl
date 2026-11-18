@@ -24,7 +24,7 @@ layout(push_constant, std430) uniform PushConstants {
     ivec2 resolution;
     float exposure_scale;
     float sharpness;
-    int debug_view_mode;  // 0: Final, 1: Dilated Velocity, 2: Reactive Mask, 3: FFT Bloom, 4: TAA Confidence
+    int debug_view_mode;  // 0: Final, 1: Dilated Velocity, 2: Reactive Mask, 3: FFT Bloom, 4: TAA Confidence, 5: Signed Velocity
     uint flags;           // bit 0: bloom, bit 1: SDR look, bit 2: sharpen, bit 3: alpha holds TAA confidence
     float output_max_linear; // display peak in linear units (SDR white = 1); <= 1 means an SDR display
     float _pad1;
@@ -34,6 +34,10 @@ const uint FLAG_BLOOM = 1u;
 const uint FLAG_SDR_LOOK = 2u;
 const uint FLAG_SHARPEN = 4u;
 const uint FLAG_HAS_CONFIDENCE = 8u;
+
+// Debug view 5 writes rg = 0.5 + velocity * this: signed, so automated checks (tests/check_motion_vectors.py)
+// can read the motion vectors Chronos uses, after jitter compensation and dilation.
+const float SIGNED_VELOCITY_SCALE = 10.0;
 
 // ACES 1.3 Reference Gamut Compression (power 1.2): maps distance `limit` onto the gamut
 // boundary (1.0) and leaves distances below `threshold` untouched.
@@ -140,6 +144,10 @@ void main() {
         float conf = ((pc.flags & FLAG_HAS_CONFIDENCE) != 0u) ? clamp(src.a, 0.0, 1.0) : 0.0;
         vec3 conf_vis = mix(vec3(0.95, 0.15, 0.08), vec3(0.10, 0.85, 0.35), conf);
         imageStore(u_color_out, pixel, vec4(conf_vis, 1.0));
+        return;
+    } else if (pc.debug_view_mode == 5) {
+        vec2 vel = texelFetch(u_dilated_velocity_tex, pixel, 0).rg;
+        imageStore(u_color_out, pixel, vec4(0.5 + vel * SIGNED_VELOCITY_SCALE, 0.5, 1.0));
         return;
     }
 
