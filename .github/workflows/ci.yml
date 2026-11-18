@@ -236,7 +236,8 @@ jobs:
           sudo apt-get install -y mesa-vulkan-drivers vulkan-validationlayers vulkan-tools xvfb
           pip install numpy pillow flip-evaluator OpenEXR
 
-      # The same script you run on a GPU machine, reduced to one scene and no Gate 1/2 or HDR step.
+      # The same script you run on a GPU machine, reduced to one scene and no Gate 1/2 or HDR step
+      # (the GI settling check runs).
       # It downloads Godot itself, so that path is tested too.
       - name: Run the GPU session in software mode
         run: python3 tests/gpu_session.py --software --skip-build --non-interactive
@@ -297,7 +298,7 @@ jobs:
       - name: Run Gate 2 on lavapipe
         run: |
           export VK_DRIVER_FILES="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)"
-          python3 tests/run_gate2.py --tier tier1 --samples 128 --report-only \
+          python3 tests/run_gate2.py --tier tier1 --samples 128 --report-only --noise-check \
             --godot-bin "./Godot_v${GODOT_VERSION}-stable_linux.x86_64" --out-dir tests/artifacts/gate2_ci
 
       - name: Upload the comparison images and numbers
@@ -308,6 +309,7 @@ jobs:
           path: |
             tests/artifacts/gate2_ci/gate2.json
             tests/artifacts/gate2_ci/*/compare.png
+            tests/artifacts/gate2_ci/*/compare_sdfgi.png
             tests/artifacts/gate2_ci/*/reference_full.png
             tests/artifacts/gate2_ci/*/blender.log
             tests/artifacts/gate2_ci/*/godot/godot.log

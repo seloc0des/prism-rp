@@ -86,7 +86,7 @@ What gets judged (from `ROADMAP.md`):
 | :--- | :--- |
 | Vulkan validation | No errors that Prism RP introduces |
 | Gate 1 (Chronos) | FLIP < 0.08 at 50% render scale against the supersampled reference; Chronos < 1.65 ms on Tier 2 |
-| Gate 2 (Lumina) | PSNR > 36 dB against the Cycles reference (needs Blender); GI + SVGF < 2.40 ms on Tier 2 |
+| Gate 2 (Lumina) | As revised below and in `ROADMAP.md`: beats SDFGI against the Cycles reference (needs Blender), above the interim floor, settles within 6 frames, GI + SVGF < 2.40 ms on Tier 2 |
 | By eye (`GPU_TEST_PLAN.md`) | No particle ghosting, foliage shimmer under control, motion vectors right, HDR highlights correct on an HDR display |
 
 **Optional extras:** an HDR display for the HDR check (on Linux it also needs a Wayland session), and Blender 4.x or
@@ -104,7 +104,50 @@ What gets judged (from `ROADMAP.md`):
    - **Session script:** an old Blender gets a clear skip instead of a traceback, and validation counts only errors
      that stock Godot doesn't also produce.
 
-   Then a second run with Blender 4.x or newer covers Gate 2 and confirms these.
+   The second run (Blender 5.3) confirmed all of these and scored Gate 2 for the first time: 14.2 dB fitted in the
+   Cornell box and 21.4 dB in Sponza, against 36.
+
+### Gate 2, revised
+
+36 dB of PSNR against a path tracer means an average error of about 1.6% of full brightness everywhere in the frame.
+Screen-space GI can't get there: it never sees light from surfaces off screen or hidden behind others, and it is
+blurrier than per-pixel path tracing. What this project needs from Lumina is to look clearly better than stock
+Godot's GI, without artifacts and within budget, so Gate 2 now asks for that (`ROADMAP.md`):
+
+- **Beat SDFGI** against the same Cycles reference, measured the same way, on every Gate 2 scene.
+- **Above an interim floor** of fitted PSNR (below), with 36 dB kept as the target for the ray-query fallback.
+- **No visible artifacts** in the test plan's Lumina checks.
+- **Settle within 6 frames** after a light switches on (`tests/check_gi_convergence.py`).
+- **GI + SVGF under 2.40 ms** on Tier 2 (0.5–1.7 ms on the first run).
+
+Gate 2 compares the bounce light of the scene's lights with emission off: the Cornell box's ceiling panel is drawn next
+to the point light that actually lights it, and counting its light as Lumina's would light the box twice. CI measures
+all of this on lavapipe (report only) and renders the reference twice to bound the best possible score.
+
+What the first fair comparison shows Lumina needs, in order: no dark band where screen-space rays leave the screen
+(edges and the floor near the camera), much weaker colour bleeding next to bright, saturated lights (red and blue
+smears on Sponza's columns), and no bright blobs from individual probes.
+
+**First measurement (CI, lavapipe, 128 samples, emission off):**
+
+| Scene | Lumina, fitted (centre) | SDFGI, fitted (centre) | Best possible (reference noise) |
+| :--- | :--- | :--- | :--- |
+| Cornell box | 13.5 dB (11.5) | 16.6 dB (14.6), 6.6x too dark before the fit | 27.7 dB |
+| Sponza | 22.4 dB (23.8) | 27.3 dB (26.0) | 36.1 dB |
+
+Settling: 37% away from the settled result after 6 frames, not settled after 12 (needs under 10% by 6).
+
+So Lumina doesn't pass the revised Gate 2 yet: SDFGI is ahead by 3 dB in the Cornell box and 5 dB in Sponza, and
+Lumina settles far too slowly. The Cornell reference is noisy enough at 128 samples that nothing can score above about
+28 dB (about 34 dB at 512): the old 36 dB was out of reach there whatever the GI.
+
+**Interim floor: 20 dB fitted** on every Gate 2 scene. Beating SDFGI is the real bar; the floor catches output that
+is badly wrong in a scene where SDFGI also does poorly (it sits above SDFGI's Cornell score, below Lumina's Sponza
+score and well below the reference's noise ceiling).
+
+**Next for Lumina, in order:** settle within 6 frames (react to lighting changes instead of averaging over many
+frames); no dark band where screen-space rays leave the screen; much weaker colour bleeding next to bright,
+saturated lights; no bright blobs from individual probes. CI's Gate 2 and settling numbers measure each step.
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.

@@ -52,6 +52,7 @@ def parse_args():
     p.add_argument("--out", required=True)
     p.add_argument("--samples", type=int, default=256)
     p.add_argument("--diffuse-bounces", type=int, default=1)
+    p.add_argument("--seed", type=int, default=1, help="Cycles seed (a second seed measures the reference's own noise).")
     p.add_argument("--resolution", type=int, nargs=2, default=None, help="Override the export's resolution.")
     return p.parse_args(argv)
 
@@ -249,7 +250,7 @@ def configure_render(args, width, height):
     scene.cycles.use_denoising = False
     scene.cycles.caustics_reflective = False
     scene.cycles.caustics_refractive = False
-    scene.cycles.seed = 1
+    scene.cycles.seed = args.seed
     scene.render.resolution_x = width
     scene.render.resolution_y = height
     scene.render.resolution_percentage = 100
