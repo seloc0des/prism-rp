@@ -4,6 +4,12 @@
 // Prism RP — Reverse-Z Hi-Z Pyramid Builder
 // Generates R32_SFLOAT depth pyramid using conservative MIN reduction
 // (Reverse-Z: 1.0 = near, 0.0 = far -> min() preserves farthest depth in footprint)
+//
+// Pyramid contract (is_hiz_occluded relies on it): mip 0 has the depth buffer's size and is
+// written with HIZ_MODE_COPY_DEPTH; mip L has Vulkan's mip size max(1, size0 >> L) and is written
+// from mip L-1 with HIZ_MODE_DOWNSAMPLE_MIN (src_size = mip L-1 size, dst_size = mip L size). The
+// last texel of an odd-sized row/column folds in the leftover source texel, so every mip-0 pixel p
+// is covered by texel min(p >> L, size_L - 1).
 // ============================================================================
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
