@@ -1,57 +1,75 @@
 # GPU Test Plan
 
-Everything in Prism RP so far was built and compiled without a GPU. The shaders validate, the extension loads, and the CI smoke test runs on a software rasterizer. None of that says whether the images are right. This plan is the single session on real hardware that does.
+Everything in Prism RP so far was built and tested without a GPU. The shaders validate, the compute passes are
+checked numerically on lavapipe (Mesa's CPU Vulkan driver), and CI boots every scene on a software rasterizer. None
+of that says whether the images look right or run fast enough. This session on real hardware does.
 
-The run is one command. It produces a folder with a screenshot, GPU timings and a log for every scene and configuration, plus a `report.md` that lays them out side by side. Most of the judging is done by eye against the checklist below, so budget about an hour: roughly 15 minutes of runtime and the rest looking.
+It's one command. Budget about an hour: 20–40 minutes of runtime (more with Gate 2), the rest looking at images.
 
-## Setup
+## Before you start (once)
 
-You need a Vulkan 1.3 GPU (anything from the tier table in `ROADMAP.md`), Godot 4.7.2 on `PATH` as `godot`, Python 3.11+ and a build of the extension for your platform.
+You need Linux (Ubuntu-based distributions are what the commands below assume) or Windows, a Vulkan 1.3 GPU,
+Python 3.11+, and:
 
 ```bash
 git clone --recurse-submodules https://github.com/seloc0des/prism-rp.git
 ```
 
 ```bash
-cd prism-rp
+cd prism-rp && python3 -m pip install scons numpy pillow flip-evaluator OpenEXR
 ```
 
-```bash
-scons platform=linux target=template_debug -j8
-```
+On Linux, also install `build-essential vulkan-tools vulkan-validationlayers`. With the validation layers present,
+the run reports Vulkan errors.
 
-On Windows use `platform=windows`. macOS isn't a supported target right now.
+Optional:
 
-```bash
-ln -s "$(pwd)/addons/prism_rp" project/addons/prism_rp
-```
+- **Gate 2:** Blender 4.x or 5.x on `PATH`.
+- **HDR check:** an HDR monitor with HDR turned on in the OS. On Linux it also needs a Wayland session:
+  `echo $XDG_SESSION_TYPE` should print `wayland`.
 
-On Windows, `mklink /D project\addons\prism_rp ..\..\addons\prism_rp` from an elevated prompt does the same.
-
-```bash
-godot --headless --path project --import
-```
-
-```bash
-pip install flip-evaluator numpy pillow
-```
-
-To see Vulkan validation errors, install the Vulkan SDK (or your distro's `vulkan-validationlayers`). The scripts turn the layer on through `VK_INSTANCE_LAYERS`.
+You don't need Godot installed: the script downloads Godot 4.7.2 into `tests/artifacts/godot/`.
 
 ## Run it
 
-```bash
-python3 tests/run_gpu_validation.py --tier tier2
-```
+Pick one:
 
-Pick the tier that matches the GPU. The output lands in `tests/artifacts/gpu_validation/<timestamp>/`. Open `report.md` in anything that renders Markdown with images (VS Code's preview works).
+- **A. With Claude.** In the Claude desktop app on that machine, go to Settings → Claude Code → Remote Control,
+  share the `prism-rp` folder, and tell Claude. It runs the session, reads the results and fixes problems while you
+  watch; you answer the two HDR questions.
+- **B. Yourself:**
 
-Send me that whole folder, or at least `report.md`, `results.json` and the `godot.log` of anything flagged. The logs carry the detail I need to fix things.
+  ```bash
+  git pull && git submodule update --init --recursive
+  ```
 
-If a run crashes or hangs, narrow it down:
+  ```bash
+  python3 tests/gpu_session.py --tier tier2
+  ```
+
+  Pick the tier that matches the GPU (`ROADMAP.md`; RTX 3060 / RX 6700 class is `tier2`). When it finishes, the
+  script prints a summary and the zip to send back: `tests/artifacts/gpu_session/gpu_session_<timestamp>.zip`, with
+  screenshots as JPEG.
+
+The stages run in this order: system, python, godot, build, project, motion, validation, gate2, hdr, package. A
+stage that can't run says why and skips the ones that depend on it. The package is written either way.
+
+Useful flags:
+
+- `--skip-build`: reuse the library already in `addons/prism_rp/bin`.
+- `--skip-gate2` and `--skip-hdr`: leave those stages out.
+- `--non-interactive`: check that HDR works without asking you about it.
+
+CI runs the same script in software mode (`--software`) on every pull request, so the script itself is tested.
+
+If a run crashes or hangs, narrow it down with the scripts underneath:
 
 ```bash
 python3 tests/run_gpu_validation.py --scenes 01_cornell_box --configs chronos_default --skip-gate1
+```
+
+```bash
+python3 tests/check_motion_vectors.py
 ```
 
 ## What to look for
@@ -60,7 +78,7 @@ Every capture is frame 48, with the camera orbiting slowly and objects animating
 
 ### Errors first
 
-The report's **Errors** section lists any run with a Vulkan validation message (`VUID-...`, `SYNC-HAZARD`), a script error, or an exception. Anything there matters more than how the images look. An error that also shows up in that scene's `baseline_godot` run is labeled as coming from the engine or driver; Godot can trip newer validation checks on its own (4.4 tripped `VUID-vkQueueSubmit-pSignalSemaphores-00067`, swapchain semaphore reuse). The **Prism RP messages** column should be empty except for `chronos_godot_taa_guard`, which must show exactly one warning about Godot TAA.
+The report's **Errors** section lists any run with a Vulkan validation message (`VUID-...`, `SYNC-HAZARD`), a script error, or an exception. Anything there matters more than how the images look. An error that also shows up in that scene's `baseline_godot` run is labeled as coming from the engine or driver; Godot can trip newer validation checks on its own (4.4 tripped `VUID-vkQueueSubmit-pSignalSemaphores-00067`, swapchain semaphore reuse). The **Prism RP messages** column should be empty except for two configurations. `chronos_godot_taa_guard` must show exactly one warning about Godot TAA, and `chronos_hdr` shows its HDR status lines.
 
 ### Chronos
 
@@ -72,6 +90,8 @@ The report's **Errors** section lists any run with a Vulkan validation message (
 | `chronos_no_taa` | Aliased but stable, bloom present | Compare with `chronos_default` to see what TAA buys |
 | `chronos_no_capture` | Scene 05 sparks and glass smear more than in default | If it looks the same as default, the transparency reactive term isn't doing anything |
 | `chronos_godot_taa_guard` | Same as `chronos_no_taa` plus Godot's TAA, one warning in the log | No warning, or double-blurred image: the guard didn't trigger |
+| `chronos_foliage_alpha_hash` (scene 02 only) | Leaf edges soft and stable, about as clean as `chronos_default`'s alpha-scissored leaves | Dither or crawling noise on the leaves: TAA isn't resolving the hash (history rejected on foliage, so check the reactive mask and velocity) |
+| `chronos_hdr` (scenes 01, 05) | The log shows `HDR output at capture: enabled=true` with the display's peak, and Chronos' "HDR output detected" line. The PNG is clamped to SDR, so the image itself looks like default | `enabled=false` on an HDR monitor: the OS or compositor didn't grant HDR (on Linux it needs Wayland). The hdr stage below is where HDR is judged |
 | `chronos_debug_velocity` | Mostly dark, smooth color on moving objects (cube in 01, louvers in 03) | Speckle or a uniform tint everywhere on a static background: jitter not removed from velocity |
 | `chronos_debug_reactive` | Hot on scene 05 sparks, glass and the orb; cool on static walls | Hot everywhere: thresholds too low. Cold on the sparks: transparency term or opaque capture broken |
 | `chronos_debug_bloom` | Soft glow around the ceiling emitter (01) and orb (05), round on screen, faint red halation | Stretched horizontally: aspect correction. Glow wrapping from the opposite edge: FFT padding |
@@ -100,6 +120,34 @@ Lumina adds one bounce of indirect light, computed from what's on screen. The Co
 
 `full_pipeline` should look like `lumina_default` with Chronos' anti-aliasing, bloom and filmic look applied on top. Watch scene 05 for ghosting on the sparks.
 
+### Motion vectors
+
+The `motion` stage checks the motion vectors Chronos uses, numerically:
+
+- It freezes scene 01 and yaws the camera at a constant rate.
+- It captures Chronos' signed velocity view (debug view 5) as a float EXR.
+- It compares that against motion vectors computed from the logged camera orientations. Under pure rotation those
+  don't depend on depth, so they're exact.
+
+There are three runs: no motion (it must read zero); yawing without jitter; and yawing with `ChronosJitterCamera`'s
+jitter, where compensation must leave the same field. It passes when the median error is below 0.25 internal
+pixels. Results are in `motion_check/motion_check.json`.
+
+What a failure points to:
+
+- **Measured motion has the opposite sign** (error about twice the motion): Godot's motion-vector convention changed.
+  Godot 4.6 reportedly touched motion vectors, which is why this check exists.
+- **Only the jitter run is off, by about a pixel:** jitter compensation.
+- **Off by a constant factor:** units (uv versus pixels).
+- **The no-motion run reads non-zero:** jitter or sky handling.
+
+### HDR
+
+When Godot can drive the display in HDR, the `hdr` stage shows scene 05 for about 15 seconds twice. In the first run,
+Chronos' look follows the display peak; in the second, it's limited to SDR. Then it asks two questions. Highlights
+(sparks, the orb, glass reflections) should be visibly brighter in the first run without clipping to flat white,
+while shadows and midtones look the same in both. If Godot can't enable HDR, the stage records why and skips.
+
 ### Timings
 
 The Chronos, Optics and Lumina columns are GPU milliseconds from the in-engine timestamps. Compare `full_pipeline` against the tier budgets printed at the top of the report. For the Chronos breakdown, each run's `telemetry.json` has per-dispatch entries (`chronos_taau`, `chronos_fft_bloom_forward_rows`, and so on).
@@ -110,7 +158,7 @@ The report ends with a Gate 1 table. It compares Chronos at 50% render scale aga
 
 ### Gate 2
 
-Gate 2 needs Blender (4.x or 5.x) on `PATH` and `pip install OpenEXR` as well. It renders Lumina's irradiance in Godot, exports the same frame, and path-traces it in Cycles with one diffuse bounce:
+Gate 2 needs Blender (4.x or 5.x) on `PATH`; the session runs it automatically when Blender is there. It renders Lumina's irradiance in Godot, exports the same frame, and path-traces it in Cycles with one diffuse bounce. To run it on its own:
 
 ```bash
 python3 tests/run_gate2.py --scenes 01_cornell_box 04_dynamic_sponza

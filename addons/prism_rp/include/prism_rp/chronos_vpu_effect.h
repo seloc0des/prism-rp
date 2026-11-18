@@ -49,6 +49,7 @@ public:
         DEBUG_VIEW_REACTIVE_MASK = 2,
         DEBUG_VIEW_FFT_BLOOM = 3,
         DEBUG_VIEW_TAAU_CONFIDENCE = 4,
+        DEBUG_VIEW_SIGNED_VELOCITY = 5,  // rg = 0.5 + velocity_uv * 10 (for automated checks)
     };
 
     ChronosVPUCompositorEffect();

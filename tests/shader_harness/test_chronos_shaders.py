@@ -235,6 +235,22 @@ def test_sdr_look_handles_saturated_and_out_of_gamut_colors(gpu):
     assert np.all(np.isfinite(out)) and out.min() >= 0.0 and out[..., :3].max() <= 1.0
 
 
+def test_signed_velocity_debug_view_encodes_sign_and_size(gpu):
+    """Debug view 5 (tests/check_motion_vectors.py reads it): rg = 0.5 + velocity * 10."""
+    h, w = 4, 8
+    vel = np.stack(np.meshgrid(np.linspace(-0.03, 0.03, w), np.linspace(0.02, -0.02, h)), axis=-1)
+    out = gpu.run(
+        {"res": Img("rgba16f", data=np.ones((h, w, 4))), "bloom": Img("rgba16f", 256, 256), "vel": Img("rg16f", data=vel),
+         "react": Img("r8", w, h), "out": Img("rgba16f", w, h)},
+        [Dispatch("chronos/chronos_aces2_odt.comp.glsl",
+                  {0: ("res", "sampled_nearest"), 1: ("bloom", "sampled_linear"), 2: ("vel", "sampled_nearest"),
+                   3: ("react", "sampled_nearest"), 4: ("out", "storage")},
+                  pc.composite_chronos(w, h, debug=5), groups_for(w, h))], ["out"])["out"]
+    vel16 = vel.astype(np.float16).astype(np.float64)
+    np.testing.assert_allclose(out[..., :2], 0.5 + vel16 * 10.0, atol=1e-3)
+    np.testing.assert_allclose(out[..., 2], 0.5, atol=1e-3)
+
+
 def _luminance_ramp(n=96):
     lum = np.geomspace(1e-4, 100.0, n)
     src = np.zeros((1, n, 4)); src[0, :, :3] = lum[:, None]; src[..., 3] = 1
