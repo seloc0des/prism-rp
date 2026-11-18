@@ -11,9 +11,9 @@ Most of that is still ahead. Today the repository ships two compositor effects, 
 | **Video & Temporal Post** | **Chronos VPU**: dilated motion vectors, reactive mask, compute TAA, FFT diffraction bloom with red halation, SDR filmic look | Implemented (GDExtension `CompositorEffect`) |
 | Upscaler backends | FSR 3.1 / XeSS / DLSS behind one interface | Planned (Phase 1) |
 | **Global Illumination** | **Lumina-Cascades**: screen-space + world-space radiance cascades with ReSTIR and SVGF | v1 implemented: screen-space cascades + SVGF. World-space cascades, ray-query fallback and ReSTIR planned (Phase 2) |
-| **Geometry & Culling** | **GPU Meshlet Pipeline** (`VK_EXT_mesh_shader` + compute fallback) into a 64-bit Visibility Buffer | Meshlet builder done (`PrismMeshletBuilder`); GPU culling and the visibility buffer planned (Phase 3) |
-| **Material Shading** | **Tile-Sorted Compute Shading** into a Thin G-Buffer | Planned (Phase 4) |
-| **Shadows** | **Virtualized Clipmap Shadow Pages (VCSP)** driven by visibility-buffer page faults | Planned (Phase 4) |
+| **Geometry & Culling** | **GPU Meshlet Pipeline** (`VK_EXT_mesh_shader` + compute fallback) into a 64-bit Visibility Buffer | Meshlet builder done (`PrismMeshletBuilder`). Hi-Z culling and visibility-buffer shaders written and tested on lavapipe, not wired up (Phase 3; see `docs/TRACK_B_SHADERS.md`) |
+| **Material Shading** | **Tile-Sorted Compute Shading** into a Thin G-Buffer | Shaders written and tested on lavapipe, not wired up (Phase 4) |
+| **Shadows** | **Virtualized Clipmap Shadow Pages (VCSP)** driven by visibility-buffer page faults | Shaders written and tested on lavapipe, not wired up (Phase 4) |
 
 ## How Chronos fits into Godot 4.4
 
@@ -119,7 +119,7 @@ Enable **Prism RP** under Project Settings > Plugins. The dock finds the Chronos
    ```bash
    python3 -m pytest tests/unit
    ```
-   Compute-shader tests run every Chronos and Lumina shader on synthetic inputs through Mesa's lavapipe (a CPU Vulkan driver) and check the numbers, with validation layers on. They need `mesa-vulkan-drivers`, `vulkan-validationlayers`, `libvulkan-dev`, `nlohmann-json3-dev` and `g++`:
+   Compute-shader tests run every Chronos and Lumina shader, and the Track B compute passes, on synthetic inputs through Mesa's lavapipe (a CPU Vulkan driver) and check the numbers, with validation layers on. They need `mesa-vulkan-drivers`, `vulkan-validationlayers`, `libvulkan-dev`, `nlohmann-json3-dev` and `g++`:
    ```bash
    python3 -m pytest tests/shader_harness
    ```
@@ -132,7 +132,7 @@ Enable **Prism RP** under Project Settings > Plugins. The dock finds the Chronos
 
 ## Meshlets
 
-`PrismMeshletBuilder.build_surface(mesh, surface)` splits a mesh surface into meshlets of at most 64 vertices and 124 triangles (meshoptimizer), each with a bounding sphere and a backface cone, and returns a `PrismMeshletData` resource laid out for GPU storage buffers (64-byte records plus vertex and packed triangle buffers). Godot treats clockwise triangles as front-facing while meshoptimizer assumes counter-clockwise, so the builder reverses winding going in and restores it going out; the cones describe Godot's front faces. This is groundwork for Track B: nothing renders meshlets yet.
+`PrismMeshletBuilder.build_surface(mesh, surface)` splits a mesh surface into meshlets of at most 64 vertices and 124 triangles (meshoptimizer), each with a bounding sphere and a backface cone, and returns a `PrismMeshletData` resource laid out for GPU storage buffers (64-byte records plus vertex and packed triangle buffers). Godot treats clockwise triangles as front-facing while meshoptimizer assumes counter-clockwise, so the builder reverses winding going in and restores it going out; the cones describe Godot's front faces. This is groundwork for Track B: nothing renders meshlets yet. Culling, visibility-buffer, material-shading and shadow-page shaders are in `addons/prism_rp/shaders/visibility` and `shaders/shadows`, with lavapipe tests for their compute passes; no C++ runs them yet. `docs/TRACK_B_SHADERS.md` has the host contracts and what is still open.
 
 ```gdscript
 var data := PrismMeshletBuilder.build_surface($Statue.mesh, 0)

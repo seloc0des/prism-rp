@@ -1,13 +1,14 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_nonuniform_qualifier : require
 
-#include "../include/vis_shading_common.glsl"
+#include "vis_shading_common.glsl"
 
 // ============================================================================
 // Prism RP — Deferred Visibility Buffer Material Shading Pass
-// Dispatched indirectly: workgroups = (b_indirect_dispatch.x, 1, 1).
-// Each 8x8 workgroup evaluates a single MaterialID within a single 8x8 tile,
-// giving 100% instruction & texture-cache coherence per wave/subgroup.
+// Dispatched indirectly on ShadeDispatch (from vis_tile_classify): (PRISM_SHADE_DISPATCH_WIDTH, rows, 1).
+// Each 8x8 workgroup shades the pixels of one material bin within one 8x8 tile, so a wave runs one
+// material's code and textures.
 // ============================================================================
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -50,14 +51,19 @@ layout(set = 0, binding = 9, std430) readonly buffer MaterialWorkBuffer {
     MaterialTileWorkItem b_work_items[];
 };
 
-// Bindless material texture array
+// Bindless material texture array (albedo / emissive through sRGB views)
 layout(set = 0, binding = 10) uniform sampler2D u_textures[];
 
-// Output G-Buffer & HDR targets consumed by Lumina-Cascades GI & Chronos VPU
+// Outputs: HDR radiance (linear Rec.709), albedo + roughness, world-space octahedral normal +
+// metallic + AO, motion vectors (Godot convention: prev_uv - curr_uv)
 layout(set = 0, binding = 11, rgba16f) uniform writeonly image2D out_hdr_radiance;
 layout(set = 0, binding = 12, rgba8)   uniform writeonly image2D out_albedo_roughness;
 layout(set = 0, binding = 13, rgba16f) uniform writeonly image2D out_normal_metallic;
 layout(set = 0, binding = 14, rg16f)   uniform writeonly image2D out_motion_vectors;
+
+layout(set = 0, binding = 15, std430) readonly buffer ShadeDispatchBuffer {
+    ShadeDispatch b_dispatch;
+};
 
 const float PI = 3.14159265359;
 
@@ -83,8 +89,8 @@ vec3 fresnel_schlick(float cos_theta, vec3 f0) {
 }
 
 void main() {
-    uint work_idx = gl_WorkGroupID.x;
-    if (work_idx >= u_shade.viewport_and_limits.w) {
+    uint work_idx = gl_WorkGroupID.y * PRISM_SHADE_DISPATCH_WIDTH + gl_WorkGroupID.x;
+    if (work_idx >= min(b_dispatch.work_item_count, u_shade.viewport_and_limits.w)) {
         return;
     }
 
@@ -101,44 +107,30 @@ void main() {
     }
 
     uvec2 payload = texelFetch(u_vis_buffer, pixel, 0).rg;
-    if ((payload.x | payload.y) == 0u) {
+    if (vis_payload_is_empty(payload)) {
         return;
     }
 
     uint instance_id;
     uint meshlet_local_id;
     uint primitive_id;
-    vec3 stored_bary;
     bool alpha_tested;
-    unpack_visibility_payload(
-        payload,
-        instance_id,
-        meshlet_local_id,
-        primitive_id,
-        stored_bary,
-        alpha_tested
-    );
+    unpack_visibility_payload(payload, instance_id, meshlet_local_id, primitive_id, alpha_tested);
 
     GpuInstance inst = b_instances[instance_id];
-    uint target_mat_id = work.material_id;
-
-    // Only shade pixels belonging to this workgroup's assigned material_id
-    if (min(inst.material_id, PRISM_MAX_TILE_MATERIALS - 1u) != target_mat_id) {
+    // Only shade pixels in this workgroup's material bin
+    if (min(inst.material_id, PRISM_MAX_TILE_MATERIALS - 1u) != work.material_id) {
         return;
     }
 
     GpuPbrMaterial mat = b_materials[inst.material_id];
     GpuMeshlet m       = b_meshlets[inst.meshlet_offset + meshlet_local_id];
 
-    // 1. Fetch triangle indices and 3 corner vertices
+    // 1. Fetch the triangle's corners
     uint packed_tri = b_meshlet_triangles[m.triangle_offset + primitive_id];
-    uint l0 = (packed_tri >>  0u) & 0xFFu;
-    uint l1 = (packed_tri >>  8u) & 0xFFu;
-    uint l2 = (packed_tri >> 16u) & 0xFFu;
-
-    uint g0 = inst.vertex_base + b_meshlet_vertices[m.vertex_offset + l0];
-    uint g1 = inst.vertex_base + b_meshlet_vertices[m.vertex_offset + l1];
-    uint g2 = inst.vertex_base + b_meshlet_vertices[m.vertex_offset + l2];
+    uint g0 = inst.vertex_base + b_meshlet_vertices[m.vertex_offset + ( packed_tri         & 0xFFu)];
+    uint g1 = inst.vertex_base + b_meshlet_vertices[m.vertex_offset + ((packed_tri >>  8u) & 0xFFu)];
+    uint g2 = inst.vertex_base + b_meshlet_vertices[m.vertex_offset + ((packed_tri >> 16u) & 0xFFu)];
 
     vec3 p0_local = b_positions[g0].xyz;
     vec3 p1_local = b_positions[g1].xyz;
@@ -148,45 +140,33 @@ void main() {
     vec3 p1_world = (inst.world_from_local * vec4(p1_local, 1.0)).xyz;
     vec3 p2_world = (inst.world_from_local * vec4(p2_local, 1.0)).xyz;
 
-    vec4 clip0 = u_shade.view_proj * vec4(p0_world, 1.0);
-    vec4 clip1 = u_shade.view_proj * vec4(p1_world, 1.0);
-    vec4 clip2 = u_shade.view_proj * vec4(p2_world, 1.0);
-
-    // 2. Reconstruct perspective-correct barycentrics & analytic screen-space derivatives
+    // 2. Perspective-correct barycentrics and their screen-space derivatives
     vec2 inv_vp    = 1.0 / vec2(viewport);
-    vec2 pixel_uv  = (vec2(pixel) + 0.5) * inv_vp;
-    vec2 pixel_ndc = pixel_uv * 2.0 - 1.0;
+    vec2 pixel_ndc = (vec2(pixel) + 0.5) * inv_vp * 2.0 - 1.0;
 
     vec3 bary;
     vec3 ddx_bary;
     vec3 ddy_bary;
-    compute_barycentric_gradients(clip0, clip1, clip2, pixel_ndc, inv_vp, bary, ddx_bary, ddy_bary);
-
-    // Fall back to stored 12-bit barycentrics on grazing/sub-pixel degenerate triangles
-    if (dot(bary, bary) <= 0.0 || any(isnan(bary))) {
-        bary     = stored_bary;
-        ddx_bary = vec3(0.0);
-        ddy_bary = vec3(0.0);
-    }
+    compute_barycentric_gradients(
+        u_shade.view_proj * vec4(p0_world, 1.0),
+        u_shade.view_proj * vec4(p1_world, 1.0),
+        u_shade.view_proj * vec4(p2_world, 1.0),
+        pixel_ndc, inv_vp, bary, ddx_bary, ddy_bary); // edge-on: centroid, zero gradients
 
     // 3. Interpolate attributes and UV gradients
     GpuVertexAttributes a0 = b_attributes[g0];
     GpuVertexAttributes a1 = b_attributes[g1];
     GpuVertexAttributes a2 = b_attributes[g2];
 
-    vec2 uv0 = a0.uv_and_color.xy;
-    vec2 uv1 = a1.uv_and_color.xy;
-    vec2 uv2 = a2.uv_and_color.xy;
+    vec2 uv     = a0.uv.xy * bary.x     + a1.uv.xy * bary.y     + a2.uv.xy * bary.z;
+    vec2 ddx_uv = a0.uv.xy * ddx_bary.x + a1.uv.xy * ddx_bary.y + a2.uv.xy * ddx_bary.z;
+    vec2 ddy_uv = a0.uv.xy * ddy_bary.x + a1.uv.xy * ddy_bary.y + a2.uv.xy * ddy_bary.z;
 
-    vec2 uv     = uv0 * bary.x     + uv1 * bary.y     + uv2 * bary.z;
-    vec2 ddx_uv = uv0 * ddx_bary.x + uv1 * ddx_bary.y + uv2 * ddx_bary.z;
-    vec2 ddy_uv = uv0 * ddy_bary.x + uv1 * ddy_bary.y + uv2 * ddy_bary.z;
+    vec3 world_pos      = p0_world * bary.x + p1_world * bary.y + p2_world * bary.z;
+    vec3 local_pos      = p0_local * bary.x + p1_local * bary.y + p2_local * bary.z;
+    vec3 prev_world_pos = (inst.prev_world_from_local * vec4(local_pos, 1.0)).xyz;
 
-    vec3 world_pos = p0_world * bary.x + p1_world * bary.y + p2_world * bary.z;
-    vec3 prev_local_pos = p0_local * bary.x + p1_local * bary.y + p2_local * bary.z;
-    vec3 prev_world_pos = (inst.prev_world_from_local * vec4(prev_local_pos, 1.0)).xyz;
-
-    // 4. Sample bindless PBR textures using analytic ray-differential UV gradients
+    // 4. Material textures, sampled with the analytic gradients
     vec4 albedo = mat.base_color_factor;
     if (mat.tex_indices.x != PRISM_INVALID_TEX_INDEX) {
         albedo *= textureGrad(u_textures[nonuniformEXT(mat.tex_indices.x)], uv, ddx_uv, ddy_uv);
@@ -204,44 +184,47 @@ void main() {
     roughness = clamp(roughness, 0.045, 1.0);
     metallic  = clamp(metallic, 0.0, 1.0);
 
-    // 5. Reconstruct world normal + normal mapping
-    mat3 normal_mat = transpose(inverse(mat3(inst.world_from_local)));
-    vec3 local_n = normalize(
-        a0.normal_and_uv_x.xyz * bary.x +
-        a1.normal_and_uv_x.xyz * bary.y +
-        a2.normal_and_uv_x.xyz * bary.z
-    );
-    vec3 N = normalize(normal_mat * local_n);
+    // 5. Shading frame. Mirrored instances (negative determinant) flip the face winding and the
+    //    tangent frame's handedness.
+    mat3 M3 = mat3(inst.world_from_local);
+    float det_sign = prism_det3(M3) < 0.0 ? -1.0 : 1.0;
+    vec3 V = normalize(u_shade.camera_pos_and_exposure.xyz - world_pos);
 
-    if (mat.tex_indices.y != PRISM_INVALID_TEX_INDEX) {
-        vec3 local_t = normalize(
-            a0.tangent_and_uv_y.xyz * bary.x +
-            a1.tangent_and_uv_y.xyz * bary.y +
-            a2.tangent_and_uv_y.xyz * bary.z
-        );
-        float bitangent_sign = a0.tangent_and_uv_y.w;
-        vec3 T = normalize(mat3(inst.world_from_local) * local_t);
+    // Godot front faces are clockwise, so cross(p2 - p0, p1 - p0) points out of the front face.
+    bool front_facing = dot(cross(p2_world - p0_world, p1_world - p0_world) * det_sign, V) >= 0.0;
+
+    vec3 N = normalize(prism_normal_matrix(M3) *
+        (a0.normal.xyz * bary.x + a1.normal.xyz * bary.y + a2.normal.xyz * bary.z));
+
+    vec3 T = vec3(0.0);
+    vec3 B = vec3(0.0);
+    bool normal_mapped = mat.tex_indices.y != PRISM_INVALID_TEX_INDEX;
+    if (normal_mapped) {
+        T = normalize(M3 * (a0.tangent.xyz * bary.x + a1.tangent.xyz * bary.y + a2.tangent.xyz * bary.z));
         T = normalize(T - N * dot(T, N));
-        vec3 B = cross(N, T) * bitangent_sign;
+        B = cross(N, T) * a0.tangent.w * det_sign;
+    }
 
+    // Back face of a double-sided material: flip the normal before normal mapping (as Godot does
+    // with gl_FrontFacing), keeping the tangent frame.
+    if ((mat.flags & PRISM_MAT_FLAG_DOUBLE_SIDED) != 0u && !front_facing) {
+        N = -N;
+    }
+
+    if (normal_mapped) {
         vec3 map_n = textureGrad(u_textures[nonuniformEXT(mat.tex_indices.y)], uv, ddx_uv, ddy_uv).xyz * 2.0 - 1.0;
         map_n.xy *= mat.metallic_ao_alpha.w;
         N = normalize(mat3(T, B, N) * map_n);
     }
 
-    vec3 V = normalize(u_shade.camera_pos_and_exposure.xyz - world_pos);
-    if ((mat.flags & PRISM_MAT_FLAG_DOUBLE_SIDED) != 0u && dot(N, V) < 0.0) {
-        N = -N;
-    }
-
-    // 6. Compute Godot-sign motion vectors (prev_uv - curr_uv) for Chronos TAAU
+    // 6. Motion vectors, Godot convention (prev_uv - curr_uv), for Chronos
     vec4 curr_clip = u_shade.view_proj * vec4(world_pos, 1.0);
     vec4 prev_clip = u_shade.prev_view_proj * vec4(prev_world_pos, 1.0);
     vec2 curr_uv   = (curr_clip.xy / max(curr_clip.w, 1e-6)) * 0.5 + 0.5;
     vec2 prev_uv   = (prev_clip.xy / max(prev_clip.w, 1e-6)) * 0.5 + 0.5;
     vec2 velocity  = prev_uv - curr_uv;
 
-    // 7. Direct Directional Sun + Emissive PBR Evaluation (ACEScg linear)
+    // 7. Directional sun + emissive, linear Rec.709
     vec3 emissive = mat.emissive_and_roughness.rgb;
     if (mat.tex_indices.w != PRISM_INVALID_TEX_INDEX) {
         emissive *= textureGrad(u_textures[nonuniformEXT(mat.tex_indices.w)], uv, ddx_uv, ddy_uv).rgb;
@@ -273,7 +256,7 @@ void main() {
         radiance += albedo.rgb * u_shade.sun_color_and_ambient.a * ao;
     }
 
-    // 8. Write G-Buffer & HDR Outputs (feeds Lumina-Cascades GI & Chronos VPU)
+    // 8. G-buffer & HDR outputs
     imageStore(out_hdr_radiance,     pixel, vec4(radiance, 1.0));
     imageStore(out_albedo_roughness, pixel, vec4(albedo.rgb, roughness));
     imageStore(out_normal_metallic,  pixel, vec4(encode_octahedral_normal(N), metallic, ao));
