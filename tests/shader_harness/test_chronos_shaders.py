@@ -160,9 +160,8 @@ def test_fft_bloom_core_conserves_energy(gpu):
 
 
 def test_fft_bloom_full_kernel_energy_and_tint(gpu):
-    # Full kernel: DC gain is 1 + d + h (per-channel weights as in evaluate_optical_otf). The
-    # diffraction spikes have negative spatial lobes that the final max(0) clips, which can only add
-    # energy; it adds roughly 15-20% here.
+    # Full kernel: DC gain is 1 + d + h (per-channel weights as in evaluate_optical_otf). Every term
+    # has a positive PSF, so the final max(0) clips nothing and the energy is exact.
     d, h = 0.45, 0.35
     src = _blob()
     out = _bloom(gpu, src, pc.fft_vert(diffraction=d, halation=h))
@@ -170,7 +169,7 @@ def test_fft_bloom_full_kernel_energy_and_tint(gpu):
     gains = [1 + d + h, 1 + 0.96 * d + 0.14 * h, 1 + 0.92 * d + 0.02 * h]
     sums = [out[..., ch].sum() for ch in range(3)]
     for ch, gain in enumerate(gains):
-        assert total_in * gain * 0.99 <= sums[ch] <= total_in * gain * 1.25, (ch, sums[ch], total_in * gain)
+        assert sums[ch] == pytest.approx(total_in * gain, rel=0.01), (ch, sums[ch], total_in * gain)
     assert sums[0] > sums[1] > sums[2]   # red halation
 
 
@@ -195,6 +194,41 @@ def test_fft_bloom_aspect_narrows_horizontally(gpu):
     wx2, wy2 = widths(_bloom(gpu, src, pc.fft_vert(aspect=2.0, diffraction=0.0)))
     assert wx1 == pytest.approx(wy1, rel=0.1)
     assert wx2 < 0.75 * wy2
+
+
+def _point_near_left_edge(value=64.0):
+    src = np.zeros((224, 224, 4)); src[..., 3] = 1
+    src[111:113, 23:25, :3] = value
+    return src, (16 + 112, 16 + 24)   # source centre in grid coordinates (row, col)
+
+
+def test_fft_bloom_spikes_are_finite_and_do_not_wrap(gpu):
+    # The default kernel (with diffraction spikes) must stay local: a highlight near the left edge
+    # may not light the far side of the frame. Spikes built as angular wedges in frequency space are
+    # as long as the grid and wrap around it, drawing streaks across the whole image (found on an RTX
+    # 4060 Ti: an X spanning the frame from the Cornell box's ceiling light).
+    src, (cy, cx) = _point_near_left_edge()
+    out = _bloom(gpu, src, pc.fft_vert())[..., 1]
+    yy, xx = np.mgrid[0:256, 0:256]
+    dist = np.hypot(yy - cy, xx - cx)
+    total = out.sum()
+    assert out[16:240, 144:240].sum() < 0.002 * total          # right half of the frame: nothing wraps there
+    assert out[dist > 48].sum() < 0.01 * total                  # 99% of the energy within 48 texels
+    assert out.min() > -1e-3 * out.max()                        # no negative lobes to clip
+
+
+def test_fft_bloom_has_visible_spikes(gpu):
+    # Six blades: spikes at 30, 90 and 150 degrees, so the vertical ray is a spike and the horizontal
+    # one isn't. Along a spike, 6-20 texels out, the bloom is clearly brighter than between spikes.
+    src, (cy, cx) = _point_near_left_edge()
+    src[111:113, 23:25, :3] = 0
+    src[111:113, 111:113, :3] = 64.0
+    cy, cx = 16 + 112, 16 + 112
+    out = _bloom(gpu, src, pc.fft_vert(halation=0.0))[..., 1]
+    r = np.arange(6, 21)
+    vertical = out[cy - r, cx].sum() + out[cy + r, cx].sum()
+    horizontal = out[cy, cx - r].sum() + out[cy, cx + r].sum()
+    assert vertical > 2.0 * horizontal, (vertical, horizontal)
 
 
 def _composite(gpu, src, flags, exposure=1.0, debug=0, max_linear=0.0):
