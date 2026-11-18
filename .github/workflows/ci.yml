@@ -282,6 +282,7 @@ jobs:
       - name: Link addon into QA project and import it
         run: |
           mkdir -p project/addons
+          rm -rf project/addons/prism_rp   # replace anything stale, e.g. a link committed from another machine
           ln -s "$(pwd)/addons/prism_rp" "$(pwd)/project/addons/prism_rp"
           # The import pass writes .godot/extension_list.cfg; without it the GDExtension is never loaded.
           ./Godot_v${GODOT_VERSION}-stable_linux.x86_64 --headless --path project --import 2>&1 | tee godot_import.log

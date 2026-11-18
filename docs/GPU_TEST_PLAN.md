@@ -32,24 +32,14 @@ You don't need Godot installed: the script downloads Godot 4.7.2 into `tests/art
 
 ## Run it
 
-Pick one:
+```bash
+git pull && git submodule update --init --recursive
+python3 tests/gpu_session.py --tier tier2
+```
 
-- **A. With Claude.** In the Claude desktop app on that machine, go to Settings → Claude Code → Remote Control,
-  share the `prism-rp` folder, and tell Claude. It runs the session, reads the results and fixes problems while you
-  watch; you answer the two HDR questions.
-- **B. Yourself:**
-
-  ```bash
-  git pull && git submodule update --init --recursive
-  ```
-
-  ```bash
-  python3 tests/gpu_session.py --tier tier2
-  ```
-
-  Pick the tier that matches the GPU (`ROADMAP.md`; RTX 3060 / RX 6700 class is `tier2`). When it finishes, the
-  script prints a summary and the zip to send back: `tests/artifacts/gpu_session/gpu_session_<timestamp>.zip`, with
-  screenshots as JPEG.
+Pick the tier that matches the GPU (`ROADMAP.md`; RTX 3060 / RX 6700 class is `tier2`). When it finishes, the script
+prints a summary and the path of the zip holding the results: `tests/artifacts/gpu_session/gpu_session_<timestamp>.zip`,
+with screenshots as JPEG. The HDR stage asks two questions, so stay at the screen for the end of the run.
 
 The stages run in this order: system, python, godot, build, project, motion, validation, gate2, hdr, package. A
 stage that can't run says why and skips the ones that depend on it. The package is written either way.

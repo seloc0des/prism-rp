@@ -1,5 +1,7 @@
-# Godot 4 (.import files are committed, per Godot's recommendation)
+# Godot 4 (.import and .uid files are committed, per Godot's recommendation)
 .godot/
+# The addon is linked (or copied) into the QA project by tests/gpu_session.py and CI; never commit it there
+project/addons/prism_rp
 export.cfg
 export_presets.cfg
 
@@ -31,6 +33,10 @@ godot_vulkan_qa.log
 tests/artifacts/
 __pycache__/
 *.py[cod]
+
+# Python virtual environments
+.venv/
+venv/
 
 # OS / IDE
 .DS_Store

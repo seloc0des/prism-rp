@@ -2,7 +2,7 @@
 
 **Where things stand (2026-11-18).** `main` is green, the Godot Vulkan smoke test included. The Track B shaders are
 fixed and their compute passes tested on lavapipe. Chronos and Lumina have still never run on a real GPU, which is
-the gap this plan closes.
+the gap this plan closes. Phases 1–3 are done: what remains is the GPU session (Phase 4) and its follow-up.
 
 **Target engine: Godot 4.7.2**, the current stable release. The reasons are in "Godot 4.5 → 4.8" below.
 
@@ -43,13 +43,13 @@ Godot 4.7 can drive HDR displays, but Chronos's SDR look clamps to [0, 1] and wo
 
 **Done when:** the new and existing Chronos tests pass and CI is green.
 
-## Phase 3: a one-command GPU session (remote) — in review
+## Phase 3: a one-command GPU session (remote) — done (#4)
 
 1. **`tests/gpu_session.py`.** It:
    - checks for a Vulkan GPU and Godot 4.7.2, downloading Godot if it's missing;
    - builds the extension, links (or copies) the addon and imports the project;
    - runs `run_gpu_validation.py` (every scene and configuration, plus Gate 1), and Gate 2 if Blender is installed;
-   - packs report, images and logs into one zip and prints what to send back.
+   - packs report, images and logs into one zip and prints its path.
 
    It works on Linux and Windows.
 2. **New validation configurations:**
@@ -60,20 +60,15 @@ Godot 4.7 can drive HDR displays, but Chronos's SDR look clamps to [0, 1] and wo
    Godot's motion vectors as Chronos reads them. This catches a convention change before the GPU session.
 4. **A CI job running `gpu_session.py --software` on lavapipe,** so the session script itself is tested on every PR
    and doesn't fail on your machine.
-5. **`docs/GPU_TEST_PLAN.md` refreshed:** `main` instead of the old branch, Godot 4.7.2, the new checks, and both ways
+5. **`docs/GPU_TEST_PLAN.md` refreshed:** `main` instead of the old branch, Godot 4.7.2, the new checks, and how
    to run it.
 
 **Done when:** CI runs the whole session end to end on lavapipe and uploads the zip.
 
-## Phase 4: the GPU session (you, about an hour at a GPU machine)
+## Phase 4: the GPU session (about an hour at a GPU machine)
 
-Pick one:
-
-- **A. Attach the machine to Claude.** In the Claude desktop app on that machine, go to Settings → Claude Code →
-  Remote Control, share the `prism-rp` folder, and tell me. I run the session, read the images and logs, and fix
-  problems while you're there.
-- **B. Run it yourself.** `git pull`, then `python3 tests/gpu_session.py --tier <tier1|tier2|tier3>`, then send me the
-  zip it prints.
+On the GPU machine: `git pull`, then `python3 tests/gpu_session.py --tier <tier1|tier2|tier3>`. It writes one zip with
+the report, images and logs (details in `GPU_TEST_PLAN.md`).
 
 What gets judged (from `ROADMAP.md`):
 
@@ -84,14 +79,14 @@ What gets judged (from `ROADMAP.md`):
 | Gate 2 (Lumina) | PSNR > 36 dB against the Cycles reference (needs Blender); GI + SVGF < 2.40 ms on Tier 2 |
 | By eye (`GPU_TEST_PLAN.md`) | No particle ghosting, foliage shimmer under control, motion vectors right, HDR highlights correct on an HDR display |
 
-**What I need from you before then:** the GPU model and OS (Windows or Linux); whether you have an HDR display; and,
-optionally, Blender 4.x or 5.x installed for Gate 2.
+**Optional extras:** an HDR display for the HDR check (on Linux it also needs a Wayland session), and Blender 4.x or
+5.x for Gate 2.
 
 ## Phase 5: after the session (remote)
 
 1. Fix what the session finds. Where possible, each finding becomes a failing test first, then a fix.
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
-   your GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
+   a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
 3. Next plan: Lumina's ray-query fallback. Godot 4.7 exposes ray queries, and lavapipe supports them, so it can be
    built and tested remotely. After that comes the Track B decision.
