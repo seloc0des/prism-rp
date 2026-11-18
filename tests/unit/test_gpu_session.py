@@ -53,3 +53,13 @@ def test_godot_download_names(monkeypatch):
     assert gs.godot_asset() == (f"Godot_v{gs.GODOT_VERSION}-stable_linux.x86_64.zip", f"Godot_v{gs.GODOT_VERSION}-stable_linux.x86_64")
     monkeypatch.setattr(gs.platform, "machine", lambda: "aarch64")
     assert gs.godot_asset()[1].endswith("linux.arm64")
+
+
+def test_streamed_steps_echo_and_log_their_output(tmp_path, capsys):
+    log = tmp_path / "step.log"
+    proc = gs.run_streamed([sys.executable, "-c", "import sys; print('one'); print('two', file=sys.stderr); sys.exit(3)"], log)
+    assert proc.returncode == 3
+    assert "one" in proc.stdout and "two" in proc.stdout          # stderr merged
+    assert log.read_text(encoding="utf-8").split() == ["one", "two"]
+    out = capsys.readouterr().out
+    assert "   | one" in out and "   | two" in out                 # echoed live
