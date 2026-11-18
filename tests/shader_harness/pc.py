@@ -41,8 +41,8 @@ def fft_inv(intensity=1.0):
     return pack("4f", intensity, 0.0, 0.0, 0.0)
 
 
-def composite_chronos(w, h, exposure=1.0, sharpness=0.0, debug=0, flags=0):
-    return pack("iiffiI2f", w, h, exposure, sharpness, debug, flags, 0.0, 0.0)
+def composite_chronos(w, h, exposure=1.0, sharpness=0.0, debug=0, flags=0, max_linear=0.0):
+    return pack("iiffiI2f", w, h, exposure, sharpness, debug, flags, max_linear, 0.0)
 
 
 def trace(w, h, probes, block, spacing, start, length, steps, thickness, frame, normal_bias, proj, depth_params):

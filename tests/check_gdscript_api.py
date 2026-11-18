@@ -2,7 +2,8 @@
 """Static check that GDScript in the repo only uses names that exist in Godot's API.
 
 Compares property assignments, method calls, signal connections and ALL_CAPS class constants in
-every .gd file against godot-cpp's extension_api.json (Godot 4.4.1). It's a name check, not a type
+every .gd file against godot-cpp's API dump for the Godot version the extension targets
+(GODOT_API_VERSION in SConstruct). It's a name check, not a type
 checker: it catches typos and removed/renamed APIs (like DirectionalLight3D.volumetric_fog_energy)
 before a Godot run does. Locally defined functions are allowed as method names.
 """
@@ -15,7 +16,8 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-API_JSON = REPO / "thirdparty" / "godot-cpp" / "gdextension" / "extension_api.json"
+GODOT_API_VERSION = re.search(r'GODOT_API_VERSION = "(\d+\.\d+)"', (REPO / "SConstruct").read_text()).group(1)
+API_JSON = REPO / "thirdparty" / "godot-cpp" / "gdextension" / f"extension_api-{GODOT_API_VERSION.replace('.', '-')}.json"
 SCRIPT_GLOBS = ("project/**/*.gd", "addons/**/*.gd")
 
 # Prism RP's own classes/properties are bound from C++ and aren't in extension_api.json.

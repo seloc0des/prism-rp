@@ -4,7 +4,7 @@ config_version=5
 
 config/name="Prism RP Benchmark Suite"
 run/main_scene="res://benchmarks/01_cornell_box.tscn"
-config/features=PackedStringArray("4.4", "Forward Plus")
+config/features=PackedStringArray("4.7", "Forward Plus")
 
 [rendering]
 

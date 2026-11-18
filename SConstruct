@@ -4,7 +4,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-env = SConscript("thirdparty/godot-cpp/SConstruct")
+# Godot API the extension is built against (godot-cpp v10 supports several; see prism_rp.gdextension).
+GODOT_API_VERSION = "4.7"
+env = SConscript("thirdparty/godot-cpp/SConstruct", {"api_version": GODOT_API_VERSION})
 # Clone so our C++20 and warning flags do not leak into the godot-cpp library build.
 env = env.Clone()
 
