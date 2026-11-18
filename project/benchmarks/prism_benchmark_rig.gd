@@ -14,12 +14,14 @@ var lumina_effect: CompositorEffect
 var opaque_capture_effect: CompositorEffect
 
 ## Which Prism RP effects to build (QA flags: --prism-chronos=off, --prism-lumina=off,
-## --prism-opaque-capture=off, --prism-sdfgi=on|off). SDFGI defaults to off when Lumina runs,
-## so the two GIs don't stack.
+## --prism-opaque-capture=off, --prism-sdfgi=on|off, --prism-ssr=on|off). SDFGI defaults to off
+## when Lumina runs, so the two GIs don't stack. Lumina is diffuse only, so screen-space reflections
+## default to on in its place: without SDFGI, metals would have nothing to reflect.
 var use_chronos := true
 var use_lumina := true
 var use_opaque_capture := true
 var sdfgi_override := ""
+var ssr_override := ""
 ## --prism-godot-taa=on enables Godot's own TAA, to exercise Chronos' double-TAA guard.
 var godot_taa := false
 ## Property overrides: --prism-set=chronos.taau_enabled=false,lumina.debug_view_mode=2
@@ -163,6 +165,8 @@ func _parse_cmdline_args() -> void:
 			godot_taa = _flag_value(arg)
 		elif arg.begins_with("--prism-sdfgi="):
 			sdfgi_override = arg.get_slice("=", 1).to_lower()
+		elif arg.begins_with("--prism-ssr="):
+			ssr_override = arg.get_slice("=", 1).to_lower()
 		elif arg.begins_with("--prism-set="):
 			_parse_property_overrides(arg.substr("--prism-set=".length()))
 		elif arg.begins_with("--prism-hdr="):
@@ -294,6 +298,12 @@ func _setup_environment_and_chronos_vpu() -> void:
 		sdfgi_on = false
 	env.sdfgi_enabled = sdfgi_on
 	env.sdfgi_use_occlusion = true
+	var ssr_on := lumina_effect != null and not sdfgi_on
+	if ssr_override == "on":
+		ssr_on = true
+	elif ssr_override == "off":
+		ssr_on = false
+	env.ssr_enabled = ssr_on
 
 	var compositor := Compositor.new()
 	compositor.compositor_effects = effects

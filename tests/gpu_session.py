@@ -14,7 +14,7 @@ Stages, each reported as it runs (a stage that can't run stops the ones that dep
   validation  every scene x configuration, plus Gate 1 (tests/run_gpu_validation.py)
   gate2       Lumina against a Blender Cycles reference, if Blender is installed (tests/run_gate2.py)
   hdr         by eye, if Godot can drive HDR here: scene 05 with HDR output, then SDR only
-  package     one zip of everything (screenshots as JPEG) to send back
+  package     one zip of everything (screenshots as JPEG)
 
 --software runs on Mesa's lavapipe (CPU Vulkan) with a reduced scene / configuration set and without Gate 1,
 Gate 2 or the HDR step. It tests this script and its plumbing, not the renderer's speed or looks; CI runs it.
@@ -230,10 +230,14 @@ def stage_build(session: Session, skip: bool):
     return "ok", f"built {lib.name}", None
 
 
-def stage_project(session: Session, godot: str):
-    link = REPO / "project" / "addons" / "prism_rp"
-    target = REPO / "addons" / "prism_rp"
+def link_addon(link: Path, target: Path) -> str:
+    """Make `link` (the QA project's addon folder) show `target`; returns how. Never trusts what is already there."""
     link.parent.mkdir(parents=True, exist_ok=True)
+    if link.is_symlink() and link.resolve() != target.resolve():
+        try:  # dangling, or pointing at another checkout (e.g. a link committed from another machine)
+            link.unlink()
+        except OSError:
+            os.rmdir(link)  # a directory symlink on Windows
     if link.is_symlink() or link.exists():
         how = "existing link" if link.is_symlink() else "existing folder"
         if not link.is_symlink() and link.resolve() != target.resolve():
@@ -251,6 +255,11 @@ def stage_project(session: Session, godot: str):
             else:
                 shutil.copytree(target, link)
                 how = "copy"
+    return how
+
+
+def stage_project(session: Session, godot: str):
+    how = link_addon(REPO / "project" / "addons" / "prism_rp", REPO / "addons" / "prism_rp")
     proc = run([godot, "--headless", "--path", str(REPO / "project"), "--import"], timeout=900)
     (session.out_dir / "import.log").write_text(proc.stdout + "\n" + proc.stderr, encoding="utf-8")
     if not (REPO / "project" / ".godot" / "extension_list.cfg").exists():
@@ -288,9 +297,15 @@ def stage_validation(session: Session, godot: str, tier: str, software: bool):
     data = json.loads(results.read_text(encoding="utf-8"))
     runs = data.get("runs", [])
     crashed = [f"{r['scene']}/{r['config']}" for r in runs if r.get("exception")]
+    sys.path.insert(0, str(TESTS))
+    import run_gpu_validation as rgv
+
     with_errors = [r for r in runs if not r.get("ok")]
+    prism = rgv.prism_caused_failures(runs)
     gate1 = data.get("gate1", [])
-    detail = f"{len(runs)} runs, {len(with_errors)} with messages to review"
+    detail = f"{len(runs)} runs, {len(prism)} with errors Prism RP causes"
+    if len(with_errors) > len(prism):
+        detail += f" ({len(with_errors) - len(prism)} more with engine/driver messages that plain Godot also has)"
     if gate1:
         detail += f"; Gate 1 {sum(1 for g in gate1 if g.get('passed'))}/{len(gate1)} scenes"
     if crashed:
@@ -298,7 +313,24 @@ def stage_validation(session: Session, godot: str, tier: str, software: bool):
     return ("ok" if proc.returncode == 0 else "issues"), detail, None
 
 
+MIN_BLENDER = (4, 0)  # tests/reference/cycles_reference.py uses node types and inputs from Blender 4
+
+
+def blender_version(blender: str) -> tuple[int, int] | None:
+    """(major, minor) from `blender --version`, or None if it can't be read."""
+    try:
+        proc = run([blender, "--version"], timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"Blender (\d+)\.(\d+)", proc.stdout)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 def stage_gate2(session: Session, godot: str, tier: str, blender: str):
+    version = blender_version(blender)
+    if version is not None and version < MIN_BLENDER:
+        return ("skipped", f"Blender {version[0]}.{version[1]} is too old: Gate 2 needs {MIN_BLENDER[0]}.x or newer "
+                "(the Linux .tar.xz from blender.org runs without installing; pass its blender with --blender-bin)", None)
     out = session.out_dir / "gate2"
     proc = run_streamed([sys.executable, str(TESTS / "run_gate2.py"), "--tier", tier, "--godot-bin", godot,
                          "--blender-bin", blender, "--out-dir", str(out)], session.out_dir / "gate2.log", timeout=6 * 3600)
@@ -436,7 +468,7 @@ def main() -> int:
         print(f"  {name:11} {st['status']:8} {st['detail']}")
     print("=" * 72)
     if zip_path:
-        print(f"Send back: {zip_path}")
+        print(f"Results: {zip_path}")
     s.write()
     essential = ["godot", "build", "project", "motion", "validation", "package"]
     return 0 if all(s.stages.get(n, {}).get("status") in ("ok", "issues") for n in essential) else 1

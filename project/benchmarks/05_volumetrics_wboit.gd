@@ -82,6 +82,10 @@ func _build_benchmark_scene() -> void:
 	spark_emitter.fixed_fps = 60
 	spark_emitter.interpolate = false
 	spark_emitter.randomness = 0.0
+	# Same particles in every run: Gate 1 compares a supersampled reference capture with a test
+	# capture of the same frame, and differently scattered sparks would dominate the FLIP score.
+	spark_emitter.use_fixed_seed = true
+	spark_emitter.seed = 1337
 	spark_emitter.process_material = proc_mat
 	spark_emitter.draw_pass_1 = spark_mesh
 	spark_emitter.material_override = spark_mat

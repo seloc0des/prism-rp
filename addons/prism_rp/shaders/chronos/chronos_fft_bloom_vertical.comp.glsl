@@ -30,6 +30,12 @@ vec2 cmul(vec2 a, vec2 b) {
     return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
 
+// Diffraction spikes: each fades exponentially along its length (decay length in grid texels, times
+// bloom_radius) and has a Gaussian cross-section (its spectrum's width along the strip, in normalized
+// frequency, times 1 / bloom_radius).
+const float kSpikeLength = 8.0;
+const float kSpikeSpectrumWidth = 0.45;
+
 vec3 evaluate_optical_otf(uint kx, uint ky) {
     float fx = (kx >= 128u) ? float(int(kx) - 256) : float(kx);
     float fy = (ky >= 128u) ? float(int(ky) - 256) : float(ky);
@@ -38,18 +44,30 @@ vec3 evaluate_optical_otf(uint kx, uint ky) {
     // to display pixels. Scaling fx by 1/aspect keeps the PSF round on screen.
     vec2 freq = vec2(fx / max(pc.aspect_ratio, 1e-3), fy) / 128.0;
     float r = length(freq);
-    float theta = atan(freq.y, freq.x);
+    float radius = max(pc.bloom_radius, 0.25);
 
-    float r_scaled = r * max(pc.bloom_radius, 0.25);
+    float r_scaled = r * radius;
     float core_otf = 1.0 / pow(1.0 + 18.0 * r_scaled * r_scaled, 1.65);
 
-    // An N-blade aperture gives N spikes for even N and 2N for odd N. Using the even spike count
-    // keeps the OTF symmetric (OTF(-f) == OTF(f)), so the inverse FFT stays real-valued.
+    // An N-blade aperture gives N spikes for even N and 2N for odd N, i.e. spike_count / 2 streaks
+    // through the PSF centre. A streak is a strip through the origin of frequency space, perpendicular
+    // to it and of constant thickness: a Lorentzian across the strip (the exponential fade along the
+    // streak) times a Gaussian along it (the cross-section). Both transforms are positive, so the
+    // spikes add no negative lobes, carry exactly diffraction_strength of energy, and stay real and
+    // point-symmetric. Spikes built as angular wedges instead get infinitely thin towards zero
+    // frequency, i.e. as long as the grid: they crossed the whole frame and wrapped around its edges.
     float blades = max(round(pc.aperture_blades), 4.0);
     float spike_count = (mod(blades, 2.0) == 0.0) ? blades : 2.0 * blades;
-    float spike_angular = pow(abs(cos(spike_count * 0.5 * theta)), 24.0);
-    float spike_radial = exp(-r_scaled * 3.2) / (1.0 + 6.0 * r_scaled);
-    float diffraction = pc.diffraction_strength * spike_angular * spike_radial;
+    int streaks = int(spike_count * 0.5);
+    float spikes = 0.0;
+    for (int i = 0; i < streaks; ++i) {
+        float angle = 6.28318530718 * float(i) / spike_count;
+        vec2 dir = vec2(cos(angle), sin(angle));
+        float along = dot(freq, dir) * radius / kSpikeSpectrumWidth;
+        float across = dot(freq, vec2(-dir.y, dir.x)) * 3.14159265359 * kSpikeLength * radius;
+        spikes += exp(-along * along) / (1.0 + across * across);
+    }
+    float diffraction = pc.diffraction_strength * spikes / float(streaks);
 
     float halation_r = pc.halation_strength * exp(-r_scaled * r_scaled * 14.0);
     float halation_g = pc.halation_strength * 0.14 * exp(-r_scaled * r_scaled * 28.0);
@@ -63,8 +81,7 @@ vec3 evaluate_optical_otf(uint kx, uint ky) {
 
     // No DC (zero-frequency) suppression: scaling only the DC term subtracts a constant from every
     // pixel of the grid, which the inverse pass's max(0) then clips away almost everywhere. The bloom's
-    // energy is OTF(0) = 1 + diffraction + halation per channel, times bloom_intensity, plus roughly
-    // 15-20% from the diffraction spikes' negative spatial lobes, which that max(0) also clips.
+    // energy is OTF(0) = 1 + diffraction + halation per channel, times bloom_intensity.
 
     return otf;
 }

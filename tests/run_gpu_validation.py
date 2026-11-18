@@ -205,6 +205,18 @@ def finding_keys(lines: list[str]) -> set[str]:
     return keys
 
 
+def prism_caused_failures(results: list) -> list:
+    """Failed runs (RunResult or their results.json dicts) with a crash, or a finding the scene's
+    baseline_godot run doesn't also have. Findings stock Godot shares come from the engine, driver or
+    validation layers, not from Prism RP."""
+    def get(r, key):
+        return r.get(key) if isinstance(r, dict) else getattr(r, key, None)
+    baseline = {get(r, "scene"): finding_keys(get(r, "errors") or []) for r in results if get(r, "config") == "baseline_godot"}
+    return [r for r in results
+            if not get(r, "ok") and get(r, "config") != "baseline_godot"
+            and (get(r, "exception") or finding_keys(get(r, "errors") or []) - baseline.get(get(r, "scene"), set()))]
+
+
 def stage_total(gpu_ms: dict[str, float], stage: str) -> str:
     return f"{gpu_ms[stage]:.3f}" if stage in gpu_ms else "-"
 
@@ -221,7 +233,8 @@ def write_report(out_root: Path, tier: rvr.HardwareTierSpec, results: list[RunRe
     failed = [r for r in results if not r.ok]
     lines.append("## Summary")
     lines.append("")
-    lines.append(f"- Runs: {len(results)}, with errors: {len(failed)}")
+    lines.append(f"- Runs: {len(results)}, with errors: {len(failed)}, caused by Prism RP: {len(prism_caused_failures(results))}"
+                 " (the rest also occur in the scene's baseline_godot run)")
     if gate1:
         g_pass = sum(1 for g in gate1 if g.passed)
         lines.append(f"- Gate 1 (mean FLIP < {gate1_threshold}): {g_pass}/{len(gate1)} scenes")
@@ -330,7 +343,7 @@ def main() -> int:
 
     report = write_report(out_root, tier, results, gate1, args.gate1_max_flip)
     print(f"\nReport: {report}")
-    return 0 if all(r.ok for r in results) and all(g.passed for g in gate1) else 1
+    return 0 if not prism_caused_failures(results) and all(g.passed for g in gate1) else 1
 
 
 if __name__ == "__main__":

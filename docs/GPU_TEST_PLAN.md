@@ -20,11 +20,14 @@ cd prism-rp && python3 -m pip install scons numpy pillow flip-evaluator OpenEXR
 ```
 
 On Linux, also install `build-essential vulkan-tools vulkan-validationlayers`. With the validation layers present,
-the run reports Vulkan errors.
+the run reports Vulkan errors. Ubuntu 22.04's layers (also Pop!_OS 22.04's) predate Godot 4.7 and flag
+`VUID-VkDeviceCreateInfo-pNext-pNext` in every run, plain Godot included; the report's comparison with the
+`baseline_godot` runs separates that from errors Prism RP causes.
 
 Optional:
 
-- **Gate 2:** Blender 4.x or 5.x on `PATH`.
+- **Gate 2:** Blender 4.x or 5.x on `PATH`, or passed with `--blender-bin`. Ubuntu 22.04's `blender` package is 3.0,
+  which is too old (the session skips Gate 2 and says so); the Linux `.tar.xz` from blender.org runs unpacked.
 - **HDR check:** an HDR monitor with HDR turned on in the OS. On Linux it also needs a Wayland session:
   `echo $XDG_SESSION_TYPE` should print `wayland`.
 
@@ -32,24 +35,14 @@ You don't need Godot installed: the script downloads Godot 4.7.2 into `tests/art
 
 ## Run it
 
-Pick one:
+```bash
+git pull && git submodule update --init --recursive
+python3 tests/gpu_session.py --tier tier2
+```
 
-- **A. With Claude.** In the Claude desktop app on that machine, go to Settings → Claude Code → Remote Control,
-  share the `prism-rp` folder, and tell Claude. It runs the session, reads the results and fixes problems while you
-  watch; you answer the two HDR questions.
-- **B. Yourself:**
-
-  ```bash
-  git pull && git submodule update --init --recursive
-  ```
-
-  ```bash
-  python3 tests/gpu_session.py --tier tier2
-  ```
-
-  Pick the tier that matches the GPU (`ROADMAP.md`; RTX 3060 / RX 6700 class is `tier2`). When it finishes, the
-  script prints a summary and the zip to send back: `tests/artifacts/gpu_session/gpu_session_<timestamp>.zip`, with
-  screenshots as JPEG.
+Pick the tier that matches the GPU (`ROADMAP.md`; RTX 3060 / RX 6700 class is `tier2`). When it finishes, the script
+prints a summary and the path of the zip holding the results: `tests/artifacts/gpu_session/gpu_session_<timestamp>.zip`,
+with screenshots as JPEG. The HDR stage asks two questions, so stay at the screen for the end of the run.
 
 The stages run in this order: system, python, godot, build, project, motion, validation, gate2, hdr, package. A
 stage that can't run says why and skips the ones that depend on it. The package is written either way.

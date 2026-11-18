@@ -63,3 +63,39 @@ def test_streamed_steps_echo_and_log_their_output(tmp_path, capsys):
     assert log.read_text(encoding="utf-8").split() == ["one", "two"]
     out = capsys.readouterr().out
     assert "   | one" in out and "   | two" in out                 # echoed live
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_link_addon_replaces_stale_links_and_keeps_good_ones(tmp_path):
+    target = tmp_path / "addons" / "prism_rp"
+    target.mkdir(parents=True)
+    (target / "plugin.cfg").write_text("x", encoding="utf-8")
+    link = tmp_path / "project" / "addons" / "prism_rp"
+    link.parent.mkdir(parents=True)
+
+    link.symlink_to("/nonexistent/elsewhere/addons/prism_rp", target_is_directory=True)  # committed from another machine
+    assert gs.link_addon(link, target) == "symlink"
+    assert link.resolve() == target.resolve() and (link / "plugin.cfg").exists()
+
+    assert gs.link_addon(link, target) == "existing link"  # a correct link is left alone
+    assert link.resolve() == target.resolve()
+
+    link.unlink()
+    link.mkdir()
+    (link / "old.gd").write_text("stale", encoding="utf-8")
+    assert gs.link_addon(link, target) == "refreshed copy"
+    assert (link / "plugin.cfg").exists() and not (link / "old.gd").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="shell-script stand-in for blender")
+def test_gate2_skips_blender_too_old_for_the_reference_script(tmp_path):
+    fake = tmp_path / "blender"
+    fake.write_text("#!/bin/sh\necho 'Blender 3.0.1'\n", encoding="utf-8")
+    fake.chmod(0o755)
+    assert gs.blender_version(str(fake)) == (3, 0)
+    status, detail, _ = gs.stage_gate2(gs.Session(tmp_path / "s"), "godot", "tier2", str(fake))
+    assert status == "skipped" and "Blender 3.0 is too old" in detail
+
+    fake.write_text("#!/bin/sh\necho 'Blender 4.5.3 LTS'\n", encoding="utf-8")
+    assert gs.blender_version(str(fake)) == (4, 5)
+    assert gs.blender_version(str(tmp_path / "missing")) is None
