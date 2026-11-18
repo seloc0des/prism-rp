@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GODOT_VERSION: "4.4.1"
+  GODOT_VERSION: "4.7.2"
   PYTHON_VERSION: "3.11"
 
 jobs:

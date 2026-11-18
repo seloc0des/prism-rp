@@ -298,7 +298,7 @@ def main() -> int:
 
     tier = rvr.HARDWARE_TIERS[args.tier]
     godot_bin = rvr.resolve_executable(
-        args.godot_bin, ["godot", "godot4", "Godot_v4.4.1-stable_linux.x86_64", "godot.windows.editor.x86_64.exe"],
+        args.godot_bin, ["godot", "godot4", "Godot_v4.7.2-stable_linux.x86_64", "Godot_v4.7.2-stable_win64.exe", "godot.windows.editor.x86_64.exe"],
         "Godot 4 executable")
     scenes = args.scenes or list(rvr.CANONICAL_SCENES)
     configs = [CONFIGS_BY_NAME[c] for c in args.configs] if args.configs else CONFIGS

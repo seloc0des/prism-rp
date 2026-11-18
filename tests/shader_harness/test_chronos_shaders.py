@@ -197,7 +197,7 @@ def test_fft_bloom_aspect_narrows_horizontally(gpu):
     assert wx2 < 0.75 * wy2
 
 
-def _composite(gpu, src, flags, exposure=1.0, debug=0):
+def _composite(gpu, src, flags, exposure=1.0, debug=0, max_linear=0.0):
     h, w = src.shape[:2]
     out = gpu.run(
         {"res": Img("rgba16f", data=src), "bloom": Img("rgba16f", 256, 256), "vel": Img("rg16f", w, h),
@@ -205,7 +205,7 @@ def _composite(gpu, src, flags, exposure=1.0, debug=0):
         [Dispatch("chronos/chronos_aces2_odt.comp.glsl",
                   {0: ("res", "sampled_nearest"), 1: ("bloom", "sampled_linear"), 2: ("vel", "sampled_nearest"),
                    3: ("react", "sampled_nearest"), 4: ("out", "storage")},
-                  pc.composite_chronos(w, h, exposure=exposure, flags=flags, debug=debug), groups_for(w, h))], ["out"])
+                  pc.composite_chronos(w, h, exposure=exposure, flags=flags, debug=debug, max_linear=max_linear), groups_for(w, h))], ["out"])
     return out["out"]
 
 
@@ -233,6 +233,40 @@ def test_sdr_look_handles_saturated_and_out_of_gamut_colors(gpu):
     src = np.concatenate([cols[None], np.ones((1, len(cols), 1))], axis=-1)
     out = _composite(gpu, src, flags=2)
     assert np.all(np.isfinite(out)) and out.min() >= 0.0 and out[..., :3].max() <= 1.0
+
+
+def _luminance_ramp(n=96):
+    lum = np.geomspace(1e-4, 100.0, n)
+    src = np.zeros((1, n, 4)); src[0, :, :3] = lum[:, None]; src[..., 3] = 1
+    return lum, src
+
+
+def test_sdr_look_unchanged_on_sdr_displays(gpu):
+    """No HDR (0, the old padding value) and a peak of 1.0 must both give exactly today's SDR output."""
+    _, src = _luminance_ramp()
+    sdr = _composite(gpu, src, flags=2)
+    np.testing.assert_array_equal(_composite(gpu, src, flags=2, max_linear=1.0), sdr)
+    np.testing.assert_array_equal(_composite(gpu, src, flags=2, max_linear=0.5), sdr)
+
+
+def test_sdr_look_extends_highlights_on_hdr_displays(gpu):
+    lum, src = _luminance_ramp()
+    sdr = _composite(gpu, src, flags=2)[0, :, 0].astype(float)
+    hdr = _composite(gpu, src, flags=2, max_linear=4.0)[0, :, 0].astype(float)
+    assert np.all(np.diff(hdr) >= -1e-3)                       # still monotonic
+    assert hdr.max() <= 4.0 + 1e-3 and hdr[-1] > 3.0           # reaches towards the display peak
+    shadows = lum <= 0.05
+    np.testing.assert_allclose(hdr[shadows], sdr[shadows], rtol=5e-3, atol=1e-4)   # shadows where SDR puts them
+    mid = np.argmin(np.abs(lum - 0.18))
+    assert hdr[mid] == pytest.approx(sdr[mid], rel=5e-3)       # mid grey unchanged
+    assert np.all(hdr >= sdr - 1e-3) and hdr[lum >= 5.0].min() > 1.0   # highlights only ever brighter
+
+
+def test_hdr_look_handles_saturated_and_out_of_gamut_colors(gpu):
+    cols = np.array([[80, 0, 0], [0, 80, 0], [0, 0, 80], [40, 40, 0], [1e-3, 0, 0], [0.0, 0.0, 0.0]], dtype=np.float64)
+    src = np.concatenate([cols[None], np.ones((1, len(cols), 1))], axis=-1)
+    out = _composite(gpu, src, flags=2, max_linear=6.0)
+    assert np.all(np.isfinite(out)) and out.min() >= 0.0 and out[..., :3].max() <= 6.0 + 1e-3
 
 
 def _reactive(gpu, color, prev, depth, opaque=None, depth_params=(0.1, 0.001), transparency_scale=1.0):

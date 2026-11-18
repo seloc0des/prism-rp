@@ -21,7 +21,7 @@ Building **Prism RP** for Godot 4.x uses a dual-track engineering strategy:
 
 ### Phase 1: Chronos VPU Core & ACEScg Color Pipeline (Weeks 3–6 — Track A)
 * Implement `ChronosVPUCompositorEffect` on `RenderSceneBuffersRD`.
-* Deliver scene-referred **ACEScg (AP1)** color management, 3x3 closest-depth dilated velocity vectors, `R8_UNORM` Reactive Mask generation, native compute TAA (Godot 4.4 compositor effects can't output an upscaled frame) + FSR 3.1 / XeSS / DLSS backend abstraction, 256x256 Radix-2 Stockham FFT diffraction bloom with red halation, and an SDR filmic look (ACES 1.3 gamut compression). Display P3 / HDR10 ODTs wait on HDR swapchain support in Godot.
+* Deliver scene-referred **ACEScg (AP1)** color management, 3x3 closest-depth dilated velocity vectors, `R8_UNORM` Reactive Mask generation, native compute TAA (Godot's compositor effects can't output an upscaled frame, through 4.8) + FSR 3.1 / XeSS / DLSS backend abstraction, 256x256 Radix-2 Stockham FFT diffraction bloom with red halation, and an SDR filmic look (ACES 1.3 gamut compression). Godot 4.7 added HDR output; HDR-aware Chronos output is planned (`docs/NEXT_STEPS.md`).
 * **Gate 1 DoD:** NVIDIA FLIP perceptual error **< 0.08** at 50% render scale vs. 4K supersampled reference; zero particle ghosting; Chronos VPU pass time **< 1.65 ms** on Tier 2 at 1440p.
 
 ### Phase 2: Lumina-Cascades GI & SVGF Denoiser (Weeks 7–11 — Track A)
@@ -33,7 +33,7 @@ Building **Prism RP** for Godot 4.x uses a dual-track engineering strategy:
 ### Phase 3: Meshlet Asset Pipeline & 64-Bit Visibility Buffer (Weeks 12–16 — Track B)
 * Partition imported meshes via `meshoptimizer` into 64-vertex, 124-triangle meshlets with bounding spheres and backface normal cones.
 * Implement two-phase GPU Hi-Z occlusion culling and rasterize into `R32G32_UINT` **Visibility Buffer** (`InstanceID`, `MeshletID`, `PrimitiveID`; barycentrics are rebuilt analytically in shading rather than stored).
-* **Status:** the meshlet builder is in (`PrismMeshletBuilder`, meshoptimizer v1.3, Godot winding handled, unit-tested). Shaders for Hi-Z culling, the visibility buffer and its rasterization (mesh-shader and vertex-pulling paths, opaque and alpha-tested) are in the tree, with lavapipe tests for the compute passes, but not wired up: running them needs the Track B engine-module decision (Godot 4.4's `RenderingDevice` has no mesh-shader stage or indirect-count draws). See `docs/TRACK_B_SHADERS.md`.
+* **Status:** the meshlet builder is in (`PrismMeshletBuilder`, meshoptimizer v1.3, Godot winding handled, unit-tested). Shaders for Hi-Z culling, the visibility buffer and its rasterization (mesh-shader and vertex-pulling paths, opaque and alpha-tested) are in the tree, with lavapipe tests for the compute passes, but not wired up: running them needs the Track B engine-module decision (Godot's `RenderingDevice` has no mesh-shader stage or indirect-count draws, through 4.8). See `docs/TRACK_B_SHADERS.md`.
 * **Gate 3 DoD:** 15M-triangle stress scene renders at **60+ FPS on Tier 2** in **< 0.65 ms** for culling + visibility rasterization with **1.00x** fragment invocation per visible pixel.
 
 ### Phase 4: Tile-Sorted Material Shading & Virtual Shadow Pages (Weeks 17–20 — Track B)

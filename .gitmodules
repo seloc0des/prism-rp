@@ -1,7 +1,7 @@
 [submodule "thirdparty/godot-cpp"]
 	path = thirdparty/godot-cpp
 	url = https://github.com/godotengine/godot-cpp.git
-	branch = 4.4
+	branch = master
 [submodule "thirdparty/meshoptimizer"]
 	path = thirdparty/meshoptimizer
 	url = https://github.com/zeux/meshoptimizer.git

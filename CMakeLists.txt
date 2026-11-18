@@ -28,9 +28,12 @@ else()
     set(PRISM_ARCH "x86_64")
 endif()
 
-# godot-cpp 4.4 picks debug/release features from GODOTCPP_TARGET; keep it in sync with
+# godot-cpp picks debug/release features from GODOTCPP_TARGET; keep it in sync with
 # GODOT_TARGET so the binary's features match its file name.
 set(GODOTCPP_TARGET "${GODOT_TARGET}" CACHE STRING "" FORCE)
+# Godot API the extension is built against (godot-cpp v10 supports several; keep in sync with
+# SConstruct and compatibility_minimum in prism_rp.gdextension).
+set(GODOTCPP_API_VERSION "4.7" CACHE STRING "" FORCE)
 add_subdirectory(thirdparty/godot-cpp SYSTEM)
 
 file(GLOB_RECURSE PRISM_SOURCES CONFIGURE_DEPENDS
