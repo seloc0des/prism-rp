@@ -43,7 +43,8 @@ Virtual shadow pages (`addons/prism_rp/shaders/shadows/`), in frame order:
 
 ## Why nothing runs them yet
 
-Against Godot 4.4.1's `RenderingDevice` (`thirdparty/godot-cpp/gdextension/extension_api.json`):
+Against Godot's `RenderingDevice` from 4.4 through 4.8 (`thirdparty/godot-cpp/gdextension/extension_api-4-7.json`; the
+4.8 beta's API dump was checked too):
 
 - There is no mesh or task shader stage: the `*.mesh.glsl` path needs an engine module (or a later Godot). The
   vertex-pulling path is the GDExtension-compatible one.
