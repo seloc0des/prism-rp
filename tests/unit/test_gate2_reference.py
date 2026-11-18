@@ -98,3 +98,26 @@ def test_gate2_results_serialize_and_compare_image(tmp_path):
     ref = np.random.default_rng(1).random((6, 8, 3))
     run_gate2.write_comparison(tmp_path / "compare.png", ref, ref * 0.5, 2.0)
     assert Image.open(tmp_path / "compare.png").size == (24, 6)
+
+
+def test_settling_error_and_frame_count():
+    pytest.importorskip("flip_evaluator")   # check_gi_convergence imports run_visual_regression
+    import check_gi_convergence as gc
+    settled = np.full((4, 4, 3), 0.5)
+    frames = [settled * f for f in (0.0, 0.5, 0.8, 0.95, 1.0)]
+    errors = gc.settling_errors(frames, settled)
+    assert errors == pytest.approx([1.0, 0.5, 0.2, 0.05, 0.0])
+    assert gc.frames_to_settle(errors, 0.10) == 3
+    assert gc.frames_to_settle(errors[:3], 0.10) is None
+
+
+def test_sdfgi_capture_shows_godot_gi_like_the_reference():
+    pytest.importorskip("flip_evaluator")
+    import run_gate2
+    on = run_gate2.sdfgi_capture_args(Path("x.exr"), True)
+    off = run_gate2.sdfgi_capture_args(Path("x.exr"), False)
+    for flag in ("--prism-lumina=off", "--prism-chronos=off", "--prism-ambient=off", "--prism-ssr=off",
+                 "--prism-emission=off", "--prism-debug-draw=lighting", "--prism-diffuse-only"):
+        assert flag in on and flag in off
+    assert "--prism-emission=off" in run_gate2.lumina_capture_args(Path("e"), Path("x.exr"))
+    assert "--prism-sdfgi=on" in on and "--prism-sdfgi=off" in off

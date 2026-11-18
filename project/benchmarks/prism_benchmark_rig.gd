@@ -52,6 +52,21 @@ var motion_test := false
 var motion_test_yaw_deg := 0.0
 ## --qa-exr-out=<path>: also save the capture frame as a float EXR (the viewport switches to HDR 2D).
 var qa_exr_out: String = ""
+## --qa-exr-frames=<n,n,...> with --qa-exr-dir=<dir>: save those frames as <dir>/frame_<n>.exr (float).
+var qa_exr_frames: Array[int] = []
+var qa_exr_dir: String = ""
+## --prism-light-on-frame=<n>: the scene's lights stay off until frame n (tests/check_gi_convergence.py).
+var light_on_frame: int = -1
+var _hidden_lights: Array[Light3D] = []
+## --prism-debug-draw=lighting: Godot's lighting-only view (white albedo at the visible surface), and
+## --prism-diffuse-only: every material non-metallic, non-specular and rough. Together they give Godot's
+## own GI in the form Gate 2's Cycles reference renders (tests/run_gate2.py, SDFGI comparison).
+var debug_draw_lighting := false
+var diffuse_only := false
+## --prism-emission=off: no material emits light. Gate 2 compares the bounce light of the scene's lights;
+## an emissive surface is often a stand-in drawn next to a real light (the Cornell box's ceiling panel)
+## and would count that light twice.
+var emission_off := false
 var _prev_camera_basis := Basis.IDENTITY
 
 func _ready() -> void:
@@ -61,9 +76,20 @@ func _ready() -> void:
 	_setup_environment_and_chronos_vpu()
 	_setup_camera_rig()
 	_build_benchmark_scene()
+	if diffuse_only or emission_off:
+		_adjust_materials(self)
+	if light_on_frame > 0:
+		for node in find_children("*", "Light3D", true, false):
+			var light := node as Light3D
+			if light.visible:
+				light.visible = false
+				_hidden_lights.append(light)
 	_update_deterministic_camera(0)
 
 func _process(_delta: float) -> void:
+	if frame_index == light_on_frame:
+		for light in _hidden_lights:
+			light.visible = true
 	if camera != null:
 		_prev_camera_basis = camera.global_transform.basis
 	_update_deterministic_camera(frame_index)
@@ -72,6 +98,8 @@ func _process(_delta: float) -> void:
 
 	if frame_index == qa_capture_frame:
 		_capture_qa_frame()
+	if frame_index in qa_exr_frames:
+		_save_exr_frame(frame_index)
 
 	if quit_after_frame > 0 and frame_index >= quit_after_frame:
 		if qa_capture_frame < 0:
@@ -178,6 +206,19 @@ func _parse_cmdline_args() -> void:
 			motion_test_yaw_deg = arg.get_slice("=", 1).to_float()
 		elif arg.begins_with("--qa-exr-out="):
 			qa_exr_out = arg.get_slice("=", 1)
+		elif arg.begins_with("--qa-exr-frames="):
+			for n in arg.get_slice("=", 1).split(",", false):
+				qa_exr_frames.append(n.to_int())
+		elif arg.begins_with("--qa-exr-dir="):
+			qa_exr_dir = arg.get_slice("=", 1)
+		elif arg.begins_with("--prism-light-on-frame="):
+			light_on_frame = arg.get_slice("=", 1).to_int()
+		elif arg.begins_with("--prism-debug-draw="):
+			debug_draw_lighting = arg.get_slice("=", 1).to_lower() == "lighting"
+		elif arg.begins_with("--prism-diffuse-only"):
+			diffuse_only = true
+		elif arg.begins_with("--prism-emission="):
+			emission_off = not _flag_value(arg)
 
 func _flag_value(arg: String) -> bool:
 	var value := arg.get_slice("=", 1).to_lower()
@@ -226,6 +267,42 @@ func _apply_property_overrides() -> void:
 			continue
 		target.set(prop, o["value"])
 
+## Saves frame n (once drawn) as <qa_exr_dir>/frame_<n>.exr.
+func _save_exr_frame(n: int) -> void:
+	await RenderingServer.frame_post_draw
+	var img := get_viewport().get_texture().get_image()
+	DirAccess.make_dir_recursive_absolute(qa_exr_dir)
+	var path := qa_exr_dir.path_join("frame_%d.exr" % n)
+	var err := img.save_exr(path)
+	if err != OK:
+		push_error("[Prism RP QA] Failed to save EXR to %s (error %d)" % [path, err])
+
+## Per --prism-diffuse-only / --prism-emission=off, adjusted copies of every BaseMaterial3D under `node`.
+func _adjust_materials(node: Node) -> void:
+	for child in node.get_children():
+		if child is GeometryInstance3D:
+			var gi := child as GeometryInstance3D
+			if gi.material_override is BaseMaterial3D:
+				gi.material_override = _adjusted_copy(gi.material_override as BaseMaterial3D)
+			if child is MeshInstance3D:
+				var mi := child as MeshInstance3D
+				if mi.mesh != null:
+					for i in mi.mesh.get_surface_count():
+						var mat := mi.get_active_material(i)
+						if mat is BaseMaterial3D:
+							mi.set_surface_override_material(i, _adjusted_copy(mat as BaseMaterial3D))
+		_adjust_materials(child)
+
+func _adjusted_copy(mat: BaseMaterial3D) -> BaseMaterial3D:
+	var copy := mat.duplicate() as BaseMaterial3D
+	if diffuse_only:
+		copy.metallic = 0.0
+		copy.metallic_specular = 0.0
+		copy.roughness = 1.0
+	if emission_off:
+		copy.emission_enabled = false
+	return copy
+
 func _configure_viewport_scaling() -> void:
 	var vp := get_viewport()
 	if vp == null:
@@ -233,8 +310,10 @@ func _configure_viewport_scaling() -> void:
 	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_BILINEAR
 	vp.scaling_3d_scale = render_scale
 	vp.use_taa = godot_taa
-	if not qa_exr_out.is_empty():
+	if not qa_exr_out.is_empty() or not qa_exr_frames.is_empty():
 		vp.use_hdr_2d = true  # keep the captured frame in floating point
+	if debug_draw_lighting:
+		vp.debug_draw = Viewport.DEBUG_DRAW_LIGHTING
 
 func _configure_hdr_output() -> void:
 	var window := get_window()

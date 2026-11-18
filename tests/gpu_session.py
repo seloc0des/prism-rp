@@ -12,6 +12,7 @@ Stages, each reported as it runs (a stage that can't run stops the ones that dep
   project     link the addon into project/ and import the project once
   motion      motion-vector check (tests/check_motion_vectors.py)
   validation  every scene x configuration, plus Gate 1 (tests/run_gpu_validation.py)
+  settling    how many frames Lumina's bounce light takes to settle after a light comes on (tests/check_gi_convergence.py)
   gate2       Lumina against a Blender Cycles reference, if Blender is installed (tests/run_gate2.py)
   hdr         by eye, if Godot can drive HDR here: scene 05 with HDR output, then SDR only
   package     one zip of everything (screenshots as JPEG)
@@ -347,6 +348,22 @@ def stage_gate2(session: Session, godot: str, tier: str, blender: str):
     return ("ok" if proc.returncode == 0 else "issues"), detail, None
 
 
+def stage_settling(session: Session, godot: str, tier: str):
+    out = session.out_dir / "gi_convergence"
+    proc = run_streamed([sys.executable, str(TESTS / "check_gi_convergence.py"), "--godot-bin", godot, "--tier", tier,
+                         "--out-dir", str(out)], session.out_dir / "gi_convergence.log", timeout=1800)
+    report = out / "gi_convergence.json"
+    if not report.exists():
+        raise StageFailed(f"no result (exit {proc.returncode}); see gi_convergence.log")
+    data = json.loads(report.read_text(encoding="utf-8"))
+    errors = data.get("errors", [])
+    k = data.get("frames_to_settle")
+    at_limit = errors[data["max_frames"]] if len(errors) > data["max_frames"] else float("nan")
+    detail = (f"settles after {k} frames" if k is not None else f"not settled within {len(errors) - 1} frames") + \
+        f" (error {100 * at_limit:.0f}% at {data['max_frames']} frames; needs under {100 * data['tolerance']:.0f}%)"
+    return ("ok" if data.get("passed") else "issues"), detail, None
+
+
 def stage_hdr(session: Session, godot: str, tier: str, interactive: bool):
     sys.path.insert(0, str(TESTS))
     import run_visual_regression as rvr
@@ -452,6 +469,8 @@ def main() -> int:
     s.run("project", stage_project, s, godot, needs=("godot", "build"))
     s.run("motion", stage_motion, s, godot, tier, needs=("python", "project"))
     s.run("validation", stage_validation, s, godot, tier, args.software, needs=("python", "project"))
+
+    s.run("settling", stage_settling, s, godot, tier, needs=("python", "project"))
 
     blender = args.blender_bin or shutil.which("blender")
     if args.software or args.skip_gate2 or not blender:
