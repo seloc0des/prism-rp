@@ -88,6 +88,26 @@ def run(cmd: list[str], timeout: float | None = None, **kw) -> subprocess.Comple
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False, **kw)
 
 
+def run_streamed(cmd: list[str], log_path: Path, timeout: float | None = None) -> subprocess.CompletedProcess:
+    """Run a long step, echoing its output as it comes (so a 30-minute stage isn't silent) and saving it."""
+    print("   $ " + " ".join(str(c) for c in cmd), flush=True)
+    start = time.monotonic()
+    lines: list[str] = []
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                          env={**os.environ, "PYTHONUNBUFFERED": "1"}) as proc, \
+            open(log_path, "w", encoding="utf-8") as log:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            log.write(line)
+            lines.append(line)
+            print("   | " + line.rstrip(), flush=True)
+            if timeout is not None and time.monotonic() - start > timeout:
+                proc.kill()
+                raise StageFailed(f"timed out after {timeout:.0f} s; see {log_path.name}")
+        proc.wait()
+    return subprocess.CompletedProcess(cmd, proc.returncode, "".join(lines), "")
+
+
 def sh_out(cmd: list[str]) -> str:
     try:
         return subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False).stdout.strip()
@@ -240,9 +260,8 @@ def stage_project(session: Session, godot: str):
 
 def stage_motion(session: Session, godot: str, tier: str):
     out = session.out_dir / "motion_check"
-    proc = run([sys.executable, str(TESTS / "check_motion_vectors.py"), "--godot-bin", godot, "--tier", tier,
-                "--out-dir", str(out)], timeout=1800)
-    (session.out_dir / "motion_check.log").write_text(proc.stdout + "\n" + proc.stderr, encoding="utf-8")
+    proc = run_streamed([sys.executable, str(TESTS / "check_motion_vectors.py"), "--godot-bin", godot, "--tier", tier,
+                         "--out-dir", str(out)], session.out_dir / "motion_check.log", timeout=1800)
     report = out / "motion_check.json"
     if not report.exists():
         raise StageFailed(f"no result (exit {proc.returncode}); see motion_check.log")
@@ -262,8 +281,7 @@ def stage_validation(session: Session, godot: str, tier: str, software: bool):
     cmd = [sys.executable, str(TESTS / "run_gpu_validation.py"), "--tier", tier, "--godot-bin", godot, "--out-dir", str(out)]
     if software:
         cmd += ["--scenes", *SOFTWARE_SCENES, "--configs", *SOFTWARE_CONFIGS, "--skip-gate1"]
-    proc = run(cmd, timeout=6 * 3600)
-    (session.out_dir / "validation.log").write_text(proc.stdout + "\n" + proc.stderr, encoding="utf-8")
+    proc = run_streamed(cmd, session.out_dir / "validation.log", timeout=6 * 3600)
     results = out / "results.json"
     if not results.exists():
         raise StageFailed(f"no results (exit {proc.returncode}); see validation.log")
@@ -282,9 +300,8 @@ def stage_validation(session: Session, godot: str, tier: str, software: bool):
 
 def stage_gate2(session: Session, godot: str, tier: str, blender: str):
     out = session.out_dir / "gate2"
-    proc = run([sys.executable, str(TESTS / "run_gate2.py"), "--tier", tier, "--godot-bin", godot,
-                "--blender-bin", blender, "--out-dir", str(out)], timeout=6 * 3600)
-    (session.out_dir / "gate2.log").write_text(proc.stdout + "\n" + proc.stderr, encoding="utf-8")
+    proc = run_streamed([sys.executable, str(TESTS / "run_gate2.py"), "--tier", tier, "--godot-bin", godot,
+                         "--blender-bin", blender, "--out-dir", str(out)], session.out_dir / "gate2.log", timeout=6 * 3600)
     psnr = re.findall(r"PSNR[^\d-]*([\d.]+)", proc.stdout)
     detail = f"PSNR {', '.join(psnr)} dB" if psnr else "see gate2.log"
     if proc.returncode not in (0, 1):
