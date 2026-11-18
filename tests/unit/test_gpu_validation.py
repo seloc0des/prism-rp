@@ -80,3 +80,20 @@ def test_errors_shared_with_baseline_are_labeled(tmp_path):
     lumina_line = next(l for l in report.splitlines() if "lumina_default**" in l)
     assert "also in baseline_godot" in chronos_line
     assert "also in baseline_godot" not in lumina_line
+
+
+def test_only_findings_stock_godot_lacks_count_against_prism_rp():
+    shared = "VUID-VkDeviceCreateInfo-pNext-pNext(ERROR / SPEC): old layers"
+    new = "VUID-vkCmdDispatch-None-08114(ERROR / SPEC): descriptor not updated"
+    runs = [
+        {"scene": "s1", "config": "baseline_godot", "ok": False, "errors": [shared]},
+        {"scene": "s1", "config": "chronos_default", "ok": False, "errors": [shared]},
+        {"scene": "s1", "config": "lumina_default", "ok": False, "errors": [shared, new]},
+        {"scene": "s1", "config": "full_pipeline", "ok": False, "errors": [], "exception": "no image"},
+        {"scene": "s1", "config": "chronos_hdr", "ok": True, "errors": []},
+        {"scene": "s2", "config": "chronos_default", "ok": False, "errors": [shared]},   # s2 has no baseline run
+    ]
+    flagged = [(r["scene"], r["config"]) for r in gv.prism_caused_failures(runs)]
+    assert flagged == [("s1", "lumina_default"), ("s1", "full_pipeline"), ("s2", "chronos_default")]
+    as_results = [gv.RunResult(r["scene"], r["config"], r["ok"], errors=r["errors"], exception=r.get("exception", "")) for r in runs]
+    assert [(r.scene, r.config) for r in gv.prism_caused_failures(as_results)] == flagged

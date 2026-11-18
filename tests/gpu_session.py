@@ -297,9 +297,15 @@ def stage_validation(session: Session, godot: str, tier: str, software: bool):
     data = json.loads(results.read_text(encoding="utf-8"))
     runs = data.get("runs", [])
     crashed = [f"{r['scene']}/{r['config']}" for r in runs if r.get("exception")]
+    sys.path.insert(0, str(TESTS))
+    import run_gpu_validation as rgv
+
     with_errors = [r for r in runs if not r.get("ok")]
+    prism = rgv.prism_caused_failures(runs)
     gate1 = data.get("gate1", [])
-    detail = f"{len(runs)} runs, {len(with_errors)} with messages to review"
+    detail = f"{len(runs)} runs, {len(prism)} with errors Prism RP causes"
+    if len(with_errors) > len(prism):
+        detail += f" ({len(with_errors) - len(prism)} more with engine/driver messages that plain Godot also has)"
     if gate1:
         detail += f"; Gate 1 {sum(1 for g in gate1 if g.get('passed'))}/{len(gate1)} scenes"
     if crashed:
@@ -307,7 +313,24 @@ def stage_validation(session: Session, godot: str, tier: str, software: bool):
     return ("ok" if proc.returncode == 0 else "issues"), detail, None
 
 
+MIN_BLENDER = (4, 0)  # tests/reference/cycles_reference.py uses node types and inputs from Blender 4
+
+
+def blender_version(blender: str) -> tuple[int, int] | None:
+    """(major, minor) from `blender --version`, or None if it can't be read."""
+    try:
+        proc = run([blender, "--version"], timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"Blender (\d+)\.(\d+)", proc.stdout)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 def stage_gate2(session: Session, godot: str, tier: str, blender: str):
+    version = blender_version(blender)
+    if version is not None and version < MIN_BLENDER:
+        return ("skipped", f"Blender {version[0]}.{version[1]} is too old: Gate 2 needs {MIN_BLENDER[0]}.x or newer "
+                "(the Linux .tar.xz from blender.org runs without installing; pass its blender with --blender-bin)", None)
     out = session.out_dir / "gate2"
     proc = run_streamed([sys.executable, str(TESTS / "run_gate2.py"), "--tier", tier, "--godot-bin", godot,
                          "--blender-bin", blender, "--out-dir", str(out)], session.out_dir / "gate2.log", timeout=6 * 3600)

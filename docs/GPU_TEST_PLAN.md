@@ -20,11 +20,14 @@ cd prism-rp && python3 -m pip install scons numpy pillow flip-evaluator OpenEXR
 ```
 
 On Linux, also install `build-essential vulkan-tools vulkan-validationlayers`. With the validation layers present,
-the run reports Vulkan errors.
+the run reports Vulkan errors. Ubuntu 22.04's layers (also Pop!_OS 22.04's) predate Godot 4.7 and flag
+`VUID-VkDeviceCreateInfo-pNext-pNext` in every run, plain Godot included; the report's comparison with the
+`baseline_godot` runs separates that from errors Prism RP causes.
 
 Optional:
 
-- **Gate 2:** Blender 4.x or 5.x on `PATH`.
+- **Gate 2:** Blender 4.x or 5.x on `PATH`, or passed with `--blender-bin`. Ubuntu 22.04's `blender` package is 3.0,
+  which is too old (the session skips Gate 2 and says so); the Linux `.tar.xz` from blender.org runs unpacked.
 - **HDR check:** an HDR monitor with HDR turned on in the OS. On Linux it also needs a Wayland session:
   `echo $XDG_SESSION_TYPE` should print `wayland`.
 

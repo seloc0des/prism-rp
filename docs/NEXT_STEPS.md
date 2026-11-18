@@ -1,8 +1,8 @@
 # Next steps: from here to the first GPU test
 
 **Where things stand (2026-11-18).** `main` is green, the Godot Vulkan smoke test included. The Track B shaders are
-fixed and their compute passes tested on lavapipe. Chronos and Lumina have still never run on a real GPU, which is
-the gap this plan closes. Phases 1–3 are done: what remains is the GPU session (Phase 4) and its follow-up.
+fixed and their compute passes tested on lavapipe. Phases 1–3 are done, and the first GPU session (Phase 4) ran
+on Tier 2 hardware: its findings are under Phase 5, which is in progress.
 
 **Target engine: Godot 4.7.2**, the current stable release. The reasons are in "Godot 4.5 → 4.8" below.
 
@@ -65,7 +65,17 @@ Godot 4.7 can drive HDR displays, but Chronos's SDR look clamps to [0, 1] and wo
 
 **Done when:** CI runs the whole session end to end on lavapipe and uploads the zip.
 
-## Phase 4: the GPU session (about an hour at a GPU machine)
+## Phase 4: the GPU session (about an hour at a GPU machine) — first run done
+
+First run (Linux, Tier 2, X11):
+
+- **Vulkan validation:** nothing from Prism RP. Every message also occurred in the `baseline_godot` runs.
+- **Motion vectors:** 0.037 px median error for about 11 px of motion (0.035 px with jitter).
+- **Timings, all within budget:** Chronos 0.25–0.40 ms (0.79 ms with alpha-hashed foliage), optics about 0.04 ms,
+  Lumina 0.5–1.7 ms (2.1 ms in one debug view).
+- **Gate 1:** 4 of 5 scenes pass (mean FLIP 0.019–0.047). Scene 05 failed at 0.158 because its sparks were unseeded
+  and differed between the reference and test captures.
+- **Not run:** Gate 2 (the installed Blender was 3.0, too old) and HDR (an X11 session).
 
 On the GPU machine: `git pull`, then `python3 tests/gpu_session.py --tier <tier1|tier2|tier3>`. It writes one zip with
 the report, images and logs (details in `GPU_TEST_PLAN.md`).
@@ -84,7 +94,17 @@ What gets judged (from `ROADMAP.md`):
 
 ## Phase 5: after the session (remote)
 
-1. Fix what the session finds. Where possible, each finding becomes a failing test first, then a fix.
+1. Fix what the session finds. Where possible, each finding becomes a failing test first, then a fix. From the first
+   run:
+   - **Bloom streaks:** Chronos' FFT bloom drew starburst spikes across the whole frame, wrapping around its edges.
+     The spikes are now finite strips in frequency space (lavapipe tests for locality, positivity and visible spikes).
+   - **Scene 05:** the sparks use a fixed seed, so Gate 1 compares the same particles.
+   - **Lumina is diffuse only:** with SDFGI off, metals reflected nothing. The rig turns on screen-space reflections
+     when Lumina runs (not for Gate 2), and the README says so.
+   - **Session script:** an old Blender gets a clear skip instead of a traceback, and validation counts only errors
+     that stock Godot doesn't also produce.
+
+   Then a second run with Blender 4.x or newer covers Gate 2 and confirms these.
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.

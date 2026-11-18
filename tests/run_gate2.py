@@ -45,7 +45,7 @@ CYCLES_SCRIPT = HERE / "reference" / "cycles_reference.py"
 
 def lumina_capture_args(export_dir: Path) -> list[str]:
     return [
-        "--prism-chronos=off", "--prism-no-jitter", "--prism-ambient=off",
+        "--prism-chronos=off", "--prism-no-jitter", "--prism-ambient=off", "--prism-ssr=off",
         "--prism-set=lumina.debug_view_mode=2",
         f"--qa-scene-export={export_dir}",
     ]

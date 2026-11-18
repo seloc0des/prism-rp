@@ -85,3 +85,17 @@ def test_link_addon_replaces_stale_links_and_keeps_good_ones(tmp_path):
     (link / "old.gd").write_text("stale", encoding="utf-8")
     assert gs.link_addon(link, target) == "refreshed copy"
     assert (link / "plugin.cfg").exists() and not (link / "old.gd").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="shell-script stand-in for blender")
+def test_gate2_skips_blender_too_old_for_the_reference_script(tmp_path):
+    fake = tmp_path / "blender"
+    fake.write_text("#!/bin/sh\necho 'Blender 3.0.1'\n", encoding="utf-8")
+    fake.chmod(0o755)
+    assert gs.blender_version(str(fake)) == (3, 0)
+    status, detail, _ = gs.stage_gate2(gs.Session(tmp_path / "s"), "godot", "tier2", str(fake))
+    assert status == "skipped" and "Blender 3.0 is too old" in detail
+
+    fake.write_text("#!/bin/sh\necho 'Blender 4.5.3 LTS'\n", encoding="utf-8")
+    assert gs.blender_version(str(fake)) == (4, 5)
+    assert gs.blender_version(str(tmp_path / "missing")) is None
