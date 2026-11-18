@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# godot-cpp is tracked in .gitmodules and pinned to the godot-4.4.1-stable tag.
+# godot-cpp is tracked in .gitmodules and pinned to its 10.0.0-stable release (built against Godot 4.7's API).
 # This just fetches it; it no longer adds submodules (that only ever worked locally).
 cd "$(dirname "$0")"
 git submodule update --init --recursive

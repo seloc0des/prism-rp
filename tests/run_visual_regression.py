@@ -405,7 +405,7 @@ def run_regression_suite(args: argparse.Namespace) -> int:
     tier = HARDWARE_TIERS[args.tier]
     godot_bin = resolve_executable(
         args.godot_bin,
-        ["godot", "godot4", "Godot_v4.4.1-stable_linux.x86_64", "godot.windows.editor.x86_64.exe"],
+        ["godot", "godot4", "Godot_v4.7.2-stable_linux.x86_64", "Godot_v4.7.2-stable_win64.exe", "godot.windows.editor.x86_64.exe"],
         "Godot 4 executable",
     )
     renderdoccmd: str | None = None
