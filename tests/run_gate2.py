@@ -104,7 +104,8 @@ def main() -> int:
     args = p.parse_args()
 
     repo = HERE.parent
-    out_root = Path(args.out_dir) if args.out_dir else repo / "tests" / "artifacts" / "gate2" / dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    # Absolute: Godot runs with --path project, so it would resolve a relative path against project/.
+    out_root = (Path(args.out_dir) if args.out_dir else repo / "tests" / "artifacts" / "gate2" / dt.datetime.now().strftime("%Y%m%d-%H%M%S")).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
     godot = rvr.resolve_executable(args.godot_bin, ["godot", "godot4", "Godot_v4.7.2-stable_linux.x86_64"], "Godot 4 executable")
     blender = rvr.resolve_executable(args.blender_bin, ["blender", "blender.exe"], "Blender 4.x")
