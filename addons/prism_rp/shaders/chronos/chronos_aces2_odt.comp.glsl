@@ -5,11 +5,12 @@
 
 // Chronos composite: bloom add, post-history sharpening, and the optional SDR tone curve.
 //
-// Output contract (Godot 4.4): compositor effects run before Godot's own tonemap pass, which
-// converts linear -> sRGB. So this pass always writes LINEAR Rec.709:
+// Output contract: compositor effects run before Godot's own tonemap pass, which converts
+// linear -> the display encoding. So this pass always writes LINEAR Rec.709:
 //  - look disabled: scene-referred linear HDR; Godot's tonemapper handles display mapping.
-//  - look enabled: display-referred linear SDR in [0, 1]. The Environment must use
-//    TONE_MAPPER_LINEAR with exposure 1.0 so Godot only applies the sRGB encode.
+//  - look enabled: display-referred linear in [0, output_max_linear]: [0, 1] on an SDR display;
+//    with Godot 4.7's HDR output, up to the display's maximum linear value (1.0 = SDR white).
+//    The Environment must use TONE_MAPPER_LINEAR with exposure 1.0 so Godot only encodes.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -25,7 +26,7 @@ layout(push_constant, std430) uniform PushConstants {
     float sharpness;
     int debug_view_mode;  // 0: Final, 1: Dilated Velocity, 2: Reactive Mask, 3: FFT Bloom, 4: TAA Confidence
     uint flags;           // bit 0: bloom, bit 1: SDR look, bit 2: sharpen, bit 3: alpha holds TAA confidence
-    float _pad0;
+    float output_max_linear; // display peak in linear units (SDR white = 1); <= 1 means an SDR display
     float _pad1;
 } pc;
 
@@ -53,9 +54,14 @@ vec3 aces_reference_gamut_compress(vec3 ap1) {
     return achromatic * (1.0 - final_dist);
 }
 
+// Highlight expansion for HDR displays: f * (1 + (peak - 1) * f^4) leaves shadows and midtones
+// where the SDR curve puts them (mid grey moves < 0.3%), rises monotonically, and approaches
+// `peak` as the SDR curve approaches white.
+const float HDR_EXPANSION_POWER = 4.0;
+
 // SDR look: ACES 1.3 gamut compression + a custom filmic tonescale. Not the ACES 2.0 ODT.
-// Returns display-referred LINEAR Rec.709 in [0, 1].
-vec3 apply_sdr_look(vec3 ap1) {
+// Returns display-referred LINEAR Rec.709 in [0, 1], or [0, peak] when peak > 1 (HDR output).
+vec3 apply_sdr_look(vec3 ap1, float peak) {
     ap1 = aces_reference_gamut_compress(ap1);
 
     float y = max(prism_acescg_luminance(ap1), 0.0);
@@ -67,13 +73,16 @@ vec3 apply_sdr_look(vec3 ap1) {
     const float n = 1.12;
     float k = pow(mid_gray, 1.0 - n) * (white_scale - mid_gray) / white_scale;
     float y_mapped = white_scale * pow(y_toe, n) / (pow(y_toe, n) + k);
+    if (peak > 1.0) {
+        y_mapped *= 1.0 + (peak - 1.0) * pow(y_mapped, HDR_EXPANSION_POWER);
+    }
 
     float chroma_attenuation = 1.0 / (1.0 + 0.42 * y_mapped);
     vec3 chroma_dir = ap1 - vec3(y);
     float luma_gain = y_mapped / max(y, 1e-6);
 
     vec3 toned_ap1 = max(vec3(y_mapped) + chroma_dir * luma_gain * chroma_attenuation, vec3(0.0));
-    return clamp(prism_aces2065_to_rec709(prism_acescg_to_aces2065(toned_ap1)), vec3(0.0), vec3(1.0));
+    return clamp(prism_aces2065_to_rec709(prism_acescg_to_aces2065(toned_ap1)), vec3(0.0), vec3(max(peak, 1.0)));
 }
 
 // Reversible tonemap so sharpening behaves the same on HDR highlights as on midtones.
@@ -125,7 +134,7 @@ void main() {
         imageStore(u_color_out, pixel, vec4(heat, 1.0));
         return;
     } else if (pc.debug_view_mode == 3) {
-        imageStore(u_color_out, pixel, vec4(apply_sdr_look(bloom_ap1), 1.0));
+        imageStore(u_color_out, pixel, vec4(apply_sdr_look(bloom_ap1, pc.output_max_linear), 1.0));
         return;
     } else if (pc.debug_view_mode == 4) {
         float conf = ((pc.flags & FLAG_HAS_CONFIDENCE) != 0u) ? clamp(src.a, 0.0, 1.0) : 0.0;
@@ -146,7 +155,7 @@ void main() {
 
     vec3 out_rgb;
     if ((pc.flags & FLAG_SDR_LOOK) != 0u) {
-        out_rgb = apply_sdr_look(scene_ap1);
+        out_rgb = apply_sdr_look(scene_ap1, pc.output_max_linear);
     } else {
         out_rgb = max(prism_acescg_to_linear_srgb(scene_ap1), vec3(0.0));
     }

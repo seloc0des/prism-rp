@@ -3,10 +3,12 @@
 #include "prism_rp/chronos_opaque_capture_effect.h"
 #include "prism_rp/prism_telemetry.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <string>
 
+#include <godot_cpp/classes/display_server.hpp>
 #include <godot_cpp/classes/rd_uniform.hpp>
 #include <godot_cpp/classes/render_scene_buffers.hpp>
 #include <godot_cpp/classes/render_scene_buffers_rd.hpp>
@@ -14,6 +16,7 @@
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/uniform_set_cache_rd.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/variant/callable_method_pointer.hpp>
 #include <godot_cpp/variant/projection.hpp>
 #include <godot_cpp/variant/typed_array.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -79,7 +82,7 @@ void ChronosVPUCompositorEffect::_bind_methods() {
     godot::ClassDB::bind_method(godot::D_METHOD("set_output_display_mode", "mode"), &ChronosVPUCompositorEffect::set_output_display_mode);
     godot::ClassDB::bind_method(godot::D_METHOD("get_output_display_mode"), &ChronosVPUCompositorEffect::get_output_display_mode);
     ADD_PROPERTY(
-        godot::PropertyInfo(godot::Variant::INT, "output_display_mode", godot::PROPERTY_HINT_ENUM, "SDR sRGB:0,Display P3 (unsupported in Godot 4.4):1,HDR10 PQ (unsupported in Godot 4.4):2"),
+        godot::PropertyInfo(godot::Variant::INT, "output_display_mode", godot::PROPERTY_HINT_ENUM, "SDR sRGB:0,Display P3 (replaced by Godot HDR output):1,HDR10 PQ (replaced by Godot HDR output):2"),
         "set_output_display_mode",
         "get_output_display_mode"
     );
@@ -99,7 +102,13 @@ void ChronosVPUCompositorEffect::_bind_methods() {
     godot::ClassDB::bind_method(godot::D_METHOD("set_peak_luminance_nits", "nits"), &ChronosVPUCompositorEffect::set_peak_luminance_nits);
     godot::ClassDB::bind_method(godot::D_METHOD("get_peak_luminance_nits"), &ChronosVPUCompositorEffect::get_peak_luminance_nits);
     // Reserved for HDR output; has no effect while only SDR is supported.
-    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::FLOAT, "peak_luminance_nits", godot::PROPERTY_HINT_RANGE, "80.0,4000.0,10.0"), "set_peak_luminance_nits", "get_peak_luminance_nits");
+    // Unused (Godot's HDR output sets the display peak); stored only so existing scenes keep loading.
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::FLOAT, "peak_luminance_nits", godot::PROPERTY_HINT_RANGE, "80.0,4000.0,10.0", godot::PROPERTY_USAGE_STORAGE), "set_peak_luminance_nits", "get_peak_luminance_nits");
+
+    godot::ClassDB::bind_method(godot::D_METHOD("set_hdr_output", "mode"), &ChronosVPUCompositorEffect::set_hdr_output);
+    godot::ClassDB::bind_method(godot::D_METHOD("get_hdr_output"), &ChronosVPUCompositorEffect::get_hdr_output);
+    godot::ClassDB::bind_method(godot::D_METHOD("get_output_max_linear"), &ChronosVPUCompositorEffect::get_output_max_linear);
+    ADD_PROPERTY(godot::PropertyInfo(godot::Variant::INT, "hdr_output", godot::PROPERTY_HINT_ENUM, "Follow Window:0,SDR Only:1"), "set_hdr_output", "get_hdr_output");
 
     godot::ClassDB::bind_method(godot::D_METHOD("set_bloom_threshold", "threshold"), &ChronosVPUCompositorEffect::set_bloom_threshold);
     godot::ClassDB::bind_method(godot::D_METHOD("get_bloom_threshold"), &ChronosVPUCompositorEffect::get_bloom_threshold);
@@ -168,12 +177,30 @@ void ChronosVPUCompositorEffect::reset_taau_history() {
 void ChronosVPUCompositorEffect::set_output_display_mode(int32_t p_mode) {
     if (p_mode != DISPLAY_MODE_SDR_SRGB && p_mode != output_display_mode) {
         godot::UtilityFunctions::push_warning(
-            "[Prism RP] Display P3 / HDR10 output needs an HDR swapchain, which Godot 4.4 lacks. Rendering SDR sRGB."
+            "[Prism RP] output_display_mode Display P3 / HDR10 is replaced by Godot's HDR output: request it on the "
+            "window (Window.hdr_output_requested) and Chronos follows it through hdr_output. Rendering as SDR sRGB."
         );
     }
     output_display_mode = p_mode;
 }
 int32_t ChronosVPUCompositorEffect::get_output_display_mode() const { return output_display_mode; }
+
+void ChronosVPUCompositorEffect::set_hdr_output(int32_t p_mode) { hdr_output = p_mode; }
+int32_t ChronosVPUCompositorEffect::get_hdr_output() const { return hdr_output; }
+
+float ChronosVPUCompositorEffect::get_output_max_linear() const {
+    return hdr_output == HDR_OUTPUT_FOLLOW_WINDOW ? display_max_linear.load(std::memory_order_relaxed) : 1.0f;
+}
+
+void ChronosVPUCompositorEffect::_sample_display_output() {
+    float peak = 1.0f;
+    godot::DisplayServer *ds = godot::DisplayServer::get_singleton();
+    if (ds != nullptr && ds->has_feature(godot::DisplayServer::FEATURE_HDR_OUTPUT) &&
+            ds->window_is_hdr_output_enabled(godot::DisplayServer::MAIN_WINDOW_ID)) {
+        peak = std::max(1.0f, ds->window_get_output_max_linear_value(godot::DisplayServer::MAIN_WINDOW_ID));
+    }
+    display_max_linear.store(peak, std::memory_order_relaxed);
+}
 
 void ChronosVPUCompositorEffect::set_debug_view_mode(int32_t p_mode) { debug_view_mode = p_mode; }
 int32_t ChronosVPUCompositorEffect::get_debug_view_mode() const { return debug_view_mode; }
@@ -240,6 +267,11 @@ godot::RID ChronosVPUCompositorEffect::get_bloom_texture_rid(int32_t p_view) con
 void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type, godot::RenderData *p_render_data) {
     if (p_render_data == nullptr) {
         return;
+    }
+
+    // The window's HDR state can only be read on the main thread: queue a sample there for next frame.
+    if (hdr_output == HDR_OUTPUT_FOLLOW_WINDOW) {
+        callable_mp(this, &ChronosVPUCompositorEffect::_sample_display_output).call_deferred();
     }
 
     if (rd == nullptr) {
@@ -583,6 +615,12 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
                 if (sharpen) flags |= 4u;
                 if (resolved_has_confidence) flags |= 8u;
 
+                const float output_max_linear = get_output_max_linear();
+                if (aces_odt_enabled && output_max_linear > 1.0f && !hdr_detected_logged) {
+                    hdr_detected_logged = true;
+                    godot::UtilityFunctions::print("[Prism RP] Chronos: HDR output detected (peak ", output_max_linear,
+                        "x SDR white); the SDR look extends highlights up to it.");
+                }
                 CompositePushConstants pc{
                     internal_size.x,
                     internal_size.y,
@@ -590,7 +628,7 @@ void ChronosVPUCompositorEffect::_render_callback(int32_t p_effect_callback_type
                     taau_sharpness,
                     debug_view_mode,
                     flags,
-                    0.0f,
+                    output_max_linear,
                     0.0f
                 };
                 const auto pc_bytes = make_push_constant_bytes(pc);

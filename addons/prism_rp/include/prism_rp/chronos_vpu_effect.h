@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <vector>
 
@@ -33,6 +34,13 @@ public:
         DISPLAY_MODE_SDR_SRGB = 0,
         DISPLAY_MODE_DISPLAY_P3 = 1,
         DISPLAY_MODE_HDR10_PQ = 2,
+    };
+
+    // How the SDR look (aces_odt_enabled) uses an HDR display. Godot 4.7 outputs HDR when the window
+    // requests it (Window.hdr_output_requested) and the platform supports it.
+    enum HdrOutputMode : int32_t {
+        HDR_OUTPUT_FOLLOW_WINDOW = 0,  // extend highlights up to the main window's HDR peak when it outputs HDR
+        HDR_OUTPUT_SDR_ONLY = 1,       // always map to [0, 1]
     };
 
     enum DebugViewMode : int32_t {
@@ -77,10 +85,15 @@ public:
     void reset_taau_history();
 
     // Color, optical bloom, and reactive tuning parameters.
-    // Display P3 / HDR10 need a wide-gamut or HDR swapchain, which Godot 4.4 doesn't have:
-    // they're accepted for forward compatibility, warn, and render as SDR sRGB.
+    // output_display_mode's Display P3 / HDR10 values predate Godot's HDR output (4.7), which replaces
+    // them: they're kept so saved scenes load, warn, and behave like SDR sRGB. HDR follows hdr_output.
     void set_output_display_mode(int32_t p_mode);
     [[nodiscard]] int32_t get_output_display_mode() const;
+
+    void set_hdr_output(int32_t p_mode);
+    [[nodiscard]] int32_t get_hdr_output() const;
+    // The peak the SDR look maps to this frame, in linear units (1.0 = SDR white).
+    [[nodiscard]] float get_output_max_linear() const;
 
     void set_debug_view_mode(int32_t p_mode);
     [[nodiscard]] int32_t get_debug_view_mode() const;
@@ -199,7 +212,7 @@ private:
         float sharpness = 0.0f;
         int32_t debug_view_mode = 0;
         uint32_t flags = 0;
-        float _pad0 = 0.0f;
+        float output_max_linear = 1.0f;  // display peak for the SDR look (<= 1: SDR display)
         float _pad1 = 0.0f;
     };
     static_assert(sizeof(CompositePushConstants) == 32);
@@ -279,7 +292,7 @@ private:
     int32_t output_display_mode = DISPLAY_MODE_SDR_SRGB;
     int32_t debug_view_mode = DEBUG_VIEW_FINAL;
     float exposure_ev = 0.0f;
-    float peak_luminance_nits = 100.0f;
+    float peak_luminance_nits = 100.0f;  // unused: kept so saved scenes load; the HDR peak comes from the window
     float bloom_threshold = 1.15f;
     float bloom_intensity = 0.18f;
     float halation_intensity = 0.35f;
@@ -288,6 +301,13 @@ private:
     float transparency_reactive_scale = 1.0f;
 
     bool godot_temporal_warned = false;
+
+    // HDR: the render thread can't query the window, so each frame it queues _sample_display_output()
+    // on the main thread, which stores the main window's peak here (one frame of latency).
+    void _sample_display_output();
+    int32_t hdr_output = HDR_OUTPUT_FOLLOW_WINDOW;
+    std::atomic<float> display_max_linear{1.0f};
+    bool hdr_detected_logged = false;
 };
 
 } // namespace prism
