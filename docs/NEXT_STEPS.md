@@ -128,7 +128,26 @@ What the first fair comparison shows Lumina needs, in order: no dark band where 
 (edges and the floor near the camera), much weaker colour bleeding next to bright, saturated lights (red and blue
 smears on Sponza's columns), and no bright blobs from individual probes.
 
-**Interim floor:** set from this PR's CI measurement.
+**First measurement (CI, lavapipe, 128 samples, emission off):**
+
+| Scene | Lumina, fitted (centre) | SDFGI, fitted (centre) | Best possible (reference noise) |
+| :--- | :--- | :--- | :--- |
+| Cornell box | 13.5 dB (11.5) | 16.6 dB (14.6), 6.6x too dark before the fit | 27.7 dB |
+| Sponza | 22.4 dB (23.8) | 27.3 dB (26.0) | 36.1 dB |
+
+Settling: 37% away from the settled result after 6 frames, not settled after 12 (needs under 10% by 6).
+
+So Lumina doesn't pass the revised Gate 2 yet: SDFGI is ahead by 3 dB in the Cornell box and 5 dB in Sponza, and
+Lumina settles far too slowly. The Cornell reference is noisy enough at 128 samples that nothing can score above about
+28 dB (about 34 dB at 512): the old 36 dB was out of reach there whatever the GI.
+
+**Interim floor: 20 dB fitted** on every Gate 2 scene. Beating SDFGI is the real bar; the floor catches output that
+is badly wrong in a scene where SDFGI also does poorly (it sits above SDFGI's Cornell score, below Lumina's Sponza
+score and well below the reference's noise ceiling).
+
+**Next for Lumina, in order:** settle within 6 frames (react to lighting changes instead of averaging over many
+frames); no dark band where screen-space rays leave the screen; much weaker colour bleeding next to bright,
+saturated lights; no bright blobs from individual probes. CI's Gate 2 and settling numbers measure each step.
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
