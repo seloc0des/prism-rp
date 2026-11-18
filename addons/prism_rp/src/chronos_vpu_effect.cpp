@@ -90,7 +90,7 @@ void ChronosVPUCompositorEffect::_bind_methods() {
     godot::ClassDB::bind_method(godot::D_METHOD("set_debug_view_mode", "mode"), &ChronosVPUCompositorEffect::set_debug_view_mode);
     godot::ClassDB::bind_method(godot::D_METHOD("get_debug_view_mode"), &ChronosVPUCompositorEffect::get_debug_view_mode);
     ADD_PROPERTY(
-        godot::PropertyInfo(godot::Variant::INT, "debug_view_mode", godot::PROPERTY_HINT_ENUM, "Final Output:0,Dilated Velocity:1,Reactive Mask:2,FFT Bloom & Halation:3,TAA Confidence:4"),
+        godot::PropertyInfo(godot::Variant::INT, "debug_view_mode", godot::PROPERTY_HINT_ENUM, "Final Output:0,Dilated Velocity:1,Reactive Mask:2,FFT Bloom & Halation:3,TAA Confidence:4,Signed Velocity (QA):5"),
         "set_debug_view_mode",
         "get_debug_view_mode"
     );

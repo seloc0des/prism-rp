@@ -34,6 +34,7 @@ class RunConfig:
     description: str
     args: tuple[str, ...]
     render_scale: float | None = None
+    scenes: tuple[str, ...] = ()  # only these scenes (empty: every scene)
 
 
 CHRONOS_ONLY = ("--prism-lumina=off",)
@@ -59,6 +60,12 @@ CONFIGS: list[RunConfig] = [
               (*CHRONOS_ONLY, "--prism-opaque-capture=off")),
     RunConfig("chronos_godot_taa_guard", "chronos", "Godot TAA on: Chronos must warn once and bypass its TAA.",
               (*CHRONOS_ONLY, "--prism-godot-taa=on")),
+    RunConfig("chronos_foliage_alpha_hash", "chronos", "Leaves alpha-hashed instead of alpha-scissored: Chronos must "
+              "resolve the hash noise into soft, stable edges (compare with chronos_default).",
+              (*CHRONOS_ONLY, "--prism-foliage-alpha=hash"), scenes=("02_foliage_overdraw",)),
+    RunConfig("chronos_hdr", "chronos", "HDR output requested: the log shows whether Godot enabled it and the peak "
+              "Chronos maps highlights to. The PNG is clamped to SDR; judge HDR on the monitor (gpu_session.py).",
+              (*CHRONOS_ONLY, "--prism-hdr=on"), scenes=("01_cornell_box", "05_volumetrics_wboit")),
     RunConfig("chronos_debug_velocity", "chronos-debug", "Dilated velocity (static scene: near black; motion: smooth).",
               (*CHRONOS_ONLY, _set("chronos.debug_view_mode=1"))),
     RunConfig("chronos_debug_reactive", "chronos-debug", "Reactive mask (bright on sparks, glass, disocclusions).",
@@ -307,6 +314,8 @@ def main() -> int:
     results: list[RunResult] = []
     for scene in scenes:
         for cfg in configs:
+            if cfg.scenes and scene not in cfg.scenes:
+                continue
             r = run_config(godot_bin, project_dir, out_root, tier, scene, cfg, args.capture_frame)
             status = "ok" if r.ok else "ERRORS"
             print(f"  [{status:6}] {scene} / {cfg.name}" + (f"  ({r.exception or r.errors[0]})" if not r.ok else ""))
