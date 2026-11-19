@@ -323,7 +323,7 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
             const float cam4[4] = { static_cast<float>(eye.x), static_cast<float>(eye.y), static_cast<float>(eye.z), spacing };
             std::copy(std::begin(cam4), std::end(cam4), wpc.cam_pos);
             wpc.cam_right[0] = static_cast<float>(right.x); wpc.cam_right[1] = static_cast<float>(right.y); wpc.cam_right[2] = static_cast<float>(right.z);
-            wpc.cam_right[3] = 0.25f;   // thickness, fraction of view depth
+            wpc.cam_right[3] = thickness;   // same occluder thickness as the screen-space trace (fraction of view depth)
             wpc.cam_up[0] = static_cast<float>(up.x); wpc.cam_up[1] = static_cast<float>(up.y); wpc.cam_up[2] = static_cast<float>(up.z);
             wpc.cam_up[3] = 0.1f;       // running-average floor: ~10-frame memory once converged
             std::copy(std::begin(proj4), std::end(proj4), wpc.proj);
