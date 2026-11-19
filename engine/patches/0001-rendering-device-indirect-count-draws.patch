@@ -1,0 +1,309 @@
+diff --git a/doc/classes/RenderingDevice.xml b/doc/classes/RenderingDevice.xml
+index 8fc95b2..345c47a 100644
+--- a/doc/classes/RenderingDevice.xml
++++ b/doc/classes/RenderingDevice.xml
+@@ -391,6 +391,21 @@
+ 				Submits [param draw_list] for rendering on the GPU with the given parameters stored in the [param buffer] at [param offset]. Parameters being integers: vertex count, instance count, first vertex, first instance. And when using indices: index count, instance count, first index, vertex offset, first instance. Buffer must have been created with [constant STORAGE_BUFFER_USAGE_DISPATCH_INDIRECT] flag.
+ 			</description>
+ 		</method>
++		<method name="draw_list_draw_indirect_count">
++			<return type="void" />
++			<param index="0" name="draw_list" type="int" />
++			<param index="1" name="use_indices" type="bool" />
++			<param index="2" name="buffer" type="RID" />
++			<param index="3" name="offset" type="int" />
++			<param index="4" name="count_buffer" type="RID" />
++			<param index="5" name="count_buffer_offset" type="int" />
++			<param index="6" name="max_draw_count" type="int" />
++			<param index="7" name="stride" type="int" />
++			<description>
++				Like [method draw_list_draw_indirect], but the number of draws is read by the GPU from a 32-bit integer in [param count_buffer] at [param count_buffer_offset], clamped to [param max_draw_count]. [param stride] is the distance in bytes between two draw commands in [param buffer]. Both buffers must have been created with the indirect usage flag, and [param offset], [param count_buffer_offset] and [param stride] must be multiples of 4.
++				[b]Note:[/b] Requires [constant SUPPORTS_DRAW_INDIRECT_COUNT]. Fails with an error otherwise.
++			</description>
++		</method>
+ 		<method name="draw_list_enable_scissor">
+ 			<return type="void" />
+ 			<param index="0" name="draw_list" type="int" />
+@@ -2847,6 +2862,11 @@
+ 		<constant name="SUPPORTS_HDR_OUTPUT" value="13" enum="Features">
+ 			Support for high dynamic range (HDR) output.
+ 		</constant>
++		<constant name="SUPPORTS_DRAW_INDIRECT_COUNT" value="14" enum="Features">
++			Support for [method draw_list_draw_indirect_count].
++
++			[b]Note:[/b] This is currently only supported when using Vulkan.
++		</constant>
+ 		<constant name="LIMIT_MAX_BOUND_UNIFORM_SETS" value="0" enum="Limit">
+ 			Maximum number of uniform sets that can be bound at a given time.
+ 		</constant>
+diff --git a/drivers/vulkan/rendering_device_driver_vulkan.cpp b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+index 4b1bd9f..b696466 100644
+--- a/drivers/vulkan/rendering_device_driver_vulkan.cpp
++++ b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+@@ -586,6 +586,7 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
+ 	_register_requested_device_extension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, false);
+ 	_register_requested_device_extension(VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME, false);
+ 	_register_requested_device_extension(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, false);
++	_register_requested_device_extension(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME, false);
+ 
+ 	// We don't actually use this extension, but some runtime components on some platforms
+ 	// can and will fill the validation layers with useless info otherwise if not enabled.
+@@ -887,6 +888,11 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
+ 	// Cache extension availability we query often.
+ 	framebuffer_depth_resolve = enabled_device_extension_names.has(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+ 
++	// Extensions whose entry points are only used through core Vulkan 1.2.
++	if (physical_device_properties.apiVersion < VK_API_VERSION_1_2) {
++		enabled_device_extension_names.erase(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
++	}
++
+ 	bool use_fdm_offsets = false;
+ 	if (VulkanHooks::get_singleton() != nullptr) {
+ 		use_fdm_offsets = VulkanHooks::get_singleton()->use_fragment_density_offsets();
+@@ -1040,6 +1046,9 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
+ 			}
+ 		}
+ 
++		// Enabling the extension is what lets the core 1.2 vkCmdDrawIndirectCount entry points be used.
++		draw_indirect_count_support = use_1_2_features && enabled_device_extension_names.has(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
++
+ 		if (enabled_device_extension_names.has(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME)) {
+ 			fsr_capabilities.pipeline_supported = fsr_features.pipelineFragmentShadingRate;
+ 			fsr_capabilities.primitive_supported = fsr_features.primitiveFragmentShadingRate;
+@@ -7409,6 +7418,8 @@ bool RenderingDeviceDriverVulkan::has_feature(Features p_feature) {
+ 			return acceleration_structure_capabilities.acceleration_structure_support && ray_query_support;
+ 		case SUPPORTS_RAYTRACING_PIPELINE:
+ 			return acceleration_structure_capabilities.acceleration_structure_support && raytracing_capabilities.raytracing_pipeline_support;
++		case SUPPORTS_DRAW_INDIRECT_COUNT:
++			return draw_indirect_count_support;
+ 		case SUPPORTS_HDR_OUTPUT:
+ #if defined(WINDOWS_ENABLED)
+ 			// When using a Vulkan swapchain on Windows, some configurations
+diff --git a/drivers/vulkan/rendering_device_driver_vulkan.h b/drivers/vulkan/rendering_device_driver_vulkan.h
+index 6d17386..9e31531 100644
+--- a/drivers/vulkan/rendering_device_driver_vulkan.h
++++ b/drivers/vulkan/rendering_device_driver_vulkan.h
+@@ -160,6 +160,7 @@ class RenderingDeviceDriverVulkan : public RenderingDeviceDriver {
+ 	StorageBufferCapabilities storage_buffer_capabilities;
+ 	RenderingShaderContainerFormatVulkan shader_container_format;
+ 	bool buffer_device_address_support = false;
++	bool draw_indirect_count_support = false;
+ 	bool vulkan_memory_model_support = false;
+ 	bool vulkan_memory_model_device_scope_support = false;
+ 	AccelerationStructureCapabilities acceleration_structure_capabilities;
+diff --git a/servers/rendering/rendering_device.cpp b/servers/rendering/rendering_device.cpp
+index 7574038..ff27646 100644
+--- a/servers/rendering/rendering_device.cpp
++++ b/servers/rendering/rendering_device.cpp
+@@ -6157,6 +6157,21 @@ void RenderingDevice::draw_list_draw(DrawListID p_list, bool p_use_indices, uint
+ }
+ 
+ void RenderingDevice::draw_list_draw_indirect(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride) {
++	_draw_list_draw_indirect(p_list, p_use_indices, p_buffer, p_offset, p_draw_count, p_stride, RID(), 0);
++}
++
++void RenderingDevice::draw_list_draw_indirect_count(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset, RID p_count_buffer, uint32_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) {
++	ERR_RENDER_THREAD_GUARD();
++
++	ERR_FAIL_COND_MSG(!has_feature(SUPPORTS_DRAW_INDIRECT_COUNT), "The current rendering device does not support indirect draws with a count buffer.");
++	ERR_FAIL_COND_MSG(!p_count_buffer.is_valid(), "A count buffer is required.");
++	ERR_FAIL_COND_MSG((p_offset % 4) != 0 || (p_count_buffer_offset % 4) != 0 || (p_stride % 4) != 0, "Offsets and stride must be multiples of 4.");
++
++	_draw_list_draw_indirect(p_list, p_use_indices, p_buffer, p_offset, p_max_draw_count, p_stride, p_count_buffer, p_count_buffer_offset);
++}
++
++// With a valid p_count_buffer, p_draw_count is the maximum draw count and the GPU reads the actual count from the buffer.
++void RenderingDevice::_draw_list_draw_indirect(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride, RID p_count_buffer, uint32_t p_count_buffer_offset) {
+ 	ERR_RENDER_THREAD_GUARD();
+ 
+ 	ERR_FAIL_COND(!draw_list.active);
+@@ -6166,6 +6181,14 @@ void RenderingDevice::draw_list_draw_indirect(DrawListID p_list, bool p_use_indi
+ 
+ 	ERR_FAIL_COND_MSG(!buffer->usage.has_flag(RDD::BUFFER_USAGE_INDIRECT_BIT), "Buffer provided was not created to do indirect dispatch.");
+ 
++	Buffer *count_buffer = nullptr;
++	if (p_count_buffer.is_valid()) {
++		count_buffer = storage_buffer_owner.get_or_null(p_count_buffer);
++		ERR_FAIL_NULL(count_buffer);
++		ERR_FAIL_COND_MSG(!count_buffer->usage.has_flag(RDD::BUFFER_USAGE_INDIRECT_BIT), "Count buffer provided was not created to do indirect dispatch.");
++		ERR_FAIL_COND_MSG(p_count_buffer_offset + 4 > count_buffer->size, "Count buffer offset provided (+4) is past the end of buffer.");
++	}
++
+ #ifdef DEBUG_ENABLED
+ 	ERR_FAIL_COND_MSG(!draw_list.validation.pipeline_active,
+ 			"No render pipeline was set before attempting to draw.");
+@@ -6249,11 +6272,19 @@ void RenderingDevice::draw_list_draw_indirect(DrawListID p_list, bool p_use_indi
+ 
+ 		ERR_FAIL_COND_MSG(p_offset + 20 > buffer->size, "Offset provided (+20) is past the end of buffer.");
+ 
+-		draw_graph.add_draw_list_draw_indexed_indirect(buffer->driver_id, p_offset, p_draw_count, p_stride);
++		if (count_buffer != nullptr) {
++			draw_graph.add_draw_list_draw_indirect_count(true, buffer->driver_id, p_offset, count_buffer->driver_id, p_count_buffer_offset, p_draw_count, p_stride);
++		} else {
++			draw_graph.add_draw_list_draw_indexed_indirect(buffer->driver_id, p_offset, p_draw_count, p_stride);
++		}
+ 	} else {
+ 		ERR_FAIL_COND_MSG(p_offset + 16 > buffer->size, "Offset provided (+16) is past the end of buffer.");
+ 
+-		draw_graph.add_draw_list_draw_indirect(buffer->driver_id, p_offset, p_draw_count, p_stride);
++		if (count_buffer != nullptr) {
++			draw_graph.add_draw_list_draw_indirect_count(false, buffer->driver_id, p_offset, count_buffer->driver_id, p_count_buffer_offset, p_draw_count, p_stride);
++		} else {
++			draw_graph.add_draw_list_draw_indirect(buffer->driver_id, p_offset, p_draw_count, p_stride);
++		}
+ 	}
+ 
+ 	draw_list.state.draw_count++;
+@@ -6263,6 +6294,14 @@ void RenderingDevice::draw_list_draw_indirect(DrawListID p_list, bool p_use_indi
+ 	}
+ 
+ 	_check_transfer_worker_buffer(buffer);
++
++	if (count_buffer != nullptr) {
++		if (count_buffer->draw_tracker != nullptr) {
++			draw_graph.add_draw_list_usage(count_buffer->draw_tracker, RDG::RESOURCE_USAGE_INDIRECT_BUFFER_READ);
++		}
++
++		_check_transfer_worker_buffer(count_buffer);
++	}
+ }
+ 
+ void RenderingDevice::draw_list_set_viewport(DrawListID p_list, const Rect2 &p_rect) {
+@@ -9160,6 +9199,7 @@ void RenderingDevice::_bind_methods() {
+ 
+ 	ClassDB::bind_method(D_METHOD("draw_list_draw", "draw_list", "use_indices", "instances", "procedural_vertex_count"), &RenderingDevice::draw_list_draw, DEFVAL(0));
+ 	ClassDB::bind_method(D_METHOD("draw_list_draw_indirect", "draw_list", "use_indices", "buffer", "offset", "draw_count", "stride"), &RenderingDevice::draw_list_draw_indirect, DEFVAL(0), DEFVAL(1), DEFVAL(0));
++	ClassDB::bind_method(D_METHOD("draw_list_draw_indirect_count", "draw_list", "use_indices", "buffer", "offset", "count_buffer", "count_buffer_offset", "max_draw_count", "stride"), &RenderingDevice::draw_list_draw_indirect_count);
+ 
+ 	ClassDB::bind_method(D_METHOD("draw_list_enable_scissor", "draw_list", "rect"), &RenderingDevice::draw_list_enable_scissor, DEFVAL(Rect2()));
+ 	ClassDB::bind_method(D_METHOD("draw_list_disable_scissor", "draw_list"), &RenderingDevice::draw_list_disable_scissor);
+@@ -9770,6 +9810,7 @@ void RenderingDevice::_bind_methods() {
+ 	BIND_ENUM_CONSTANT(SUPPORTS_RAY_QUERY);
+ 	BIND_ENUM_CONSTANT(SUPPORTS_RAYTRACING_PIPELINE);
+ 	BIND_ENUM_CONSTANT(SUPPORTS_HDR_OUTPUT);
++	BIND_ENUM_CONSTANT(SUPPORTS_DRAW_INDIRECT_COUNT);
+ 
+ 	BIND_ENUM_CONSTANT(LIMIT_MAX_BOUND_UNIFORM_SETS);
+ 	BIND_ENUM_CONSTANT(LIMIT_MAX_FRAMEBUFFER_COLOR_ATTACHMENTS);
+diff --git a/servers/rendering/rendering_device.h b/servers/rendering/rendering_device.h
+index 38c4b14..b9aa19a 100644
+--- a/servers/rendering/rendering_device.h
++++ b/servers/rendering/rendering_device.h
+@@ -1556,6 +1556,7 @@ public:
+ 
+ 	void draw_list_draw(DrawListID p_list, bool p_use_indices, uint32_t p_instances = 1, uint32_t p_procedural_vertices = 0);
+ 	void draw_list_draw_indirect(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset = 0, uint32_t p_draw_count = 1, uint32_t p_stride = 0);
++	void draw_list_draw_indirect_count(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset, RID p_count_buffer, uint32_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride);
+ 
+ 	void draw_list_set_viewport(DrawListID p_list, const Rect2 &p_rect);
+ 	void draw_list_enable_scissor(DrawListID p_list, const Rect2 &p_rect);
+@@ -1724,6 +1725,7 @@ private:
+ 	void _flush_barriers_for_transfer_worker(TransferWorker *p_transfer_worker);
+ 	void _check_transfer_worker_operation(uint32_t p_transfer_worker_index, uint64_t p_transfer_worker_operation);
+ 	void _check_transfer_worker_buffer(Buffer *p_buffer);
++	void _draw_list_draw_indirect(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride, RID p_count_buffer, uint32_t p_count_buffer_offset);
+ 	void _check_transfer_worker_texture(Texture *p_texture);
+ 	void _check_transfer_worker_vertex_array(VertexArray *p_vertex_array);
+ 	void _check_transfer_worker_index_array(IndexArray *p_index_array);
+diff --git a/servers/rendering/rendering_device_commons.h b/servers/rendering/rendering_device_commons.h
+index fd7b65b..217119a 100644
+--- a/servers/rendering/rendering_device_commons.h
++++ b/servers/rendering/rendering_device_commons.h
+@@ -1036,6 +1036,7 @@ public:
+ 		SUPPORTS_RAY_QUERY,
+ 		SUPPORTS_RAYTRACING_PIPELINE,
+ 		SUPPORTS_HDR_OUTPUT,
++		SUPPORTS_DRAW_INDIRECT_COUNT,
+ 	};
+ 
+ 	enum SubgroupOperations {
+diff --git a/servers/rendering/rendering_device_graph.cpp b/servers/rendering/rendering_device_graph.cpp
+index fc17ed3..6f8d22f 100644
+--- a/servers/rendering/rendering_device_graph.cpp
++++ b/servers/rendering/rendering_device_graph.cpp
+@@ -981,6 +981,16 @@ void RenderingDeviceGraph::_run_draw_list_command(RDD::CommandBufferID p_command
+ 				driver->command_render_draw_indexed_indirect(p_command_buffer, draw_indexed_indirect_instruction->buffer, draw_indexed_indirect_instruction->offset, draw_indexed_indirect_instruction->draw_count, draw_indexed_indirect_instruction->stride);
+ 				instruction_data_cursor += sizeof(DrawListDrawIndexedIndirectInstruction);
+ 			} break;
++			case DrawListInstruction::TYPE_DRAW_INDIRECT_COUNT: {
++				const DrawListDrawIndirectCountInstruction *draw_indirect_count_instruction = reinterpret_cast<const DrawListDrawIndirectCountInstruction *>(instruction);
++				driver->command_render_draw_indirect_count(p_command_buffer, draw_indirect_count_instruction->buffer, draw_indirect_count_instruction->offset, draw_indirect_count_instruction->count_buffer, draw_indirect_count_instruction->count_buffer_offset, draw_indirect_count_instruction->max_draw_count, draw_indirect_count_instruction->stride);
++				instruction_data_cursor += sizeof(DrawListDrawIndirectCountInstruction);
++			} break;
++			case DrawListInstruction::TYPE_DRAW_INDEXED_INDIRECT_COUNT: {
++				const DrawListDrawIndirectCountInstruction *draw_indirect_count_instruction = reinterpret_cast<const DrawListDrawIndirectCountInstruction *>(instruction);
++				driver->command_render_draw_indexed_indirect_count(p_command_buffer, draw_indirect_count_instruction->buffer, draw_indirect_count_instruction->offset, draw_indirect_count_instruction->count_buffer, draw_indirect_count_instruction->count_buffer_offset, draw_indirect_count_instruction->max_draw_count, draw_indirect_count_instruction->stride);
++				instruction_data_cursor += sizeof(DrawListDrawIndirectCountInstruction);
++			} break;
+ 			case DrawListInstruction::TYPE_EXECUTE_COMMANDS: {
+ 				const DrawListExecuteCommandsInstruction *execute_commands_instruction = reinterpret_cast<const DrawListExecuteCommandsInstruction *>(instruction);
+ 				driver->command_buffer_execute_secondary(p_command_buffer, execute_commands_instruction->command_buffer);
+@@ -1574,6 +1584,12 @@ void RenderingDeviceGraph::_print_draw_list(const uint8_t *p_instruction_data, u
+ 				print_line("\tDRAW INDEXED INDIRECT BUFFER ID", itos(draw_indexed_indirect_instruction->buffer.id), "OFFSET", draw_indexed_indirect_instruction->offset, "DRAW COUNT", draw_indexed_indirect_instruction->draw_count, "STRIDE", draw_indexed_indirect_instruction->stride);
+ 				instruction_data_cursor += sizeof(DrawListDrawIndexedIndirectInstruction);
+ 			} break;
++			case DrawListInstruction::TYPE_DRAW_INDIRECT_COUNT:
++			case DrawListInstruction::TYPE_DRAW_INDEXED_INDIRECT_COUNT: {
++				const DrawListDrawIndirectCountInstruction *draw_indirect_count_instruction = reinterpret_cast<const DrawListDrawIndirectCountInstruction *>(instruction);
++				print_line(instruction->type == DrawListInstruction::TYPE_DRAW_INDIRECT_COUNT ? "\tDRAW INDIRECT COUNT" : "\tDRAW INDEXED INDIRECT COUNT", "BUFFER ID", itos(draw_indirect_count_instruction->buffer.id), "OFFSET", draw_indirect_count_instruction->offset, "COUNT BUFFER ID", itos(draw_indirect_count_instruction->count_buffer.id), "COUNT OFFSET", draw_indirect_count_instruction->count_buffer_offset, "MAX DRAW COUNT", draw_indirect_count_instruction->max_draw_count, "STRIDE", draw_indirect_count_instruction->stride);
++				instruction_data_cursor += sizeof(DrawListDrawIndirectCountInstruction);
++			} break;
+ 			case DrawListInstruction::TYPE_EXECUTE_COMMANDS: {
+ 				print_line("\tEXECUTE COMMANDS");
+ 				instruction_data_cursor += sizeof(DrawListExecuteCommandsInstruction);
+@@ -2244,6 +2260,18 @@ void RenderingDeviceGraph::add_draw_list_draw_indexed_indirect(RDD::BufferID p_b
+ 	draw_instruction_list.stages.set_flag(RDD::PIPELINE_STAGE_DRAW_INDIRECT_BIT);
+ }
+ 
++void RenderingDeviceGraph::add_draw_list_draw_indirect_count(bool p_indexed, RDD::BufferID p_buffer, uint32_t p_offset, RDD::BufferID p_count_buffer, uint32_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) {
++	DrawListDrawIndirectCountInstruction *instruction = reinterpret_cast<DrawListDrawIndirectCountInstruction *>(_allocate_draw_list_instruction(sizeof(DrawListDrawIndirectCountInstruction)));
++	instruction->type = p_indexed ? DrawListInstruction::TYPE_DRAW_INDEXED_INDIRECT_COUNT : DrawListInstruction::TYPE_DRAW_INDIRECT_COUNT;
++	instruction->buffer = p_buffer;
++	instruction->count_buffer = p_count_buffer;
++	instruction->offset = p_offset;
++	instruction->count_buffer_offset = p_count_buffer_offset;
++	instruction->max_draw_count = p_max_draw_count;
++	instruction->stride = p_stride;
++	draw_instruction_list.stages.set_flag(RDD::PIPELINE_STAGE_DRAW_INDIRECT_BIT);
++}
++
+ void RenderingDeviceGraph::add_draw_list_execute_commands(RDD::CommandBufferID p_command_buffer) {
+ 	DrawListExecuteCommandsInstruction *instruction = reinterpret_cast<DrawListExecuteCommandsInstruction *>(_allocate_draw_list_instruction(sizeof(DrawListExecuteCommandsInstruction)));
+ 	instruction->type = DrawListInstruction::TYPE_EXECUTE_COMMANDS;
+diff --git a/servers/rendering/rendering_device_graph.h b/servers/rendering/rendering_device_graph.h
+index dda5508..fc061b0 100644
+--- a/servers/rendering/rendering_device_graph.h
++++ b/servers/rendering/rendering_device_graph.h
+@@ -87,6 +87,8 @@ public:
+ 			TYPE_DRAW_INDEXED,
+ 			TYPE_DRAW_INDIRECT,
+ 			TYPE_DRAW_INDEXED_INDIRECT,
++			TYPE_DRAW_INDIRECT_COUNT,
++			TYPE_DRAW_INDEXED_INDIRECT_COUNT,
+ 			TYPE_EXECUTE_COMMANDS,
+ 			TYPE_NEXT_SUBPASS,
+ 			TYPE_SET_BLEND_CONSTANTS,
+@@ -632,6 +634,15 @@ private:
+ 		uint32_t stride = 0;
+ 	};
+ 
++	struct DrawListDrawIndirectCountInstruction : DrawListInstruction {
++		RDD::BufferID buffer;
++		RDD::BufferID count_buffer;
++		uint32_t offset = 0;
++		uint32_t count_buffer_offset = 0;
++		uint32_t max_draw_count = 0;
++		uint32_t stride = 0;
++	};
++
+ 	struct DrawListEndRenderPassInstruction : DrawListInstruction {
+ 		// No contents.
+ 	};
+@@ -929,6 +940,7 @@ public:
+ 	void add_draw_list_draw_indexed(uint32_t p_index_count, uint32_t p_instance_count, uint32_t p_first_index);
+ 	void add_draw_list_draw_indirect(RDD::BufferID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride);
+ 	void add_draw_list_draw_indexed_indirect(RDD::BufferID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride);
++	void add_draw_list_draw_indirect_count(bool p_indexed, RDD::BufferID p_buffer, uint32_t p_offset, RDD::BufferID p_count_buffer, uint32_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride);
+ 	void add_draw_list_execute_commands(RDD::CommandBufferID p_command_buffer);
+ 	void add_draw_list_next_subpass(RDD::CommandBufferType p_command_buffer_type);
+ 	void add_draw_list_set_blend_constants(const Color &p_color);

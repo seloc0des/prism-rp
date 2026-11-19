@@ -8,6 +8,7 @@ on:
       - "engine/**"
       - "addons/prism_rp/shaders/**"
       - "tests/run_vulkan_qa.sh"
+      - "tests/engine/**"
       - ".github/workflows/engine.yml"
   workflow_dispatch:
 
@@ -260,3 +261,27 @@ jobs:
         with:
           name: custom-godot-vulkan-qa-log
           path: godot_*.log
+
+  indirect-count:
+    name: Indirect-count draw test (lavapipe)
+    needs: linux-editor
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download the custom editor
+        uses: actions/download-artifact@v4
+        with:
+          name: prism-godot-linux-editor
+          path: custom-editor
+
+      - name: Install Mesa Lavapipe, Khronos Validation Layers and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-validationlayers xvfb
+          chmod +x custom-editor/godot.linuxbsd.editor.x86_64
+          echo "VK_DRIVER_FILES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)" >> "$GITHUB_ENV"
+
+      - name: Run the test
+        run: tests/engine/run_indirect_count.sh ./custom-editor/godot.linuxbsd.editor.x86_64
