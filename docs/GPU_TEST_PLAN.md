@@ -19,6 +19,9 @@ git clone --recurse-submodules https://github.com/seloc0des/prism-rp.git
 cd prism-rp && python3 -m pip install scons numpy pillow flip-evaluator OpenEXR
 ```
 
+If you install these into a virtual environment at `prism-rp/.venv`, the session script uses it even when the
+shell hasn't activated it.
+
 On Linux, also install `build-essential vulkan-tools vulkan-validationlayers`. With the validation layers present,
 the run reports Vulkan errors. Ubuntu 22.04's layers (also Pop!_OS 22.04's) predate Godot 4.7 and flag
 `VUID-VkDeviceCreateInfo-pNext-pNext` in every run, plain Godot included; the report's comparison with the

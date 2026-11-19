@@ -23,7 +23,8 @@ def cascade_layout(cam, spacing, count):
 def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefilter=True):
     """[downsample] -> trace every level -> merge top-down -> integrate. Returns irradiance (h, w, 4).
     As in the C++, level 0 traces the colour buffer and level i the prefiltered radiance pyramid's level
-    i - 1 (prefilter=False traces every level against the colour buffer, as before)."""
+    i - 1 (prefilter=False traces every level against the colour buffer, as before), and the top level
+    runs on to the edge of the screen with twice the steps."""
     levels = cascade_layout(cam, spacing, count)
     images = {
         "depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"]),
@@ -48,7 +49,8 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefi
             "lumina/lumina_rc_trace.comp.glsl",
             {0: ("depth", "sampled_nearest"), 1: ("normal", "sampled_nearest"), 2: (radiance, "sampled_linear"), 3: (f"c{i}", "storage")},
             pc.trace(cam.width, cam.height, lv["probes"], lv["block"], float(lv["spacing"]),
-                     spacing * (scale - 1) / 3.0, spacing * scale, steps, thickness, 0, 0.01, cam.proj, cam.depth_params),
+                     spacing * (scale - 1) / 3.0, spacing * scale if i + 1 < count else -1.0,
+                     steps if i + 1 < count else 2 * steps, thickness, 0, 0.01, cam.proj, cam.depth_params),
             groups_for(*lv["size"])))
     for i in range(count - 2, -1, -1):
         lv, parent = levels[i], levels[i + 1]
@@ -229,6 +231,71 @@ def test_light_does_not_leak_through_the_back_of_objects(gpu):
     red_behind = float(irr[behind, 0].mean())
     assert red_front > 0.05                      # the lit face does bounce onto the floor in front
     assert red_behind < 0.25 * red_front, (red_front, red_behind)
+
+
+def rect_irradiance(point, normal, a, b, c, n=64):
+    """E / pi at `point` (surface normal `normal`) from a Lambertian rectangle of radiance 1 spanned by
+    a->b and a->c, all mutually visible: sum of cos * cos' / r^2 dA over the rectangle, divided by pi."""
+    a, b, c = (np.asarray(v, np.float64) for v in (a, b, c))
+    s = (np.arange(n) + 0.5) / n
+    q = a + (b - a) * s[:, None, None] + (c - a) * s[None, :, None]
+    area = np.linalg.norm(np.cross(b - a, c - a))
+    nq = np.cross(b - a, c - a) / area
+    d = q - np.asarray(point, np.float64)
+    r2 = np.sum(d * d, axis=-1)
+    d /= np.sqrt(r2)[..., None]
+    if np.mean(d @ nq) > 0:
+        nq = -nq                       # face the point
+    cos_p = np.clip(d @ np.asarray(normal, np.float64), 0.0, None)
+    cos_q = np.clip(-(d @ nq), 0.0, None)
+    return float(np.sum(cos_p * cos_q / r2) * area / (n * n) / np.pi)
+
+
+def corridor(cam, far_color, near_color=0.1, split=-7.0, end=-14.0):
+    """Camera looking down a closed corridor x in [-1.5, 1.5], y in [-1, 1.5], back wall at z = end.
+    Surfaces nearer than z = split are near_color, the rest (and the back wall) far_color."""
+    big = 50.0
+    planes = []
+    for color, (z0, z1) in ((near_color, (split, big)), (far_color, (end - 1.0, split))):
+        rgb = (color,) * 3
+        planes += [
+            Plane((0, -1, 0), (0, 1, 0), rgb, bounds=((-big, big), (-big, big), (z0, z1))),
+            Plane((0, 1.5, 0), (0, -1, 0), rgb, bounds=((-big, big), (-big, big), (z0, z1))),
+            Plane((-1.5, 0, 0), (1, 0, 0), rgb, bounds=((-big, big), (-big, big), (z0, z1))),
+            Plane((1.5, 0, 0), (-1, 0, 0), rgb, bounds=((-big, big), (-big, big), (z0, z1))),
+        ]
+    planes.append(Plane((0, 0, end), (0, 0, 1), (far_color,) * 3))
+    return render(cam, planes)
+
+
+def test_walls_near_the_camera_see_the_far_end_of_the_room(gpu):
+    # Gate 2 on a real GPU: walls and floor close to the camera came out nearly black. Each interval's
+    # length was converted to world units at the probe's own depth, so a probe 2 m from the camera
+    # could only see 2 m. Here the far half of a corridor is lit and the near half is dark: the near
+    # left wall must still get the far half's light, as much as a direct integration says.
+    cam = Camera(width=96, height=72)
+    split, end, lit = -5.0, -14.0, 0.6
+    base = run_cascades(gpu, cam, corridor(cam, far_color=0.1, split=split, end=end), spacing=8, count=2)
+    g = corridor(cam, far_color=lit, split=split, end=end)
+    irr = run_cascades(gpu, cam, g, spacing=8, count=2)
+    pos = cam.ray_dirs() * g["linear_z"][..., None]
+    left = (g["normal"][..., 0] > 0.9) & (g["linear_z"] > 0)
+    near = left & (pos[..., 2] < -2.2) & (pos[..., 2] > -3.5) & (pos[..., 1] > -0.5) & (pos[..., 1] < 1.0)
+    assert near.sum() > 30, near.sum()
+    gained = float((irr[near, :3] - base[near, :3]).mean())
+
+    # Expected: (lit - 0.1) times what the far floor, ceiling, right wall and back wall send to the
+    # near wall's centre (the left wall's own far part is coplanar and sends nothing).
+    p, n = (-1.5, 0.25, -2.85), (1.0, 0.0, 0.0)
+    rects = [
+        ((-1.5, -1, split), (1.5, -1, split), (-1.5, -1, end)),     # floor
+        ((-1.5, 1.5, split), (1.5, 1.5, split), (-1.5, 1.5, end)),  # ceiling
+        ((1.5, -1, split), (1.5, 1.5, split), (1.5, -1, end)),      # right wall
+        ((-1.5, -1, end), (1.5, -1, end), (-1.5, 1.5, end)),        # back wall
+    ]
+    expected = (lit - 0.1) * sum(rect_irradiance(p, n, *r) for r in rects)
+    assert expected > 0.02, expected
+    assert 0.7 * expected < gained < 1.3 * expected, (gained, expected)
 
 
 def test_black_scene_has_no_gi(gpu):

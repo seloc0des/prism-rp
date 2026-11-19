@@ -117,7 +117,7 @@ private:
         int32_t block = kBaseBlock;
         float probe_spacing_px = 8.0f;
         float interval_start_px = 0.0f;
-        float interval_length_px = 8.0f;
+        float interval_length_px = 8.0f;   // <= 0: on to the edge of the screen (top level)
         int32_t steps = 8;
         float thickness = 0.1f;
         uint32_t frame_index = 0;

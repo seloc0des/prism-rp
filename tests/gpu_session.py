@@ -56,6 +56,31 @@ class StageFailed(Exception):
     pass
 
 
+def project_venv_python(repo: Path = REPO) -> Path | None:
+    """The repository's .venv interpreter, when it exists and this process isn't already in a virtual env."""
+    if sys.prefix != sys.base_prefix:
+        return None
+    bindir = repo / ".venv" / ("Scripts" if sys.platform == "win32" else "bin")
+    python = bindir / ("python.exe" if sys.platform == "win32" else "python")
+    return python if python.exists() else None
+
+
+def use_project_venv() -> None:
+    """Re-runs this script under the repository's .venv when the shell hasn't activated it: the checks'
+    packages (SCons, OpenEXR, FLIP) are installed there, and without them every stage is skipped."""
+    python = project_venv_python()
+    if python is None:
+        return
+    bindir = python.parent
+    print(f"Using {bindir.parent} (it isn't activated in this shell)", flush=True)
+    env = dict(os.environ, VIRTUAL_ENV=str(bindir.parent), PATH=str(bindir) + os.pathsep + os.environ.get("PATH", ""))
+    env.pop("PYTHONHOME", None)
+    cmd = [str(python), str(Path(__file__).resolve()), *sys.argv[1:]]
+    if sys.platform == "win32":
+        sys.exit(subprocess.call(cmd, env=env))
+    os.execve(str(python), cmd, env)
+
+
 class Session:
     def __init__(self, out_dir: Path):
         self.out_dir = out_dir
@@ -451,6 +476,7 @@ def stage_package(session: Session, stamp: str) -> tuple[str, str, Path]:
 # --------------------------------------------------------------------------- main
 
 def main() -> int:
+    use_project_venv()
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--tier", choices=["tier1", "tier2", "tier3"], default=None,
                    help="Hardware tier of this GPU (default tier2; tier1 with --software).")

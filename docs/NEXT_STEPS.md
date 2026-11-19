@@ -148,6 +148,23 @@ score and well below the reference's noise ceiling).
 **Next for Lumina, in order:** settle within 6 frames (react to lighting changes instead of averaging over many
 frames); no dark band where screen-space rays leave the screen; much weaker colour bleeding next to bright,
 saturated lights; no bright blobs from individual probes. CI's Gate 2 and settling numbers measure each step.
+
+**Third GPU session (Tier 2, after #8–#10, 512 samples):** every stage ran. Gate 1 5/5, no validation errors
+caused by Prism RP, Lumina settles after 1 frame (5% at 6 frames). The release exports load and run Prism RP on
+Linux and, through Wine, on Windows (Chronos 0.15 ms, Lumina 0.6–0.7 ms at 1280x720).
+
+| Scene | Lumina, fitted (centre) | SDFGI, fitted (centre) | Lumina's mean vs the reference |
+| :--- | :--- | :--- | :--- |
+| Cornell box | 15.2 dB (13.3) | 17.3 dB (15.6) | 0.50x |
+| Sponza | 21.8 dB (23.4) | 30.1 dB (28.8), 2.8x too bright before the fit | 0.38x |
+
+Lumina was too dark, not misplaced: 87% (Cornell) and 96% (Sponza) of its squared error is where it is darker than
+the reference, mostly on walls and floor near the camera. Each interval's length in screen pixels was turned into a
+world length at the probe's own depth, so a probe could see about as far as it was from the camera (four levels,
+8 px spacing, 1080p): the near floor and the walls beside the camera never reached the lit far side of the room.
+Intervals are now measured in pixels along the ray's projection on screen, and the top level runs on until the
+ray leaves the screen. A lavapipe test (a corridor whose far half is lit) gets 1.07x the analytically integrated
+light on the near wall, against 0.007x before.
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.

@@ -99,3 +99,15 @@ def test_gate2_skips_blender_too_old_for_the_reference_script(tmp_path):
     fake.write_text("#!/bin/sh\necho 'Blender 4.5.3 LTS'\n", encoding="utf-8")
     assert gs.blender_version(str(fake)) == (4, 5)
     assert gs.blender_version(str(tmp_path / "missing")) is None
+
+
+def test_project_venv_is_used_when_not_activated(tmp_path, monkeypatch):
+    python = tmp_path / ".venv" / ("Scripts" if sys.platform == "win32" else "bin") / ("python.exe" if sys.platform == "win32" else "python")
+    monkeypatch.setattr(gs.sys, "prefix", "/usr")
+    monkeypatch.setattr(gs.sys, "base_prefix", "/usr")
+    assert gs.project_venv_python(tmp_path) is None          # no .venv: run as is
+    python.parent.mkdir(parents=True)
+    python.write_text("")
+    assert gs.project_venv_python(tmp_path) == python
+    monkeypatch.setattr(gs.sys, "prefix", str(tmp_path / ".venv"))
+    assert gs.project_venv_python(tmp_path) is None          # already inside a virtual env

@@ -7,6 +7,13 @@
 // Radiance cascade trace: one texel = one (probe, direction) pair of a single cascade level.
 // Writes the radiance found inside this level's interval (rgb) and its transmittance (a):
 // a = 0 when the interval hit geometry, 1 when it was clear (or left the screen).
+//
+// Intervals are measured in screen pixels along the ray's projection: level i covers
+// [interval_start_px, interval_start_px + interval_length_px) of it, and the top level
+// (interval_length_px <= 0) runs on until the ray leaves the screen. Steps are spaced evenly on screen and
+// placed on the ray with perspective-correct interpolation. (Converting the pixel lengths to world
+// units at the probe's own depth gave each probe a reach of about its own distance from the camera,
+// so walls and floor near the camera never saw the far side of the room.)
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -20,8 +27,8 @@ layout(push_constant, std430) uniform PushConstants {
     ivec2 probe_count;
     int block;                 // directions per probe = block * block
     float probe_spacing_px;
-    float interval_start_px;   // screen-space length at the probe's depth
-    float interval_length_px;
+    float interval_start_px;   // pixels along the ray's projection on screen
+    float interval_length_px;  // <= 0: on to the edge of the screen (top level)
     int steps;
     float thickness;           // occluder thickness, as a fraction of the ray's view depth
     uint frame_index;
@@ -52,62 +59,116 @@ void main() {
     vec3 normal = lumina_decode_normal(texelFetch(u_normal_roughness_tex, center_px, 0));
     float view_depth = -origin.z;
     origin += normal * (pc.normal_bias * view_depth);
+    float origin_depth = -origin.z;
 
     vec3 dir = lumina_block_direction(dir_texel, pc.block);
 
-    // World length of one screen pixel at this depth, so intervals stay a fixed screen size.
-    float world_per_px = 2.0 * view_depth / (abs(pc.proj.y) * res_f.y);
-    float t0 = pc.interval_start_px * world_per_px;
-    float t1 = (pc.interval_start_px + pc.interval_length_px) * world_per_px;
+    // The ray's far end: far enough to leave the view, kept in front of the near plane.
+    float near_z = pc.depth_params.x / (1.0 + pc.depth_params.y);
+    float far_z = pc.depth_params.x / max(pc.depth_params.y, 1e-6);
+    float t_end = far_z;
+    if (dir.z > 1e-6) {
+        t_end = min(t_end, (origin_depth - 1.01 * near_z) / dir.z);
+    }
+    if (t_end <= 0.0) {
+        imageStore(u_cascade_out, texel, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+    vec3 ray_end = origin + dir * t_end;
+
+    // Screen-space segment (pixels) with 1/w for perspective-correct positions along it.
+    vec2 s0 = lumina_project_to_uv(origin, pc.proj) * res_f;
+    vec2 s1 = lumina_project_to_uv(ray_end, pc.proj) * res_f;
+    float k0 = 1.0 / origin_depth;
+    float k1 = 1.0 / -ray_end.z;
+    vec2 delta = s1 - s0;
+    float screen_len = length(delta);
+    if (screen_len < 0.5) {
+        // Pointing straight along the view: the depth buffer has nothing more to say about it.
+        imageStore(u_cascade_out, texel, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    // Where the segment leaves the screen.
+    float u_exit = 1.0;
+    for (int axis = 0; axis < 2; ++axis) {
+        if (delta[axis] > 1e-6) {
+            u_exit = min(u_exit, (res_f[axis] - s0[axis]) / delta[axis]);
+        } else if (delta[axis] < -1e-6) {
+            u_exit = min(u_exit, -s0[axis] / delta[axis]);
+        }
+    }
+    float u0 = pc.interval_start_px / screen_len;
+    float u1 = pc.interval_length_px > 0.0 ? (pc.interval_start_px + pc.interval_length_px) / screen_len : 1.0;
+    u1 = min(u1, u_exit);
+    if (u0 >= u1) {
+        imageStore(u_cascade_out, texel, vec4(0.0, 0.0, 0.0, 1.0));   // left the screen before this interval
+        return;
+    }
 
     // Per-texel jitter along the ray; SVGF integrates it over frames.
     float jitter = prism_interleaved_gradient_noise(vec2(texel), pc.frame_index);
 
     // A hit needs the ray to cross from in front of the depth buffer to behind it between two steps.
     // A ray that is already behind a surface when it reaches it on screen passed behind that object;
-    // counting it as a hit (it lies within the thickness) gave it the lit front face's colour.
-    // Levels above 0 start their interval away from the probe, where the ray may already be behind a
-    // surface; any crossing before that point is the previous level's hit, so start from the real state.
+    // counting it as a hit gave it the lit front face's colour. Levels above 0 start their interval
+    // away from the probe, where the ray may already be behind a surface; any crossing before that
+    // point is the previous level's hit, so start from the real state.
     bool was_in_front = true;
-    vec3 p_start = origin + dir * t0;
-    if (p_start.z < -1e-3) {
-        vec2 start_uv = lumina_project_to_uv(p_start, pc.proj);
-        if (all(greaterThanEqual(start_uv, vec2(0.0))) && all(lessThanEqual(start_uv, vec2(1.0)))) {
-            float start_depth = textureLod(u_depth_tex, start_uv, 0.0).r;
-            if (!lumina_is_sky(start_depth)) {
-                was_in_front = -p_start.z <= prism_linearize_depth(start_depth, pc.depth_params);
-            }
+    {
+        float k = mix(k0, k1, u0);
+        vec3 p_start = mix(origin * k0, ray_end * k1, u0) / k;
+        vec2 start_uv = mix(s0, s1, u0) / res_f;
+        float start_depth = textureLod(u_depth_tex, start_uv, 0.0).r;
+        if (!lumina_is_sky(start_depth)) {
+            was_in_front = -p_start.z <= prism_linearize_depth(start_depth, pc.depth_params);
         }
     }
+    float u_prev = u0;
     for (int i = 0; i < pc.steps; ++i) {
-        float t = mix(t0, t1, (float(i) + jitter) / float(pc.steps));
-        vec3 p = origin + dir * t;
-        if (p.z >= -1e-3) {
-            break;  // went behind the camera: treat as clear
-        }
-        vec2 sample_uv = lumina_project_to_uv(p, pc.proj);
-        if (any(lessThan(sample_uv, vec2(0.0))) || any(greaterThan(sample_uv, vec2(1.0)))) {
-            break;  // left the screen: no information, treat as clear
-        }
+        float u = mix(u0, u1, (float(i) + jitter) / float(pc.steps));
+        float ray_z = 1.0 / mix(k0, k1, u);
+        vec2 sample_uv = mix(s0, s1, u) / res_f;
         float scene_depth = textureLod(u_depth_tex, sample_uv, 0.0).r;
         if (lumina_is_sky(scene_depth)) {
             was_in_front = true;
+            u_prev = u;
             continue;
         }
         float scene_z = prism_linearize_depth(scene_depth, pc.depth_params);
-        float ray_z = -p.z;
         bool behind = ray_z > scene_z;
-        if (behind && was_in_front && (ray_z - scene_z) < pc.thickness * ray_z) {
-            // The depth buffer only holds front faces. A ray meeting a surface that faces away from it
-            // has reached that object's back, which the colour buffer doesn't show: it is blocked, and
-            // the lit front face's colour must not leak through (bright, saturated smears behind
-            // objects next to coloured lights).
-            vec3 hit_normal = lumina_decode_normal(textureLod(u_normal_roughness_tex, sample_uv, 0.0));
-            vec3 radiance = dot(hit_normal, dir) < 0.0 ? max(textureLod(u_radiance_tex, sample_uv, 0.0).rgb, vec3(0.0)) : vec3(0.0);
-            imageStore(u_cascade_out, texel, vec4(radiance, 0.0));
-            return;
+        if (behind && was_in_front) {
+            // Crossed between u_prev and u: bisect to the crossing, then judge the thickness there.
+            // A long step past a wall otherwise lands far behind it and the hit is lost.
+            float lo = u_prev;
+            float hi = u;
+            for (int b = 0; b < 5; ++b) {
+                float mid = 0.5 * (lo + hi);
+                float mid_depth = textureLod(u_depth_tex, mix(s0, s1, mid) / res_f, 0.0).r;
+                bool mid_behind = !lumina_is_sky(mid_depth) &&
+                    1.0 / mix(k0, k1, mid) > prism_linearize_depth(mid_depth, pc.depth_params);
+                if (mid_behind) {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            vec2 hit_uv = mix(s0, s1, hi) / res_f;
+            float hit_ray_z = 1.0 / mix(k0, k1, hi);
+            float hit_scene_z = prism_linearize_depth(textureLod(u_depth_tex, hit_uv, 0.0).r, pc.depth_params);
+            if ((hit_ray_z - hit_scene_z) < pc.thickness * hit_ray_z) {
+                // The depth buffer only holds front faces. A ray meeting a surface that faces away from
+                // it has reached that object's back, which the colour buffer doesn't show: it is
+                // blocked, and the lit front face's colour must not leak through (bright, saturated
+                // smears behind objects next to coloured lights).
+                vec3 hit_normal = lumina_decode_normal(textureLod(u_normal_roughness_tex, hit_uv, 0.0));
+                vec3 radiance = dot(hit_normal, dir) < 0.0 ? max(textureLod(u_radiance_tex, hit_uv, 0.0).rgb, vec3(0.0)) : vec3(0.0);
+                imageStore(u_cascade_out, texel, vec4(radiance, 0.0));
+                return;
+            }
         }
         was_in_front = !behind;
+        u_prev = u;
     }
 
     imageStore(u_cascade_out, texel, vec4(0.0, 0.0, 0.0, 1.0));
