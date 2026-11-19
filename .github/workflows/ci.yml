@@ -73,10 +73,11 @@ jobs:
     name: Python unit tests (harness, push-constant layouts, GDScript API names)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository with submodules
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Fetch the submodules this job builds against
+        run: git submodule update --init --depth 1 thirdparty/godot-cpp thirdparty/meshoptimizer   # godot-cpp: the GDScript API-name test reads its API dump
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -156,10 +157,11 @@ jobs:
           # macOS dropped for now (not a target; the CMake/SCons scripts still support it).
 
     steps:
-      - name: Checkout repository with submodules
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Fetch the submodules this job builds against
+        run: git submodule update --init --depth 1 thirdparty/godot-cpp thirdparty/meshoptimizer
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -324,10 +326,11 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository with submodules
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Fetch the submodules this job builds against
+        run: git submodule update --init --depth 1 thirdparty/godot-cpp thirdparty/meshoptimizer
 
       - name: Download Linux release GDExtension binary
         uses: actions/download-artifact@v4
