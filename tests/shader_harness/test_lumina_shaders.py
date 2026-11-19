@@ -75,6 +75,26 @@ def test_integrate_uniform_radiance_returns_it(gpu):
     np.testing.assert_allclose(out[8:24, 8:24, :3].mean(axis=(0, 1)), L, rtol=0.01)
 
 
+def test_integrate_clamps_a_single_hot_direction(gpu):
+    # One direction of every probe lands on a tiny, very bright spot (the hotspot a light makes on a
+    # nearby wall); the rest see dim surroundings. Unclamped, that one sample lights the whole probe and
+    # leaves probe-sized blobs (found in the Cornell box). A broad bright area, seen by many directions,
+    # must still come through: see the uniform test above.
+    cam = Camera(width=32, height=32)
+    g = render(cam, [Plane((0, 0, -5), (0, 0, 1), (0, 0, 0))])
+    lv = cascade_layout(cam, 8, 1)[0]
+    block = lv["block"]
+    c0 = np.zeros((lv["size"][1], lv["size"][0], 4)); c0[..., :3] = 0.1
+    c0[block // 2::block, block // 2::block, :3] = 200.0      # one direction near the normal, per probe
+    out = gpu.run(
+        {"c0": Img("rgba16f", data=c0), "depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"]),
+         "irr": Img("rgba16f", 32, 32)},
+        [Dispatch("lumina/lumina_rc_integrate.comp.glsl",
+                  {0: ("c0", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("normal", "sampled_nearest"), 3: ("irr", "storage")},
+                  pc.integrate(32, 32, lv["probes"], lv["block"], 8.0, cam.depth_params), groups_for(32, 32))], ["irr"])["irr"]
+    assert out[8:24, 8:24, 0].mean() < 0.4, out[8:24, 8:24, 0].mean()   # unclamped: about 20
+
+
 def test_merge_combines_interval_transmittance_and_parent(gpu):
     probes, parent_probes = (4, 4), (2, 2)
     block, parent_block = 4, 8
