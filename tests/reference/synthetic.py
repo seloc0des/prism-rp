@@ -10,7 +10,7 @@ def _quad(name, corners, color, emission=(0, 0, 0)):
     pos = [c for p in corners for c in p]
     return {"name": name, "positions": pos, "normals": [], "uvs": [], "indices": [0, 1, 2, 0, 2, 3],
             "material": {"albedo": [*color, 1.0], "roughness": 1.0, "metallic": 0.0, "emission": list(emission),
-                         "albedo_texture": None, "transparency": "opaque", "alpha_scissor": 0.5, "unshaded": False}}
+                         "emission_energy": 1.0, "albedo_texture": None, "transparency": "opaque", "alpha_scissor": 0.5, "unshaded": False}}
 
 
 def cornell(red=(0.7, 0.05, 0.05)):
@@ -29,11 +29,11 @@ def cornell(red=(0.7, 0.05, 0.05)):
         _quad("right", [(s, 0, -s), (s, 3, -s), (s, 3, s), (s, 0, s)], white),
     ]
     return {
-        "version": 1,
+        "version": 2,
         "resolution": [96, 72],
         "camera": {"basis_columns": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], "origin": [0, 1.5, 4.2],
                    "fov_deg": 50.0, "keep_aspect": "height", "near": 0.05, "far": 100.0},
-        "environment": {"background": [0, 0, 0], "ambient": [0, 0, 0]},
+        "environment": {"background": [0, 0, 0], "ambient": [0, 0, 0], "ambient_energy": 0.0},
         "meshes": meshes,
         "lights": [{"type": "omni", "position": [0, 2.6, 0], "color": [1, 1, 1], "energy": 3.0, "range": 8.0,
                     "attenuation": 1.0, "shadow": True}],

@@ -5,8 +5,10 @@ extends RefCounted
 ## (tests/reference/cycles_reference.py). Exporting the real triangles means Blender rebuilds
 ## exactly what Godot drew, with no second copy of the scene definitions to keep in sync.
 ## Not exported: particles and volumetric fog (scene 05 isn't part of Gate 2).
+## Colours are written as authored, sRGB-encoded; Godot decodes them to linear before lighting, and
+## so does tests/reference/godot_to_blender.py. Energies stay separate so the decode comes first.
 
-const FORMAT_VERSION := 1
+const FORMAT_VERSION := 2
 
 static func export_scene(root: Node, camera: Camera3D, environment: Environment, out_dir: String, resolution: Vector2i) -> Error:
 	DirAccess.make_dir_recursive_absolute(out_dir)
@@ -99,7 +101,7 @@ static func _surface(name: String, mesh: Mesh, surface: int, xf: Transform3D, ma
 static func _material(mat: Material, textures: Dictionary, out_dir: String) -> Dictionary:
 	var m := {
 		"albedo": [1.0, 1.0, 1.0, 1.0], "roughness": 1.0, "metallic": 0.0, "emission": [0.0, 0.0, 0.0],
-		"albedo_texture": null, "transparency": "opaque", "alpha_scissor": 0.5, "unshaded": false,
+		"emission_energy": 0.0, "albedo_texture": null, "transparency": "opaque", "alpha_scissor": 0.5, "unshaded": false,
 	}
 	if not (mat is BaseMaterial3D):
 		return m
@@ -109,8 +111,8 @@ static func _material(mat: Material, textures: Dictionary, out_dir: String) -> D
 	m["metallic"] = bm.metallic
 	m["unshaded"] = bm.shading_mode == BaseMaterial3D.SHADING_MODE_UNSHADED
 	if bm.emission_enabled:
-		var e := bm.emission * bm.emission_energy_multiplier
-		m["emission"] = [e.r, e.g, e.b]
+		m["emission"] = _color(bm.emission)
+		m["emission_energy"] = bm.emission_energy_multiplier
 	match bm.transparency:
 		BaseMaterial3D.TRANSPARENCY_ALPHA:
 			m["transparency"] = "alpha"
@@ -139,11 +141,13 @@ static func _camera(camera: Camera3D) -> Dictionary:
 
 static func _environment(env: Environment) -> Dictionary:
 	if env == null:
-		return {"background": [0.0, 0.0, 0.0], "ambient": [0.0, 0.0, 0.0]}
-	var amb := env.ambient_light_color * env.ambient_light_energy
+		return {"background": [0.0, 0.0, 0.0], "ambient": [0.0, 0.0, 0.0], "ambient_energy": 0.0}
+	var ambient_from_color := env.ambient_light_source == Environment.AMBIENT_SOURCE_COLOR
 	return {
-		"background": _color(env.background_color),
-		"ambient": [amb.r, amb.g, amb.b] if env.ambient_light_source == Environment.AMBIENT_SOURCE_COLOR else [0.0, 0.0, 0.0],
+		# Godot scales the background colour by its energy before decoding it; the ambient colour after.
+		"background": _color(env.background_color * env.background_energy_multiplier),
+		"ambient": _color(env.ambient_light_color) if ambient_from_color else [0.0, 0.0, 0.0],
+		"ambient_energy": env.ambient_light_energy if ambient_from_color else 0.0,
 	}
 
 static func _v3(v: Vector3) -> Array:
