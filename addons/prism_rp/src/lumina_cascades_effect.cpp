@@ -192,7 +192,7 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
         _ensure_render_resources();
         pipeline_dirty = false;
     }
-    if (!trace_pipeline.is_valid() || !merge_pipeline.is_valid() || !integrate_pipeline.is_valid() ||
+    if (!trace_pipeline.is_valid() || !downsample_pipeline.is_valid() || !merge_pipeline.is_valid() || !integrate_pipeline.is_valid() ||
         !temporal_pipeline.is_valid() || !atrous_pipeline.is_valid() || !composite_pipeline.is_valid()) {
         return;
     }
@@ -241,15 +241,36 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
         };
         const float depth_params[2] = { static_cast<float>(proj.columns[3].z), static_cast<float>(proj.columns[2].z) };
 
-        // 1. Trace every level.
+        // 0. Prefiltered radiance for the coarse levels (see lumina_radiance_downsample.comp.glsl).
+        if (cascade_count > 1) {
+            ScopedPassTimer timer("lumina_radiance_downsample", godot::Color(0.35f, 0.60f, 0.95f, 1.0f));
+            for (int32_t level = 0; level + 1 < cascade_count; ++level) {
+                const godot::RID src = level == 0 ? color_tex : vt.radiance_pyramid[static_cast<size_t>(level - 1)];
+                const godot::Vector2i ds = vt.radiance_pyramid_size[static_cast<size_t>(level)];
+                godot::TypedArray<godot::RDUniform> u;
+                u.push_back(make_sampler_texture_uniform(0, linear_sampler, src));
+                u.push_back(make_image_uniform(1, vt.radiance_pyramid[static_cast<size_t>(level)]));
+                const godot::RID uset = godot::UniformSetCacheRD::get_cache(downsample_shader, 0, u);
+                if (!uset.is_valid()) {
+                    continue;
+                }
+                DownsamplePushConstants dpc;
+                dpc.dst_width = ds.x;
+                dpc.dst_height = ds.y;
+                dispatch_compute(rd, downsample_pipeline, uset, make_push_constant_bytes(dpc), groups_for(ds.x), groups_for(ds.y));
+            }
+        }
+
+        // 1. Trace every level: level 0 against the colour buffer, level i against pyramid level i - 1.
         {
             ScopedPassTimer timer("lumina_rc_trace", godot::Color(0.30f, 0.65f, 1.00f, 1.0f));
             for (int32_t level = 0; level < cascade_count; ++level) {
                 const CascadeLevel &cl = vt.cascades[static_cast<size_t>(level)];
+                const godot::RID radiance = level == 0 ? color_tex : vt.radiance_pyramid[static_cast<size_t>(level - 1)];
                 godot::TypedArray<godot::RDUniform> u;
                 u.push_back(make_sampler_texture_uniform(0, nearest_sampler, depth_tex));
                 u.push_back(make_sampler_texture_uniform(1, nearest_sampler, normal_tex));
-                u.push_back(make_sampler_texture_uniform(2, linear_sampler, color_tex));
+                u.push_back(make_sampler_texture_uniform(2, linear_sampler, radiance));
                 u.push_back(make_image_uniform(3, cl.texture));
                 const godot::RID uset = godot::UniformSetCacheRD::get_cache(trace_shader, 0, u);
                 if (!uset.is_valid()) {
@@ -501,6 +522,7 @@ bool LuminaCascadesCompositorEffect::_ensure_render_resources() {
     };
     const bool ok =
         build("lumina_rc_trace.comp.glsl", "lumina_rc_trace", trace_shader, trace_pipeline) &&
+        build("lumina_radiance_downsample.comp.glsl", "lumina_radiance_downsample", downsample_shader, downsample_pipeline) &&
         build("lumina_rc_merge.comp.glsl", "lumina_rc_merge", merge_shader, merge_pipeline) &&
         build("lumina_rc_integrate.comp.glsl", "lumina_rc_integrate", integrate_shader, integrate_pipeline) &&
         build("lumina_svgf_temporal.comp.glsl", "lumina_svgf_temporal", temporal_shader, temporal_pipeline) &&
@@ -520,6 +542,7 @@ void LuminaCascadesCompositorEffect::_release_render_resources() {
         return;
     }
     rd_utils::free_compute_stage(rd, trace_pipeline, trace_shader);
+    rd_utils::free_compute_stage(rd, downsample_pipeline, downsample_shader);
     rd_utils::free_compute_stage(rd, merge_pipeline, merge_shader);
     rd_utils::free_compute_stage(rd, integrate_pipeline, integrate_shader);
     rd_utils::free_compute_stage(rd, temporal_pipeline, temporal_shader);
@@ -557,6 +580,14 @@ bool LuminaCascadesCompositorEffect::_ensure_view_targets(const godot::Vector2i 
                 static_cast<uint32_t>(cl.probe_count.x * cl.block), static_cast<uint32_t>(cl.probe_count.y * cl.block),
                 RD::DATA_FORMAT_R16G16B16A16_SFLOAT, rw);
             ok = ok && cl.texture.is_valid();
+        }
+        for (int32_t level = 0; level + 1 < cascade_count; ++level) {
+            const int32_t div = 2 << level;
+            const godot::Vector2i ps((p_size.x + div - 1) / div, (p_size.y + div - 1) / div);
+            vt.radiance_pyramid_size[static_cast<size_t>(level)] = ps;
+            vt.radiance_pyramid[static_cast<size_t>(level)] = rd_utils::create_2d_texture(rd,
+                static_cast<uint32_t>(ps.x), static_cast<uint32_t>(ps.y), RD::DATA_FORMAT_R16G16B16A16_SFLOAT, rw);
+            ok = ok && vt.radiance_pyramid[static_cast<size_t>(level)].is_valid();
         }
         vt.irradiance_raw = rd_utils::create_2d_texture(rd, w, h, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, rw);
         ok = ok && vt.irradiance_raw.is_valid();
@@ -616,6 +647,9 @@ void LuminaCascadesCompositorEffect::_release_view_targets() {
     for (PerViewTargets &vt : view_targets) {
         for (CascadeLevel &cl : vt.cascades) {
             rd_utils::free_rid(rd, cl.texture);
+        }
+        for (godot::RID &level : vt.radiance_pyramid) {
+            rd_utils::free_rid(rd, level);
         }
         rd_utils::free_rid(rd, vt.irradiance_raw);
         for (size_t i = 0; i < 2; ++i) {

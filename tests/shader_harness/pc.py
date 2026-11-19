@@ -50,6 +50,10 @@ def trace(w, h, probes, block, spacing, start, length, steps, thickness, frame, 
                 thickness, frame, normal_bias, *proj, *depth_params, 0.0, 0.0)
 
 
+def downsample(dst_w, dst_h):
+    return pack("iiii", dst_w, dst_h, 0, 0)
+
+
 def merge(probes, parent_probes, block, parent_block, spacing, parent_spacing, resolution, depth_params):
     return pack("iiiiiiffii2f", *probes, *parent_probes, block, parent_block, spacing, parent_spacing, *resolution, *depth_params)
 

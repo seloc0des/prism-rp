@@ -29,6 +29,7 @@ SHADER_TO_STRUCT = {
     "chronos_fft_bloom_inv_horizontal": (CHRONOS_H, "FFTInvHorizPushConstants"),
     "chronos_aces2_odt": (CHRONOS_H, "CompositePushConstants"),
     "lumina_rc_trace": (LUMINA_H, "TracePushConstants"),
+    "lumina_radiance_downsample": (LUMINA_H, "DownsamplePushConstants"),
     "lumina_rc_merge": (LUMINA_H, "MergePushConstants"),
     "lumina_rc_integrate": (LUMINA_H, "IntegratePushConstants"),
     "lumina_svgf_temporal": (LUMINA_H, "TemporalPushConstants"),
