@@ -33,10 +33,11 @@ jobs:
           - { os: windows-latest, platform: windows, arch: arm64, target: template_release }
 
     steps:
-      - name: Checkout repository with submodules
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Fetch the submodules this job builds against
+        run: git submodule update --init --depth 1 thirdparty/godot-cpp thirdparty/meshoptimizer
 
       - name: Set up Python
         uses: actions/setup-python@v5

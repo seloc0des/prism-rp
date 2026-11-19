@@ -1,0 +1,92 @@
+name: Custom Godot engine
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "engine/**"
+      - "addons/prism_rp/shaders/**"
+      - ".github/workflows/engine.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  patch-check:
+    name: Engine patches apply
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Apply the patch set to the pinned Godot
+        run: python3 engine/apply_patches.py
+
+  linux-editor:
+    name: Linux editor
+    needs: patch-check
+    runs-on: ubuntu-24.04
+    env:
+      # Keeps the SCons cache well under the repository's 10 GB cache budget; Godot prunes to this on exit.
+      CACHE_LIMIT_GIB: "3"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Godot's Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config \
+            libx11-dev libxcursor-dev libxinerama-dev libxi-dev libxrandr-dev libxrender-dev \
+            libgl1-mesa-dev libglu1-mesa-dev libasound2-dev libpulse-dev libudev-dev \
+            libwayland-dev libxkbcommon-dev libdecor-0-dev libdbus-1-dev libfontconfig-dev libspeechd-dev
+          python3 -m venv .venv
+          .venv/bin/pip install scons
+
+      - name: Read the pinned Godot commit
+        id: pin
+        run: echo "godot=$(git rev-parse HEAD:engine/godot)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the SCons cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: scons-${{ runner.os }}-editor-${{ steps.pin.outputs.godot }}-${{ hashFiles('engine/patches/**', 'engine/modules/**') }}
+          restore-keys: |
+            scons-${{ runner.os }}-editor-${{ steps.pin.outputs.godot }}-
+            scons-${{ runner.os }}-editor-
+
+      - name: Build the editor
+        run: python3 engine/build.py platform=linuxbsd target=editor cache_path="${{ runner.temp }}/scons-cache" cache_limit="$CACHE_LIMIT_GIB"
+
+      - name: Check the version and the module log line
+        run: |
+          set -euo pipefail
+          EDITOR=engine/godot/bin/godot.linuxbsd.editor.x86_64
+          "$EDITOR" --headless --version | tee version.txt
+          grep -q "prism" version.txt
+          "$EDITOR" --headless --quit | tee run.txt
+          grep -qF "[Prism RP] engine module loaded" run.txt
+
+      # Only main writes the cache, so pull requests cannot fill the 10 GB budget with per-commit entries.
+      - name: Save the SCons cache
+        if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: scons-${{ runner.os }}-editor-${{ steps.pin.outputs.godot }}-${{ hashFiles('engine/patches/**', 'engine/modules/**') }}
+
+      - name: Upload the editor binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: prism-godot-linux-editor
+          path: engine/godot/bin/godot.linuxbsd.editor.x86_64
+          if-no-files-found: error
+          retention-days: 7
