@@ -140,6 +140,29 @@ def build_mesh(spec, scene_dir, index):
     bpy.context.scene.collection.objects.link(obj)
 
 
+def godot_omni_falloff(data, light_range, attenuation):
+    """Turn a point light's inverse-square falloff into Godot's: scale its emission by
+    max(1 - (d / range)^4, 0)^2 * d^(2 - attenuation), d being the distance to the lit point."""
+    data.use_nodes = True
+    nodes, links = data.node_tree.nodes, data.node_tree.links
+    emission = next(n for n in nodes if n.type == "EMISSION")
+
+    def op(operation, a, b):
+        node = nodes.new("ShaderNodeMath")
+        node.operation = operation
+        for socket, value in zip(node.inputs, (a, b)):
+            if isinstance(value, float):
+                socket.default_value = value
+            else:
+                links.new(value, socket)
+        return node.outputs[0]
+
+    d = nodes.new("ShaderNodeLightPath").outputs["Ray Length"]
+    fade = op("SUBTRACT", 1.0, op("POWER", op("DIVIDE", d, float(light_range)), 4.0))
+    window = op("POWER", op("MAXIMUM", fade, 0.0), 2.0)
+    links.new(op("MULTIPLY", window, op("POWER", d, 2.0 - attenuation)), emission.inputs["Strength"])
+
+
 def build_lights(lights):
     for i, l in enumerate(lights):
         if l["type"] == "omni":
@@ -148,6 +171,7 @@ def build_lights(lights):
             data.shadow_soft_size = 0.0
             data.color = g2b.linear(l["color"])
             data.use_shadow = l["shadow"]
+            godot_omni_falloff(data, l["range"], l["attenuation"])
             obj = bpy.data.objects.new(data.name, data)
             obj.location = g2b.vec(l["position"])
         elif l["type"] == "directional":

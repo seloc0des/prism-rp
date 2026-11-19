@@ -1,5 +1,6 @@
 """Runs the real Cycles pipeline on a synthetic Cornell box (skipped without Blender)."""
 
+import math
 import shutil
 import subprocess
 import sys
@@ -53,3 +54,29 @@ def test_authored_colours_render_decoded_like_godot(tmp_path):
     h, w = img.shape[:2]
     assert img[: h // 4].mean() == pytest.approx(0.214, abs=0.005)                          # background
     assert img[h - 3:, int(w * 0.4): int(w * 0.6)].mean() == pytest.approx(0.214, abs=0.03)  # floor, lit by the ambient
+
+
+@pytest.mark.skipif(shutil.which("blender") is None, reason="Blender not installed")
+def test_sun_lights_a_facing_white_surface_like_godot(tmp_path):
+    # Godot 4.7.2 shows 1.0 on a white floor facing a sun of energy 1 (non-physical light units).
+    sun = {"type": "directional", "direction": [0, -1, 0], "color": [1, 1, 1], "energy": 1.0, "shadow": False}
+    out = tmp_path / "ref"
+    render(synthetic.write(tmp_path / "scene.json", synthetic.floor_under_light(sun)), out, 16)
+    assert exr.load_rgb(str(out) + "_direct.exr").mean() == pytest.approx(1.0, abs=0.01)
+
+
+@pytest.mark.skipif(shutil.which("blender") is None, reason="Blender not installed")
+def test_omni_light_falls_off_like_godot(tmp_path):
+    # Godot shows energy * max(1 - (d / range)^4, 0)^2 * d^-attenuation * N.L; its 4.7.2 render of this
+    # setup matches that within 0.1%. Inverse-square falloff would be 30% off at d = 1.45 m.
+    omni = {"type": "omni", "position": [0, 1, 0], "color": [1, 1, 1], "energy": 1.0, "range": 3.0,
+            "attenuation": 1.0, "shadow": False}
+    out = tmp_path / "ref"
+    render(synthetic.write(tmp_path / "scene.json", synthetic.floor_under_light(omni)), out, 16)
+    img = exr.load_rgb(str(out) + "_direct.exr").mean(axis=-1)
+    h, w = img.shape
+    metres_per_px = 2.0 * math.tan(math.radians(37.5)) / (h / 2)
+    for px in (0, 8, 16, 24, 31):
+        d = math.hypot(1.0, (px + 0.5) * metres_per_px)        # the light is 1 m above the floor
+        godot = max(1.0 - (d / 3.0) ** 4, 0.0) ** 2 * d ** -1.0 * (1.0 / d)
+        assert img[h // 2 - 1: h // 2 + 1, w // 2 + px].mean() == pytest.approx(godot, rel=0.03), f"{px} px from centre"

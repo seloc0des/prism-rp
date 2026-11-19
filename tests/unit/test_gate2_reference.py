@@ -50,7 +50,7 @@ def test_uv_flips_v():
 
 def test_light_unit_conversions():
     assert g2b.omni_power_watts(1.0) == pytest.approx(4 * math.pi ** 2)
-    assert g2b.sun_strength(2.5) == 2.5
+    assert g2b.sun_strength(2.5) == pytest.approx(2.5 * math.pi)   # Godot scales directional energy by pi
 
 
 def test_authored_colours_are_decoded_from_srgb_like_godot():
