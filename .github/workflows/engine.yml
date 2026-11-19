@@ -90,3 +90,102 @@ jobs:
           path: engine/godot/bin/godot.linuxbsd.editor.x86_64
           if-no-files-found: error
           retention-days: 7
+
+  templates:
+    name: ${{ matrix.name }} template
+    needs: patch-check
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-release
+            scons: platform=linuxbsd target=template_release
+            binary: godot.linuxbsd.template_release.x86_64
+            file_pattern: 'ELF 64-bit LSB.*x86-64'
+            cache_limit_gib: "1"
+          - name: linux-debug
+            scons: platform=linuxbsd target=template_debug
+            binary: godot.linuxbsd.template_debug.x86_64
+            file_pattern: 'ELF 64-bit LSB.*x86-64'
+            cache_limit_gib: "1"
+          - name: windows-release
+            scons: platform=windows use_mingw=yes d3d12=no target=template_release
+            binary: godot.windows.template_release.x86_64.exe
+            file_pattern: 'PE32\+ executable.*x86-64'
+            cache_limit_gib: "1"
+          - name: windows-debug
+            scons: platform=windows use_mingw=yes d3d12=no target=template_debug
+            binary: godot.windows.template_debug.x86_64.exe
+            file_pattern: 'PE32\+ executable.*x86-64'
+            cache_limit_gib: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install the Linux build dependencies
+        if: startsWith(matrix.name, 'linux')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config \
+            libx11-dev libxcursor-dev libxinerama-dev libxi-dev libxrandr-dev libxrender-dev \
+            libgl1-mesa-dev libglu1-mesa-dev libasound2-dev libpulse-dev libudev-dev \
+            libwayland-dev libxkbcommon-dev libdecor-0-dev libdbus-1-dev libfontconfig-dev libspeechd-dev
+
+      - name: Install MinGW-w64
+        if: startsWith(matrix.name, 'windows')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++-mingw-w64-x86-64-posix
+          # Godot calls the unsuffixed names, and Ubuntu defaults them to the win32 thread model.
+          sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+          sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+
+      - name: Install SCons
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install scons
+
+      - name: Read the pinned Godot commit
+        id: pin
+        run: echo "godot=$(git rev-parse HEAD:engine/godot)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the SCons cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: scons-${{ runner.os }}-${{ matrix.name }}-${{ steps.pin.outputs.godot }}-${{ hashFiles('engine/patches/**', 'engine/modules/**') }}
+          restore-keys: |
+            scons-${{ runner.os }}-${{ matrix.name }}-${{ steps.pin.outputs.godot }}-
+            scons-${{ runner.os }}-${{ matrix.name }}-
+
+      - name: Build the template
+        run: python3 engine/build.py ${{ matrix.scons }} cache_path="${{ runner.temp }}/scons-cache" cache_limit="${{ matrix.cache_limit_gib }}"
+
+      - name: Check the binary
+        run: |
+          set -euo pipefail
+          BIN=engine/godot/bin/${{ matrix.binary }}
+          file "$BIN" | tee file.txt
+          grep -qE '${{ matrix.file_pattern }}' file.txt
+          if [[ "${{ matrix.name }}" == linux-* ]]; then
+            "$BIN" --headless --version | tee version.txt
+            grep -q prism version.txt
+          fi
+
+      # Only main writes the cache, so pull requests cannot fill the 10 GB budget with per-commit entries.
+      - name: Save the SCons cache
+        if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: scons-${{ runner.os }}-${{ matrix.name }}-${{ steps.pin.outputs.godot }}-${{ hashFiles('engine/patches/**', 'engine/modules/**') }}
+
+      - name: Upload the template
+        uses: actions/upload-artifact@v4
+        with:
+          name: prism-godot-${{ matrix.name }}
+          path: engine/godot/bin/${{ matrix.binary }}
+          if-no-files-found: error
+          retention-days: 7
