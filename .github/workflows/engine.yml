@@ -7,6 +7,7 @@ on:
     paths:
       - "engine/**"
       - "addons/prism_rp/shaders/**"
+      - "tests/run_vulkan_qa.sh"
       - ".github/workflows/engine.yml"
   workflow_dispatch:
 
@@ -189,3 +190,73 @@ jobs:
           path: engine/godot/bin/${{ matrix.binary }}
           if-no-files-found: error
           retention-days: 7
+
+  vulkan-qa:
+    name: Vulkan QA on the custom editor (lavapipe)
+    needs: linux-editor
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch the submodules the GDExtension builds against
+        run: git submodule update --init --depth 1 thirdparty/godot-cpp thirdparty/meshoptimizer
+
+      - name: Download the custom editor
+        uses: actions/download-artifact@v4
+        with:
+          name: prism-godot-linux-editor
+          path: custom-editor
+
+      - name: Install Mesa Lavapipe, Khronos Validation Layers, Xvfb and SCons
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-validationlayers vulkan-tools xvfb build-essential python3-venv
+          python3 -m venv .venv
+          .venv/bin/pip install scons
+          chmod +x custom-editor/godot.linuxbsd.editor.x86_64
+
+      - name: Resolve godot-cpp submodule commit
+        id: godot_cpp
+        run: echo "sha=$(git rev-parse HEAD:thirdparty/godot-cpp)" >> "$GITHUB_OUTPUT"
+
+      # Same key as the GDExtension build in ci.yml, so the two workflows share one godot-cpp cache.
+      - name: Cache godot-cpp build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            thirdparty/godot-cpp/bin
+            thirdparty/godot-cpp/gen
+          key: godot-cpp-linux-x86_64-template_debug-${{ steps.godot_cpp.outputs.sha }}
+
+      - name: Build the GDExtension
+        run: .venv/bin/scons platform=linux arch=x86_64 target=template_debug -j4
+
+      - name: Link addon into QA project and import it
+        run: |
+          mkdir -p project/addons
+          rm -rf project/addons/prism_rp
+          ln -s "$(pwd)/addons/prism_rp" "$(pwd)/project/addons/prism_rp"
+          # The import pass writes .godot/extension_list.cfg; without it the GDExtension is never loaded.
+          custom-editor/godot.linuxbsd.editor.x86_64 --headless --path project --import 2>&1 | tee godot_import.log
+          test -f project/.godot/extension_list.cfg
+
+      - name: Locate the lavapipe ICD and check Vulkan works under Xvfb
+        run: |
+          ICD="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)"
+          test -n "$ICD"
+          echo "VK_DRIVER_FILES=$ICD" >> "$GITHUB_ENV"
+          VK_DRIVER_FILES="$ICD" xvfb-run -a vulkaninfo --summary
+
+      - name: Boot every benchmark scene on Vulkan with validation layers
+        run: tests/run_vulkan_qa.sh ./custom-editor/godot.linuxbsd.editor.x86_64
+
+      - name: Check the engine module loaded
+        run: grep -qF "[Prism RP] engine module loaded" godot_vulkan_qa.log
+
+      - name: Upload Vulkan QA log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: custom-godot-vulkan-qa-log
+          path: godot_*.log
