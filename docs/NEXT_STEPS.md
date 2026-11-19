@@ -230,16 +230,33 @@ SDFGI makes the slats 85 times too bright. What Lumina misses on the slats is a 
 no specular term for metals. That needs each metal's real colour, which stock Godot doesn't give a compositor effect
 (`needs_separate_specular` does give it the metallic value), so it belongs with the custom build's real albedo.
 
-**Still not matched: light units.** In Sponza, Godot's direct sunlight is about twice the reference's while its lamps
-match, and Godot's lamps fade with their own curve (`omni_attenuation` 1.0–1.2 and a range window) where Blender's fade
-with the inverse square. The brightness fit removes one overall factor, not a mismatch between the sun and the lamps,
-so Sponza's numbers still carry some of it, and so does Lumina's 2.36x.
+**The reference's lights didn't match Godot's either (fixed in #14).** A white floor under one light, rendered by both
+Godot 4.7.2 and the reference, showed two differences. Godot multiplies a directional light's energy by pi and divides
+its Lambert term by pi, so a sun of energy 1 shows 1.0 on a white surface facing it; the reference's sun showed 1/pi.
+And Godot's lamps fade as `max(1 - (d / range)^4, 0)^2 * d^-attenuation`, where Blender's fade with the inverse square: with
+Godot's default attenuation of 1 and a long range, a surface 2 m from a lamp gets twice the inverse square's light. The reference's sun is now pi times stronger, and each lamp scales its
+emission by the distance to the lit point so it fades exactly as Godot's does (within 0.1% from 1.0 to 1.8 m). Two
+reference tests hold both to Godot's numbers. The brightness fit couldn't have hidden this: it removes one overall
+factor, and Sponza's sun was off against its lamps.
+
+Gate 2 against the reference with both fixes (same build, Tier 2, 512 samples):
+
+| Scene | Lumina, fitted (centre) | SDFGI, fitted (centre) | Lumina's mean vs the reference | Best possible |
+| :--- | :--- | :--- | :--- | :--- |
+| Cornell box | 21.5 dB (19.5) | 18.9 dB (17.5) | 0.97x | 35.5 dB |
+| Sponza | 22.7 dB (22.9) | 24.4 dB (23.9), 2.3x too bright before the fit | 0.81x | 33.8 dB |
+
+Sponza scores lower for both than in the table above because the reference now carries the full sunlight, so it is
+about three times brighter and every error weighs more against PSNR's fixed peak. What matters is the comparison:
+Lumina's light level is now right in both scenes (the fit scales it by 0.89 and 1.03), and SDFGI is 1.6 dB ahead in
+Sponza. Three quarters of Lumina's Sponza error is where it is too dark: the undersides of the upper galleries, the near
+left wall and the pillar along the right edge of the frame. It is too bright on the far wall, and 30% of the error is
+colour (the smears on the columns).
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
 3. Next, in order:
-   - the reference's lights matched to Godot's: single-light scenes rendered by both pin down the sun's factor, and
-     Cycles models Godot's lamp falloff, so Sponza's Gate 2 numbers measure GI and nothing else;
+   - Sponza's remaining gap to SDFGI: the too-dark gallery undersides and screen edges, and the too-bright far wall;
    - the colour tint next to bright, saturated surfaces (Sponza's columns) and the Cornell box's probe blobs, and
      whether the integrate pass's firefly clamp (8x the mean of the other directions) throws away real light when
      the rest of the hemisphere is dark;

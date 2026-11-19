@@ -40,6 +40,20 @@ def cornell(red=(0.7, 0.05, 0.05)):
     }
 
 
+def floor_under_light(light, resolution=(64, 48)):
+    """A white floor seen straight down from 2 m (fov 75) and lit by one light: checks light units."""
+    s = 20.0
+    return {
+        "version": 2,
+        "resolution": list(resolution),
+        "camera": {"basis_columns": [[1, 0, 0], [0, 0, -1], [0, 1, 0]], "origin": [0, 2, 0],
+                   "fov_deg": 75.0, "keep_aspect": "height", "near": 0.05, "far": 100.0},
+        "environment": {"background": [0, 0, 0], "ambient": [0, 0, 0], "ambient_energy": 0.0},
+        "meshes": [_quad("floor", [(-s, 0, -s), (s, 0, -s), (s, 0, s), (-s, 0, s)], (1.0, 1.0, 1.0))],
+        "lights": [light],
+    }
+
+
 def write(path: Path, scene=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(scene or cornell()))

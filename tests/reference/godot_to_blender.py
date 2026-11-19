@@ -5,11 +5,13 @@ right-handed, cameras also look down local -Z with +Y up. Mapping world vectors 
 (x, y, z) -> (x, -z, y) preserves handedness, and because both cameras use the same local axes,
 converting each basis column the same way gives the Blender camera matrix directly.
 
-Light units are approximate, which is why Gate 2 also reports a scale-fitted PSNR:
-  - Godot omni (non-physical units): irradiance at distance d ~ energy / d^2 (ignoring Godot's
-    range window and attenuation curve). Blender point light of power P gives P / (4 pi^2 d^2).
-    So P = 4 pi^2 * energy.
-  - Godot directional energy is irradiance; Blender sun strength is irradiance (W/m^2): equal.
+Light units (Godot's non-physical units), checked against Godot 4.7.2 renders of a white floor:
+  - Directional: Godot multiplies the energy by pi and its Lambert term divides by pi, so a white
+    surface facing a sun of energy E shows E. A Blender sun of strength S shows S / pi: S = pi * E.
+  - Omni: a white surface at distance d facing the light shows
+    energy * max(1 - (d / range)^4, 0)^2 * d^-attenuation (Godot's get_omni_attenuation). A Blender
+    point light of power P shows P / (4 pi^2 d^2), so P = 4 pi^2 * energy gives the inverse square,
+    and cycles_reference.py scales each light's emission by the window and d^(2 - attenuation).
   - Emission: both are radiance (color * strength), equal.
 
 Colours: Godot treats authored colours (albedo, emission, lights, ambient, background) as
@@ -70,7 +72,7 @@ def omni_power_watts(energy):
 
 
 def sun_strength(energy):
-    return energy
+    return math.pi * energy
 
 
 def look_rotation_matrix(direction):
