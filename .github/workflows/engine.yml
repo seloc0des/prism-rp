@@ -285,3 +285,34 @@ jobs:
 
       - name: Run the test
         run: tests/engine/run_indirect_count.sh ./custom-editor/godot.linuxbsd.editor.x86_64
+
+  mesh-shader:
+    name: Mesh and task shader test (lavapipe)
+    needs: linux-editor
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download the custom editor
+        uses: actions/download-artifact@v4
+        with:
+          name: prism-godot-linux-editor
+          path: custom-editor
+
+      - name: Install Mesa Lavapipe, Khronos Validation Layers, Xvfb and vulkaninfo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-validationlayers vulkan-tools xvfb
+          chmod +x custom-editor/godot.linuxbsd.editor.x86_64
+          echo "VK_DRIVER_FILES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)" >> "$GITHUB_ENV"
+
+      # Lavapipe gained VK_EXT_mesh_shader in Mesa 25.1; fail with a clear reason on an older runner image.
+      - name: Check that this lavapipe has mesh shaders
+        run: |
+          apt-cache policy mesa-vulkan-drivers | head -n 3
+          vulkaninfo --summary | grep -E "driverInfo|apiVersion"
+          vulkaninfo | grep -q VK_EXT_mesh_shader || { echo "::error::This Mesa's lavapipe has no VK_EXT_mesh_shader."; exit 1; }
+
+      - name: Run the test
+        run: tests/engine/run_mesh_shader.sh ./custom-editor/godot.linuxbsd.editor.x86_64

@@ -1,0 +1,848 @@
+diff --git a/doc/classes/RenderingDevice.xml b/doc/classes/RenderingDevice.xml
+index 345c47a..31d495f 100644
+--- a/doc/classes/RenderingDevice.xml
++++ b/doc/classes/RenderingDevice.xml
+@@ -406,6 +406,17 @@
+ 				[b]Note:[/b] Requires [constant SUPPORTS_DRAW_INDIRECT_COUNT]. Fails with an error otherwise.
+ 			</description>
+ 		</method>
++		<method name="draw_list_draw_mesh_tasks">
++			<return type="void" />
++			<param index="0" name="draw_list" type="int" />
++			<param index="1" name="x_count" type="int" />
++			<param index="2" name="y_count" type="int" />
++			<param index="3" name="z_count" type="int" />
++			<description>
++				Launches [param x_count] x [param y_count] x [param z_count] workgroups of the bound pipeline's task shader, or of its mesh shader if it has no task shader. The pipeline must have been created from a shader with a mesh stage and no vertex stage, using no vertex format. Ordinary draw calls fail on such a pipeline. In debug builds the counts are checked against the [constant LIMIT_MAX_TASK_WORKGROUP_COUNT_X] and [constant LIMIT_MAX_MESH_WORKGROUP_COUNT_X] family of limits.
++				[b]Note:[/b] Requires [constant SUPPORTS_MESH_SHADER]. Mesh shader pipelines cannot be used with multiview framebuffers.
++			</description>
++		</method>
+ 		<method name="draw_list_enable_scissor">
+ 			<return type="void" />
+ 			<param index="0" name="draw_list" type="int" />
+@@ -2789,7 +2800,13 @@
+ 		<constant name="SHADER_STAGE_INTERSECTION" value="9" enum="ShaderStage">
+ 			Intersection shader stage. The intersection shader for triangles is built-in. This can be used to compute ray intersections with primitives that are not triangles.
+ 		</constant>
+-		<constant name="SHADER_STAGE_MAX" value="10" enum="ShaderStage">
++		<constant name="SHADER_STAGE_TASK" value="10" enum="ShaderStage">
++			Task shader stage. Optional first stage of a mesh shader pipeline, it decides how many mesh shader workgroups to launch. Requires [constant SUPPORTS_TASK_SHADER].
++		</constant>
++		<constant name="SHADER_STAGE_MESH" value="11" enum="ShaderStage">
++			Mesh shader stage. Replaces the vertex shader and generates primitives directly. Requires [constant SUPPORTS_MESH_SHADER].
++		</constant>
++		<constant name="SHADER_STAGE_MAX" value="12" enum="ShaderStage">
+ 			Represents the size of the [enum ShaderStage] enum.
+ 		</constant>
+ 		<constant name="SHADER_STAGE_VERTEX_BIT" value="1" enum="ShaderStage">
+@@ -2822,6 +2839,12 @@
+ 		<constant name="SHADER_STAGE_INTERSECTION_BIT" value="512" enum="ShaderStage">
+ 			Intersection shader stage bit (see also [constant SHADER_STAGE_INTERSECTION]).
+ 		</constant>
++		<constant name="SHADER_STAGE_TASK_BIT" value="1024" enum="ShaderStage">
++			Task shader stage bit (see also [constant SHADER_STAGE_TASK]).
++		</constant>
++		<constant name="SHADER_STAGE_MESH_BIT" value="2048" enum="ShaderStage">
++			Mesh shader stage bit (see also [constant SHADER_STAGE_MESH]).
++		</constant>
+ 		<constant name="SHADER_LANGUAGE_GLSL" value="0" enum="ShaderLanguage">
+ 			Khronos' GLSL shading language (used natively by OpenGL and Vulkan). This is the language used for core Godot shaders.
+ 		</constant>
+@@ -2867,6 +2890,16 @@
+ 
+ 			[b]Note:[/b] This is currently only supported when using Vulkan.
+ 		</constant>
++		<constant name="SUPPORTS_MESH_SHADER" value="15" enum="Features">
++			Support for mesh shaders ([constant SHADER_STAGE_MESH]) and [method draw_list_draw_mesh_tasks].
++
++			[b]Note:[/b] This is currently only supported when using Vulkan.
++		</constant>
++		<constant name="SUPPORTS_TASK_SHADER" value="16" enum="Features">
++			Support for task shaders ([constant SHADER_STAGE_TASK]). Implies [constant SUPPORTS_MESH_SHADER].
++
++			[b]Note:[/b] This is currently only supported when using Vulkan.
++		</constant>
+ 		<constant name="LIMIT_MAX_BOUND_UNIFORM_SETS" value="0" enum="Limit">
+ 			Maximum number of uniform sets that can be bound at a given time.
+ 		</constant>
+@@ -2986,6 +3019,30 @@
+ 			Returns the largest value for [member ProjectSettings.rendering/scaling_3d/scale] when using the MetalFX temporal upscaler.
+ 			[b]Note:[/b] The returned value is multiplied by a factor of [code]1000000[/code] to preserve 6 digits of precision. It must be divided by [code]1000000.0[/code] to convert the value to a floating point number.
+ 		</constant>
++		<constant name="LIMIT_MAX_TASK_WORKGROUP_COUNT_X" value="49" enum="Limit">
++			Maximum number of task shader workgroups a single [method draw_list_draw_mesh_tasks] call can launch along the X axis. Returns [code]0[/code] when the device does not support task shaders.
++		</constant>
++		<constant name="LIMIT_MAX_TASK_WORKGROUP_COUNT_Y" value="50" enum="Limit">
++			Maximum number of task shader workgroups a single [method draw_list_draw_mesh_tasks] call can launch along the Y axis. Returns [code]0[/code] when the device does not support task shaders.
++		</constant>
++		<constant name="LIMIT_MAX_TASK_WORKGROUP_COUNT_Z" value="51" enum="Limit">
++			Maximum number of task shader workgroups a single [method draw_list_draw_mesh_tasks] call can launch along the Z axis. Returns [code]0[/code] when the device does not support task shaders.
++		</constant>
++		<constant name="LIMIT_MAX_TASK_WORKGROUP_COUNT_TOTAL" value="52" enum="Limit">
++			Maximum number of task shader workgroups a single [method draw_list_draw_mesh_tasks] call can launch in total, across all three axes. Returns [code]0[/code] when the device does not support task shaders.
++		</constant>
++		<constant name="LIMIT_MAX_MESH_WORKGROUP_COUNT_X" value="53" enum="Limit">
++			Maximum number of mesh shader workgroups a single [method draw_list_draw_mesh_tasks] call can launch along the X axis. Returns [code]0[/code] when the device does not support mesh shaders.
++		</constant>
++		<constant name="LIMIT_MAX_MESH_WORKGROUP_COUNT_Y" value="54" enum="Limit">
++			Maximum number of mesh shader workgroups a single [method draw_list_draw_mesh_tasks] call can launch along the Y axis. Returns [code]0[/code] when the device does not support mesh shaders.
++		</constant>
++		<constant name="LIMIT_MAX_MESH_WORKGROUP_COUNT_Z" value="55" enum="Limit">
++			Maximum number of mesh shader workgroups a single [method draw_list_draw_mesh_tasks] call can launch along the Z axis. Returns [code]0[/code] when the device does not support mesh shaders.
++		</constant>
++		<constant name="LIMIT_MAX_MESH_WORKGROUP_COUNT_TOTAL" value="56" enum="Limit">
++			Maximum number of mesh shader workgroups a single [method draw_list_draw_mesh_tasks] call can launch in total, across all three axes. Returns [code]0[/code] when the device does not support mesh shaders.
++		</constant>
+ 		<constant name="MEMORY_TEXTURES" value="0" enum="MemoryType">
+ 			Memory taken by textures.
+ 		</constant>
+diff --git a/drivers/vulkan/rendering_device_driver_vulkan.cpp b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+index b696466..07ef00c 100644
+--- a/drivers/vulkan/rendering_device_driver_vulkan.cpp
++++ b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+@@ -415,6 +415,12 @@ uint32_t RenderingDeviceDriverVulkan::SubgroupCapabilities::supported_stages_fla
+ 	if (supported_stages & VK_SHADER_STAGE_COMPUTE_BIT) {
+ 		flags += SHADER_STAGE_COMPUTE_BIT;
+ 	}
++	if (supported_stages & VK_SHADER_STAGE_TASK_BIT_EXT) {
++		flags += SHADER_STAGE_TASK_BIT;
++	}
++	if (supported_stages & VK_SHADER_STAGE_MESH_BIT_EXT) {
++		flags += SHADER_STAGE_MESH_BIT;
++	}
+ 	if (supported_stages & VK_SHADER_STAGE_RAYGEN_BIT_KHR) {
+ 		flags += SHADER_STAGE_RAYGEN_BIT;
+ 	}
+@@ -587,6 +593,7 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
+ 	_register_requested_device_extension(VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME, false);
+ 	_register_requested_device_extension(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, false);
+ 	_register_requested_device_extension(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME, false);
++	_register_requested_device_extension(VK_EXT_MESH_SHADER_EXTENSION_NAME, false);
+ 
+ 	// We don't actually use this extension, but some runtime components on some platforms
+ 	// can and will fill the validation layers with useless info otherwise if not enabled.
+@@ -891,6 +898,7 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
+ 	// Extensions whose entry points are only used through core Vulkan 1.2.
+ 	if (physical_device_properties.apiVersion < VK_API_VERSION_1_2) {
+ 		enabled_device_extension_names.erase(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
++		enabled_device_extension_names.erase(VK_EXT_MESH_SHADER_EXTENSION_NAME); // Needs SPIR-V 1.4.
+ 	}
+ 
+ 	bool use_fdm_offsets = false;
+@@ -922,6 +930,7 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
+ 		VkPhysicalDeviceRayTracingPipelineFeaturesKHR raytracing_pipeline_features = {};
+ 		VkPhysicalDeviceSynchronization2FeaturesKHR sync_2_features = {};
+ 		VkPhysicalDeviceRayTracingValidationFeaturesNV raytracing_validation_features = {};
++		VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader_features = {};
+ 
+ 		const bool use_1_2_features = physical_device_properties.apiVersion >= VK_API_VERSION_1_2;
+ 		if (use_1_2_features) {
+@@ -1012,6 +1021,12 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
+ 			next_features = &sync_2_features;
+ 		}
+ 
++		if (enabled_device_extension_names.has(VK_EXT_MESH_SHADER_EXTENSION_NAME)) {
++			mesh_shader_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
++			mesh_shader_features.pNext = next_features;
++			next_features = &mesh_shader_features;
++		}
++
+ 		VkPhysicalDeviceFeatures2 device_features_2 = {};
+ 		device_features_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+ 		device_features_2.pNext = next_features;
+@@ -1049,6 +1064,10 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
+ 		// Enabling the extension is what lets the core 1.2 vkCmdDrawIndirectCount entry points be used.
+ 		draw_indirect_count_support = use_1_2_features && enabled_device_extension_names.has(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
+ 
++		// A task shader only makes sense with a mesh shader.
++		mesh_shader_support = use_1_2_features && enabled_device_extension_names.has(VK_EXT_MESH_SHADER_EXTENSION_NAME) && mesh_shader_features.meshShader;
++		task_shader_support = mesh_shader_support && mesh_shader_features.taskShader;
++
+ 		if (enabled_device_extension_names.has(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME)) {
+ 			fsr_capabilities.pipeline_supported = fsr_features.pipelineFragmentShadingRate;
+ 			fsr_capabilities.primitive_supported = fsr_features.primitiveFragmentShadingRate;
+@@ -1167,9 +1186,16 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
+ 			next_properties = &raytracing_properties;
+ 		}
+ 
++		if (mesh_shader_support) {
++			mesh_shader_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT;
++			mesh_shader_properties.pNext = next_properties;
++			next_properties = &mesh_shader_properties;
++		}
++
+ 		physical_device_properties_2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+ 		physical_device_properties_2.pNext = next_properties;
+ 		functions.GetPhysicalDeviceProperties2(physical_device, &physical_device_properties_2);
++		mesh_shader_properties.pNext = nullptr;
+ 
+ 		subgroup_capabilities.size = subgroup_properties.subgroupSize;
+ 		subgroup_capabilities.min_size = subgroup_properties.subgroupSize;
+@@ -1406,6 +1432,15 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
+ 		create_info_next = &pipeline_cache_control_features;
+ 	}
+ 
++	VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader_features = {};
++	if (mesh_shader_support) {
++		mesh_shader_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
++		mesh_shader_features.pNext = create_info_next;
++		mesh_shader_features.meshShader = VK_TRUE;
++		mesh_shader_features.taskShader = task_shader_support;
++		create_info_next = &mesh_shader_features;
++	}
++
+ 	VkPhysicalDeviceFaultFeaturesEXT device_fault_features = {};
+ 	if (device_fault_support) {
+ 		device_fault_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT;
+@@ -1554,6 +1589,10 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
+ 			device_functions.GetRayTracingShaderGroupHandlesKHR = PFN_vkGetRayTracingShaderGroupHandlesKHR(functions.GetDeviceProcAddr(vk_device, "vkGetRayTracingShaderGroupHandlesKHR"));
+ 			device_functions.CmdTraceRaysKHR = PFN_vkCmdTraceRaysKHR(functions.GetDeviceProcAddr(vk_device, "vkCmdTraceRaysKHR"));
+ 		}
++
++		if (mesh_shader_support) {
++			device_functions.CmdDrawMeshTasksEXT = PFN_vkCmdDrawMeshTasksEXT(functions.GetDeviceProcAddr(vk_device, "vkCmdDrawMeshTasksEXT"));
++		}
+ 	}
+ 
+ 	return OK;
+@@ -2877,6 +2916,8 @@ static_assert(ENUM_MEMBERS_EQUAL(RDD::PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELI
+ static_assert(ENUM_MEMBERS_EQUAL(RDD::PIPELINE_STAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR));
+ static_assert(ENUM_MEMBERS_EQUAL(RDD::PIPELINE_STAGE_FRAGMENT_DENSITY_PROCESS_BIT, VK_PIPELINE_STAGE_FRAGMENT_DENSITY_PROCESS_BIT_EXT));
+ static_assert(ENUM_MEMBERS_EQUAL(RDD::PIPELINE_STAGE_RAY_TRACING_SHADER_BIT, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR));
++static_assert(ENUM_MEMBERS_EQUAL(RDD::PIPELINE_STAGE_TASK_SHADER_BIT, VK_PIPELINE_STAGE_TASK_SHADER_BIT_EXT));
++static_assert(ENUM_MEMBERS_EQUAL(RDD::PIPELINE_STAGE_MESH_SHADER_BIT, VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT));
+ static_assert(ENUM_MEMBERS_EQUAL(RDD::PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR));
+ 
+ // RDD::BarrierAccessBits == VkAccessFlagBits.
+@@ -4243,6 +4284,8 @@ static VkShaderStageFlagBits RD_STAGE_TO_VK_SHADER_STAGE_BITS[RDD::SHADER_STAGE_
+ 	VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+ 	VK_SHADER_STAGE_MISS_BIT_KHR,
+ 	VK_SHADER_STAGE_INTERSECTION_BIT_KHR,
++	VK_SHADER_STAGE_TASK_BIT_EXT,
++	VK_SHADER_STAGE_MESH_BIT_EXT,
+ };
+ 
+ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Ref<RenderingShaderContainer> &p_shader_container, const Vector<ImmutableSampler> &p_immutable_samplers) {
+@@ -5775,6 +5818,11 @@ void RenderingDeviceDriverVulkan::command_render_draw_indirect_count(CommandBuff
+ 	vkCmdDrawIndirectCount(command_buffer->vk_command_buffer, indirect_buf_info->vk_buffer, p_offset, count_buf_info->vk_buffer, p_count_buffer_offset, p_max_draw_count, p_stride);
+ }
+ 
++void RenderingDeviceDriverVulkan::command_render_draw_mesh_tasks(CommandBufferID p_cmd_buffer, uint32_t p_x_count, uint32_t p_y_count, uint32_t p_z_count) {
++	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
++	device_functions.CmdDrawMeshTasksEXT(command_buffer->vk_command_buffer, p_x_count, p_y_count, p_z_count);
++}
++
+ void RenderingDeviceDriverVulkan::command_render_bind_vertex_buffers(CommandBufferID p_cmd_buffer, uint32_t p_binding_count, const BufferID *p_buffers, const uint64_t *p_offsets, uint64_t p_dynamic_offsets) {
+ 	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
+ 	VkBuffer *vk_buffers = ALLOCA_ARRAY(VkBuffer, p_binding_count);
+@@ -6216,11 +6264,17 @@ RDD::PipelineID RenderingDeviceDriverVulkan::render_pipeline_create(
+ 		}
+ 	}
+ 
++	bool uses_mesh_shader = false;
++	for (const VkPipelineShaderStageCreateInfo &stage_create_info : shader_info->vk_stages_create_info) {
++		uses_mesh_shader = uses_mesh_shader || (stage_create_info.stage == VK_SHADER_STAGE_MESH_BIT_EXT);
++	}
++
+ 	const RenderPassInfo *render_pass = (const RenderPassInfo *)(p_render_pass.id);
+ 	pipeline_create_info.pStages = vk_pipeline_stages;
+-	pipeline_create_info.pVertexInputState = vertex_input_state_create_info;
+-	pipeline_create_info.pInputAssemblyState = &input_assembly_create_info;
+-	pipeline_create_info.pTessellationState = &tessellation_create_info;
++	// A mesh pipeline must leave out the fixed-function vertex input, input assembly and tessellation state.
++	pipeline_create_info.pVertexInputState = uses_mesh_shader ? nullptr : vertex_input_state_create_info;
++	pipeline_create_info.pInputAssemblyState = uses_mesh_shader ? nullptr : &input_assembly_create_info;
++	pipeline_create_info.pTessellationState = uses_mesh_shader ? nullptr : &tessellation_create_info;
+ 	pipeline_create_info.pViewportState = &viewport_state_create_info;
+ 	pipeline_create_info.pRasterizationState = &rasterization_state_create_info;
+ 	pipeline_create_info.pMultisampleState = &multisample_state_create_info;
+@@ -7365,6 +7419,22 @@ uint64_t RenderingDeviceDriverVulkan::limit_get(Limit p_limit) {
+ 			// The Vulkan spec states that built in varyings like gl_FragCoord should count against this, but in
+ 			// practice, that doesn't seem to be the case. The validation layers don't even complain.
+ 			return MIN(limits.maxVertexOutputComponents / 4, limits.maxFragmentInputComponents / 4);
++		case LIMIT_MAX_TASK_WORKGROUP_COUNT_X:
++			return task_shader_support ? mesh_shader_properties.maxTaskWorkGroupCount[0] : 0;
++		case LIMIT_MAX_TASK_WORKGROUP_COUNT_Y:
++			return task_shader_support ? mesh_shader_properties.maxTaskWorkGroupCount[1] : 0;
++		case LIMIT_MAX_TASK_WORKGROUP_COUNT_Z:
++			return task_shader_support ? mesh_shader_properties.maxTaskWorkGroupCount[2] : 0;
++		case LIMIT_MAX_TASK_WORKGROUP_COUNT_TOTAL:
++			return task_shader_support ? mesh_shader_properties.maxTaskWorkGroupTotalCount : 0;
++		case LIMIT_MAX_MESH_WORKGROUP_COUNT_X:
++			return mesh_shader_support ? mesh_shader_properties.maxMeshWorkGroupCount[0] : 0;
++		case LIMIT_MAX_MESH_WORKGROUP_COUNT_Y:
++			return mesh_shader_support ? mesh_shader_properties.maxMeshWorkGroupCount[1] : 0;
++		case LIMIT_MAX_MESH_WORKGROUP_COUNT_Z:
++			return mesh_shader_support ? mesh_shader_properties.maxMeshWorkGroupCount[2] : 0;
++		case LIMIT_MAX_MESH_WORKGROUP_COUNT_TOTAL:
++			return mesh_shader_support ? mesh_shader_properties.maxMeshWorkGroupTotalCount : 0;
+ 		default: {
+ #ifdef DEV_ENABLED
+ 			WARN_PRINT("Returning maximum value for unknown limit " + itos(p_limit) + ".");
+@@ -7420,6 +7490,10 @@ bool RenderingDeviceDriverVulkan::has_feature(Features p_feature) {
+ 			return acceleration_structure_capabilities.acceleration_structure_support && raytracing_capabilities.raytracing_pipeline_support;
+ 		case SUPPORTS_DRAW_INDIRECT_COUNT:
+ 			return draw_indirect_count_support;
++		case SUPPORTS_MESH_SHADER:
++			return mesh_shader_support;
++		case SUPPORTS_TASK_SHADER:
++			return task_shader_support;
+ 		case SUPPORTS_HDR_OUTPUT:
+ #if defined(WINDOWS_ENABLED)
+ 			// When using a Vulkan swapchain on Windows, some configurations
+diff --git a/drivers/vulkan/rendering_device_driver_vulkan.h b/drivers/vulkan/rendering_device_driver_vulkan.h
+index 9e31531..c8f3ce5 100644
+--- a/drivers/vulkan/rendering_device_driver_vulkan.h
++++ b/drivers/vulkan/rendering_device_driver_vulkan.h
+@@ -135,6 +135,9 @@ class RenderingDeviceDriverVulkan : public RenderingDeviceDriver {
+ 		PFN_vkCreateRayTracingPipelinesKHR CreateRaytracingPipelinesKHR = nullptr;
+ 		PFN_vkGetRayTracingShaderGroupHandlesKHR GetRayTracingShaderGroupHandlesKHR = nullptr;
+ 		PFN_vkCmdTraceRaysKHR CmdTraceRaysKHR = nullptr;
++
++		// Mesh shader extension.
++		PFN_vkCmdDrawMeshTasksEXT CmdDrawMeshTasksEXT = nullptr;
+ 	};
+ 	// Debug marker extensions.
+ 	VkDebugReportObjectTypeEXT _convert_to_debug_report_objectType(VkObjectType p_object_type);
+@@ -161,6 +164,9 @@ class RenderingDeviceDriverVulkan : public RenderingDeviceDriver {
+ 	RenderingShaderContainerFormatVulkan shader_container_format;
+ 	bool buffer_device_address_support = false;
+ 	bool draw_indirect_count_support = false;
++	bool mesh_shader_support = false;
++	bool task_shader_support = false;
++	VkPhysicalDeviceMeshShaderPropertiesEXT mesh_shader_properties = {};
+ 	bool vulkan_memory_model_support = false;
+ 	bool vulkan_memory_model_device_scope_support = false;
+ 	AccelerationStructureCapabilities acceleration_structure_capabilities;
+@@ -655,6 +661,7 @@ public:
+ 	virtual void command_render_draw_indexed_indirect_count(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, BufferID p_count_buffer, uint64_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) override final;
+ 	virtual void command_render_draw_indirect(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, uint32_t p_draw_count, uint32_t p_stride) override final;
+ 	virtual void command_render_draw_indirect_count(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, BufferID p_count_buffer, uint64_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) override final;
++	virtual void command_render_draw_mesh_tasks(CommandBufferID p_cmd_buffer, uint32_t p_x_count, uint32_t p_y_count, uint32_t p_z_count) override final;
+ 
+ 	// Buffer binding.
+ 	virtual void command_render_bind_vertex_buffers(CommandBufferID p_cmd_buffer, uint32_t p_binding_count, const BufferID *p_buffers, const uint64_t *p_offsets, uint64_t p_dynamic_offsets) override final;
+diff --git a/editor/shader/shader_file_editor_plugin.cpp b/editor/shader/shader_file_editor_plugin.cpp
+index c73a5e4..2c2fe70 100644
+--- a/editor/shader/shader_file_editor_plugin.cpp
++++ b/editor/shader/shader_file_editor_plugin.cpp
+@@ -280,6 +280,8 @@ ShaderFileEditor::ShaderFileEditor() {
+ 		"ClosestHit",
+ 		"Miss",
+ 		"Intersection",
++		"Task",
++		"Mesh",
+ 	};
+ 
+ 	stage_hb = memnew(HFlowContainer);
+diff --git a/modules/glslang/register_types.cpp b/modules/glslang/register_types.cpp
+index 96a7b03..b06fa99 100644
+--- a/modules/glslang/register_types.cpp
++++ b/modules/glslang/register_types.cpp
+@@ -59,6 +59,8 @@ Vector<uint8_t> compile_glslang_shader(RenderingDeviceCommons::ShaderStage p_sta
+ 		EShLangClosestHit,
+ 		EShLangMiss,
+ 		EShLangIntersect,
++		EShLangTask,
++		EShLangMesh,
+ 	};
+ 
+ 	int ClientInputSemanticsVersion = 100; // maps to, say, #define VULKAN 100
+diff --git a/servers/rendering/rendering_device.cpp b/servers/rendering/rendering_device.cpp
+index ff27646..efcd8d4 100644
+--- a/servers/rendering/rendering_device.cpp
++++ b/servers/rendering/rendering_device.cpp
+@@ -4192,6 +4192,10 @@ RID RenderingDevice::shader_create_from_bytecode_with_samplers(const Vector<uint
+ 		driver_immutable_samplers.append(driver_sampler);
+ 	}
+ 
++	const ShaderReflection container_reflection = shader_container->get_shader_reflection();
++	ERR_FAIL_COND_V_MSG(container_reflection.stages_bits.has_flag(SHADER_STAGE_MESH_BIT) && !has_feature(SUPPORTS_MESH_SHADER), RID(), "The current rendering device does not support mesh shaders.");
++	ERR_FAIL_COND_V_MSG(container_reflection.stages_bits.has_flag(SHADER_STAGE_TASK_BIT) && !has_feature(SUPPORTS_TASK_SHADER), RID(), "The current rendering device does not support task shaders.");
++
+ 	RDD::ShaderID shader_id = driver->shader_create_from_container(shader_container, driver_immutable_samplers);
+ 	ERR_FAIL_COND_V(!shader_id, RID());
+ 
+@@ -4259,6 +4263,12 @@ RID RenderingDevice::shader_create_from_bytecode_with_samplers(const Vector<uint
+ 			case SHADER_STAGE_INTERSECTION:
+ 				shader->stage_bits.set_flag(RDD::PIPELINE_STAGE_RAY_TRACING_SHADER_BIT);
+ 				break;
++			case SHADER_STAGE_TASK:
++				shader->stage_bits.set_flag(RDD::PIPELINE_STAGE_TASK_SHADER_BIT);
++				break;
++			case SHADER_STAGE_MESH:
++				shader->stage_bits.set_flag(RDD::PIPELINE_STAGE_MESH_SHADER_BIT);
++				break;
+ 			default:
+ 				DEV_ASSERT(false && "Unknown shader stage.");
+ 				break;
+@@ -4826,8 +4836,15 @@ RID RenderingDevice::render_pipeline_create(RID p_shader, FramebufferFormatID p_
+ 	ERR_FAIL_COND_V_MSG(shader->pipeline_type != PIPELINE_TYPE_RASTERIZATION, RID(),
+ 			"Only render shaders can be used in render pipelines");
+ 
+-	// Validate pre-raster shader. One of stages must be vertex shader or mesh shader (not implemented yet).
+-	ERR_FAIL_COND_V_MSG(!shader->stage_bits.has_flag(RDD::PIPELINE_STAGE_VERTEX_SHADER_BIT), RID(), "Pre-raster shader (vertex shader) is not provided for pipeline creation.");
++	// Validate pre-raster shader. One of stages must be vertex shader or mesh shader.
++	const bool has_mesh_shader = shader->stage_bits.has_flag(RDD::PIPELINE_STAGE_MESH_SHADER_BIT);
++	ERR_FAIL_COND_V_MSG(!has_mesh_shader && !shader->stage_bits.has_flag(RDD::PIPELINE_STAGE_VERTEX_SHADER_BIT), RID(), "Pre-raster shader (vertex or mesh shader) is not provided for pipeline creation.");
++	if (has_mesh_shader) {
++		ERR_FAIL_COND_V_MSG(shader->stage_bits.has_flag(RDD::PIPELINE_STAGE_VERTEX_SHADER_BIT | RDD::PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | RDD::PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT), RID(), "A mesh shader cannot be combined with vertex or tessellation shaders.");
++		ERR_FAIL_COND_V_MSG(p_vertex_format != INVALID_ID, RID(), "Mesh shader pipelines take no vertex format.");
++	} else {
++		ERR_FAIL_COND_V_MSG(shader->stage_bits.has_flag(RDD::PIPELINE_STAGE_TASK_SHADER_BIT), RID(), "A task shader requires a mesh shader.");
++	}
+ 
+ 	FramebufferFormat fb_format;
+ 	{
+@@ -4841,6 +4858,8 @@ RID RenderingDevice::render_pipeline_create(RID p_shader, FramebufferFormatID p_
+ 		fb_format = framebuffer_formats[p_framebuffer_format];
+ 	}
+ 
++	ERR_FAIL_COND_V_MSG(has_mesh_shader && fb_format.E->key().view_count > 1, RID(), "Mesh shader pipelines do not support multiview framebuffers.");
++
+ 	// Validate shader vs. framebuffer.
+ 	{
+ 		ERR_FAIL_COND_V_MSG(p_for_render_pass >= uint32_t(fb_format.E->key().passes.size()), RID(), "Render pass requested for pipeline creation (" + itos(p_for_render_pass) + ") is out of bounds");
+@@ -4968,6 +4987,7 @@ RID RenderingDevice::render_pipeline_create(RID p_shader, FramebufferFormatID p_
+ 	pipeline.shader_layout_hash = shader->layout_hash;
+ 	pipeline.set_formats = shader->set_formats;
+ 	pipeline.push_constant_size = shader->push_constant_size;
++	pipeline.push_constant_stages = shader->push_constant_stages;
+ 	pipeline.stage_bits = shader->stage_bits;
+ 
+ #ifdef DEBUG_ENABLED
+@@ -5702,6 +5722,8 @@ void RenderingDevice::draw_list_bind_render_pipeline(DrawListID p_list, RID p_re
+ 	}
+ 
+ 	draw_list.state.pipeline = p_render_pipeline;
++	draw_list.state.pipeline_uses_mesh = pipeline->stage_bits.has_flag(RDD::PIPELINE_STAGE_MESH_SHADER_BIT);
++	draw_list.state.pipeline_uses_task = pipeline->stage_bits.has_flag(RDD::PIPELINE_STAGE_TASK_SHADER_BIT);
+ 
+ 	draw_graph.add_draw_list_bind_pipeline(pipeline->driver_id, pipeline->stage_bits);
+ 
+@@ -5713,9 +5735,10 @@ void RenderingDevice::draw_list_bind_render_pipeline(DrawListID p_list, RID p_re
+ 		const uint32_t *pformats = pipeline->set_formats.ptr(); // Pipeline set formats.
+ 
+ 		uint32_t first_invalid_set = UINT32_MAX; // All valid by default.
+-		if (pipeline->push_constant_size != draw_list.state.pipeline_push_constant_size) {
++		if (pipeline->push_constant_size != draw_list.state.pipeline_push_constant_size || pipeline->push_constant_stages != draw_list.state.pipeline_push_constant_stages) {
+ 			// All sets must be invalidated as the pipeline layout is not compatible if the push constant range is different.
+ 			draw_list.state.pipeline_push_constant_size = pipeline->push_constant_size;
++			draw_list.state.pipeline_push_constant_stages = pipeline->push_constant_stages;
+ 			first_invalid_set = 0;
+ 		} else {
+ 			switch (driver->api_trait_get(RDD::API_TRAIT_SHADER_CHANGE_INVALIDATION)) {
+@@ -5997,6 +6020,7 @@ void RenderingDevice::draw_list_draw(DrawListID p_list, bool p_use_indices, uint
+ 	ERR_RENDER_THREAD_GUARD();
+ 
+ 	ERR_FAIL_COND(!draw_list.active);
++	ERR_FAIL_COND_MSG(draw_list.state.pipeline_uses_mesh, "The bound render pipeline uses a mesh shader, use draw_list_draw_mesh_tasks.");
+ 
+ #ifdef DEBUG_ENABLED
+ 	ERR_FAIL_COND_MSG(!draw_list.validation.pipeline_active,
+@@ -6175,6 +6199,7 @@ void RenderingDevice::_draw_list_draw_indirect(DrawListID p_list, bool p_use_ind
+ 	ERR_RENDER_THREAD_GUARD();
+ 
+ 	ERR_FAIL_COND(!draw_list.active);
++	ERR_FAIL_COND_MSG(draw_list.state.pipeline_uses_mesh, "The bound render pipeline uses a mesh shader, use draw_list_draw_mesh_tasks.");
+ 
+ 	Buffer *buffer = storage_buffer_owner.get_or_null(p_buffer);
+ 	ERR_FAIL_NULL(buffer);
+@@ -6304,6 +6329,85 @@ void RenderingDevice::_draw_list_draw_indirect(DrawListID p_list, bool p_use_ind
+ 	}
+ }
+ 
++void RenderingDevice::draw_list_draw_mesh_tasks(DrawListID p_list, uint32_t p_x_count, uint32_t p_y_count, uint32_t p_z_count) {
++	ERR_RENDER_THREAD_GUARD();
++
++	ERR_FAIL_COND(!draw_list.active);
++	ERR_FAIL_COND_MSG(!draw_list.state.pipeline_uses_mesh, "The bound render pipeline has no mesh shader.");
++
++#ifdef DEBUG_ENABLED
++	const bool uses_task = draw_list.state.pipeline_uses_task;
++	const String stage_name = uses_task ? "task" : "mesh";
++	const uint64_t max_x = driver->limit_get(uses_task ? LIMIT_MAX_TASK_WORKGROUP_COUNT_X : LIMIT_MAX_MESH_WORKGROUP_COUNT_X);
++	const uint64_t max_y = driver->limit_get(uses_task ? LIMIT_MAX_TASK_WORKGROUP_COUNT_Y : LIMIT_MAX_MESH_WORKGROUP_COUNT_Y);
++	const uint64_t max_z = driver->limit_get(uses_task ? LIMIT_MAX_TASK_WORKGROUP_COUNT_Z : LIMIT_MAX_MESH_WORKGROUP_COUNT_Z);
++	const uint64_t max_total = driver->limit_get(uses_task ? LIMIT_MAX_TASK_WORKGROUP_COUNT_TOTAL : LIMIT_MAX_MESH_WORKGROUP_COUNT_TOTAL);
++	ERR_FAIL_COND_MSG(p_x_count > max_x,
++			"Amount of X " + stage_name + " workgroups (" + itos(p_x_count) + ") is larger than device limit (" + itos(max_x) + ")");
++	ERR_FAIL_COND_MSG(p_y_count > max_y,
++			"Amount of Y " + stage_name + " workgroups (" + itos(p_y_count) + ") is larger than device limit (" + itos(max_y) + ")");
++	ERR_FAIL_COND_MSG(p_z_count > max_z,
++			"Amount of Z " + stage_name + " workgroups (" + itos(p_z_count) + ") is larger than device limit (" + itos(max_z) + ")");
++	ERR_FAIL_COND_MSG((uint64_t)p_x_count * p_y_count * p_z_count > max_total,
++			"Total amount of " + stage_name + " workgroups is larger than device limit (" + itos(max_total) + ")");
++
++	if (draw_list.validation.pipeline_push_constant_size > 0) {
++		// Using push constants, check that they were supplied.
++		ERR_FAIL_COND_MSG(!draw_list.validation.pipeline_push_constant_supplied,
++				"The shader in this pipeline requires a push constant to be set before drawing, but it's not present.");
++	}
++
++	for (uint32_t i = 0; i < draw_list.state.set_count; i++) {
++		if (draw_list.state.sets[i].pipeline_expected_format == 0) {
++			// Nothing expected by this pipeline.
++			continue;
++		}
++
++		if (draw_list.state.sets[i].pipeline_expected_format != draw_list.state.sets[i].uniform_set_format) {
++			if (draw_list.state.sets[i].uniform_set_format == 0) {
++				ERR_FAIL_MSG(vformat("Uniforms were never supplied for set (%d) at the time of drawing, which are required by the pipeline.", i));
++			} else {
++				ERR_FAIL_MSG(vformat("Uniforms supplied for set (%d) are not the same format as required by the pipeline shader. Pipeline shader requires the following bindings:\n%s", i, _shader_uniform_debug(draw_list.state.pipeline_shader)));
++			}
++		}
++	}
++#endif
++
++	// Prepare descriptor sets if the API doesn't use pipeline barriers.
++	if (!driver->api_trait_get(RDD::API_TRAIT_HONORS_PIPELINE_BARRIERS)) {
++		for (uint32_t i = 0; i < draw_list.state.set_count; i++) {
++			if (draw_list.state.sets[i].pipeline_expected_format == 0) {
++				continue; // Nothing expected by this pipeline.
++			}
++
++			draw_graph.add_draw_list_uniform_set_prepare_for_use(draw_list.state.pipeline_shader_driver_id, draw_list.state.sets[i].uniform_set_driver_id, i);
++		}
++	}
++
++	// Bind descriptor sets.
++	for (uint32_t i = 0; i < draw_list.state.set_count; i++) {
++		if (draw_list.state.sets[i].pipeline_expected_format == 0) {
++			continue; // Nothing expected by this pipeline.
++		}
++		if (!draw_list.state.sets[i].bound) {
++			draw_graph.add_draw_list_bind_uniform_set(draw_list.state.pipeline_shader_driver_id, draw_list.state.sets[i].uniform_set_driver_id, i);
++
++			UniformSet *uniform_set = uniform_set_owner.get_or_null(draw_list.state.sets[i].uniform_set);
++			ERR_FAIL_NULL(uniform_set);
++			_uniform_set_update_shared(uniform_set);
++			_uniform_set_update_clears(uniform_set);
++
++			draw_graph.add_draw_list_usages(uniform_set->draw_trackers, uniform_set->draw_trackers_usage);
++
++			draw_list.state.sets[i].bound = true;
++		}
++	}
++
++	draw_graph.add_draw_list_draw_mesh_tasks(p_x_count, p_y_count, p_z_count);
++
++	draw_list.state.draw_count++;
++}
++
+ void RenderingDevice::draw_list_set_viewport(DrawListID p_list, const Rect2 &p_rect) {
+ 	ERR_FAIL_COND(!draw_list.active);
+ 
+@@ -9200,6 +9304,7 @@ void RenderingDevice::_bind_methods() {
+ 	ClassDB::bind_method(D_METHOD("draw_list_draw", "draw_list", "use_indices", "instances", "procedural_vertex_count"), &RenderingDevice::draw_list_draw, DEFVAL(0));
+ 	ClassDB::bind_method(D_METHOD("draw_list_draw_indirect", "draw_list", "use_indices", "buffer", "offset", "draw_count", "stride"), &RenderingDevice::draw_list_draw_indirect, DEFVAL(0), DEFVAL(1), DEFVAL(0));
+ 	ClassDB::bind_method(D_METHOD("draw_list_draw_indirect_count", "draw_list", "use_indices", "buffer", "offset", "count_buffer", "count_buffer_offset", "max_draw_count", "stride"), &RenderingDevice::draw_list_draw_indirect_count);
++	ClassDB::bind_method(D_METHOD("draw_list_draw_mesh_tasks", "draw_list", "x_count", "y_count", "z_count"), &RenderingDevice::draw_list_draw_mesh_tasks);
+ 
+ 	ClassDB::bind_method(D_METHOD("draw_list_enable_scissor", "draw_list", "rect"), &RenderingDevice::draw_list_enable_scissor, DEFVAL(Rect2()));
+ 	ClassDB::bind_method(D_METHOD("draw_list_disable_scissor", "draw_list"), &RenderingDevice::draw_list_disable_scissor);
+@@ -9784,6 +9889,8 @@ void RenderingDevice::_bind_methods() {
+ 	BIND_ENUM_CONSTANT(SHADER_STAGE_CLOSEST_HIT);
+ 	BIND_ENUM_CONSTANT(SHADER_STAGE_MISS);
+ 	BIND_ENUM_CONSTANT(SHADER_STAGE_INTERSECTION);
++	BIND_ENUM_CONSTANT(SHADER_STAGE_TASK);
++	BIND_ENUM_CONSTANT(SHADER_STAGE_MESH);
+ 	BIND_ENUM_CONSTANT(SHADER_STAGE_MAX);
+ 	BIND_ENUM_CONSTANT(SHADER_STAGE_VERTEX_BIT);
+ 	BIND_ENUM_CONSTANT(SHADER_STAGE_FRAGMENT_BIT);
+@@ -9795,6 +9902,8 @@ void RenderingDevice::_bind_methods() {
+ 	BIND_ENUM_CONSTANT(SHADER_STAGE_CLOSEST_HIT_BIT);
+ 	BIND_ENUM_CONSTANT(SHADER_STAGE_MISS_BIT);
+ 	BIND_ENUM_CONSTANT(SHADER_STAGE_INTERSECTION_BIT);
++	BIND_ENUM_CONSTANT(SHADER_STAGE_TASK_BIT);
++	BIND_ENUM_CONSTANT(SHADER_STAGE_MESH_BIT);
+ 
+ 	BIND_ENUM_CONSTANT(SHADER_LANGUAGE_GLSL);
+ 	BIND_ENUM_CONSTANT(SHADER_LANGUAGE_HLSL);
+@@ -9811,6 +9920,8 @@ void RenderingDevice::_bind_methods() {
+ 	BIND_ENUM_CONSTANT(SUPPORTS_RAYTRACING_PIPELINE);
+ 	BIND_ENUM_CONSTANT(SUPPORTS_HDR_OUTPUT);
+ 	BIND_ENUM_CONSTANT(SUPPORTS_DRAW_INDIRECT_COUNT);
++	BIND_ENUM_CONSTANT(SUPPORTS_MESH_SHADER);
++	BIND_ENUM_CONSTANT(SUPPORTS_TASK_SHADER);
+ 
+ 	BIND_ENUM_CONSTANT(LIMIT_MAX_BOUND_UNIFORM_SETS);
+ 	BIND_ENUM_CONSTANT(LIMIT_MAX_FRAMEBUFFER_COLOR_ATTACHMENTS);
+@@ -9851,6 +9962,14 @@ void RenderingDevice::_bind_methods() {
+ 	BIND_ENUM_CONSTANT(LIMIT_MAX_VIEWPORT_DIMENSIONS_Y);
+ 	BIND_ENUM_CONSTANT(LIMIT_METALFX_TEMPORAL_SCALER_MIN_SCALE);
+ 	BIND_ENUM_CONSTANT(LIMIT_METALFX_TEMPORAL_SCALER_MAX_SCALE);
++	BIND_ENUM_CONSTANT(LIMIT_MAX_TASK_WORKGROUP_COUNT_X);
++	BIND_ENUM_CONSTANT(LIMIT_MAX_TASK_WORKGROUP_COUNT_Y);
++	BIND_ENUM_CONSTANT(LIMIT_MAX_TASK_WORKGROUP_COUNT_Z);
++	BIND_ENUM_CONSTANT(LIMIT_MAX_TASK_WORKGROUP_COUNT_TOTAL);
++	BIND_ENUM_CONSTANT(LIMIT_MAX_MESH_WORKGROUP_COUNT_X);
++	BIND_ENUM_CONSTANT(LIMIT_MAX_MESH_WORKGROUP_COUNT_Y);
++	BIND_ENUM_CONSTANT(LIMIT_MAX_MESH_WORKGROUP_COUNT_Z);
++	BIND_ENUM_CONSTANT(LIMIT_MAX_MESH_WORKGROUP_COUNT_TOTAL);
+ 
+ 	BIND_ENUM_CONSTANT(MEMORY_TEXTURES);
+ 	BIND_ENUM_CONSTANT(MEMORY_BUFFERS);
+diff --git a/servers/rendering/rendering_device.h b/servers/rendering/rendering_device.h
+index b9aa19a..3bbbf04 100644
+--- a/servers/rendering/rendering_device.h
++++ b/servers/rendering/rendering_device.h
+@@ -1227,6 +1227,7 @@ private:
+ 		RDD::PipelineID driver_id;
+ 		BitField<RDD::PipelineStageBits> stage_bits = {};
+ 		uint32_t push_constant_size = 0;
++		BitField<ShaderStage> push_constant_stages = {};
+ 	};
+ 
+ 	RID_Owner<RenderPipeline, true> render_pipeline_owner;
+@@ -1455,6 +1456,9 @@ private:
+ 			RDD::ShaderID pipeline_shader_driver_id;
+ 			uint32_t pipeline_shader_layout_hash = 0;
+ 			uint32_t pipeline_push_constant_size = 0;
++			BitField<ShaderStage> pipeline_push_constant_stages = {};
++			bool pipeline_uses_mesh = false;
++			bool pipeline_uses_task = false;
+ 			RID vertex_array;
+ 			RID index_array;
+ 			uint32_t draw_count = 0;
+@@ -1557,6 +1561,7 @@ public:
+ 	void draw_list_draw(DrawListID p_list, bool p_use_indices, uint32_t p_instances = 1, uint32_t p_procedural_vertices = 0);
+ 	void draw_list_draw_indirect(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset = 0, uint32_t p_draw_count = 1, uint32_t p_stride = 0);
+ 	void draw_list_draw_indirect_count(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset, RID p_count_buffer, uint32_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride);
++	void draw_list_draw_mesh_tasks(DrawListID p_list, uint32_t p_x_count, uint32_t p_y_count, uint32_t p_z_count);
+ 
+ 	void draw_list_set_viewport(DrawListID p_list, const Rect2 &p_rect);
+ 	void draw_list_enable_scissor(DrawListID p_list, const Rect2 &p_rect);
+diff --git a/servers/rendering/rendering_device_binds.cpp b/servers/rendering/rendering_device_binds.cpp
+index f021d8b..e1f585b 100644
+--- a/servers/rendering/rendering_device_binds.cpp
++++ b/servers/rendering/rendering_device_binds.cpp
+@@ -54,6 +54,8 @@ Error RDShaderFile::parse_versions_from_text(const String &p_text, const String
+ 		"closest_hit",
+ 		"miss",
+ 		"intersection",
++		"task",
++		"mesh",
+ 	};
+ 	String stage_code[RD::SHADER_STAGE_MAX];
+ 	int stages_found = 0;
+diff --git a/servers/rendering/rendering_device_binds.h b/servers/rendering/rendering_device_binds.h
+index 7a9d5bc..9e1cf9a 100644
+--- a/servers/rendering/rendering_device_binds.h
++++ b/servers/rendering/rendering_device_binds.h
+@@ -283,6 +283,8 @@ protected:
+ 		ADD_PROPERTYI(PropertyInfo(Variant::STRING, "source_closest_hit"), "set_stage_source", "get_stage_source", RD::SHADER_STAGE_CLOSEST_HIT);
+ 		ADD_PROPERTYI(PropertyInfo(Variant::STRING, "source_miss"), "set_stage_source", "get_stage_source", RD::SHADER_STAGE_MISS);
+ 		ADD_PROPERTYI(PropertyInfo(Variant::STRING, "source_intersection"), "set_stage_source", "get_stage_source", RD::SHADER_STAGE_INTERSECTION);
++		ADD_PROPERTYI(PropertyInfo(Variant::STRING, "source_task"), "set_stage_source", "get_stage_source", RD::SHADER_STAGE_TASK);
++		ADD_PROPERTYI(PropertyInfo(Variant::STRING, "source_mesh"), "set_stage_source", "get_stage_source", RD::SHADER_STAGE_MESH);
+ 		ADD_GROUP("Syntax", "source_");
+ 		ADD_PROPERTY(PropertyInfo(Variant::INT, "language", PROPERTY_HINT_RANGE, "GLSL,HLSL"), "set_language", "get_language");
+ 	}
+@@ -347,6 +349,8 @@ protected:
+ 		ADD_PROPERTYI(PropertyInfo(Variant::PACKED_BYTE_ARRAY, "bytecode_closest_hit"), "set_stage_bytecode", "get_stage_bytecode", RD::SHADER_STAGE_CLOSEST_HIT);
+ 		ADD_PROPERTYI(PropertyInfo(Variant::PACKED_BYTE_ARRAY, "bytecode_miss"), "set_stage_bytecode", "get_stage_bytecode", RD::SHADER_STAGE_MISS);
+ 		ADD_PROPERTYI(PropertyInfo(Variant::PACKED_BYTE_ARRAY, "bytecode_intersection"), "set_stage_bytecode", "get_stage_bytecode", RD::SHADER_STAGE_INTERSECTION);
++		ADD_PROPERTYI(PropertyInfo(Variant::PACKED_BYTE_ARRAY, "bytecode_task"), "set_stage_bytecode", "get_stage_bytecode", RD::SHADER_STAGE_TASK);
++		ADD_PROPERTYI(PropertyInfo(Variant::PACKED_BYTE_ARRAY, "bytecode_mesh"), "set_stage_bytecode", "get_stage_bytecode", RD::SHADER_STAGE_MESH);
+ 		ADD_GROUP("Compile Error", "compile_error_");
+ 		ADD_PROPERTYI(PropertyInfo(Variant::STRING, "compile_error_vertex"), "set_stage_compile_error", "get_stage_compile_error", RD::SHADER_STAGE_VERTEX);
+ 		ADD_PROPERTYI(PropertyInfo(Variant::STRING, "compile_error_fragment"), "set_stage_compile_error", "get_stage_compile_error", RD::SHADER_STAGE_FRAGMENT);
+@@ -358,6 +362,8 @@ protected:
+ 		ADD_PROPERTYI(PropertyInfo(Variant::STRING, "compile_error_closest_hit"), "set_stage_compile_error", "get_stage_compile_error", RD::SHADER_STAGE_CLOSEST_HIT);
+ 		ADD_PROPERTYI(PropertyInfo(Variant::STRING, "compile_error_miss"), "set_stage_compile_error", "get_stage_compile_error", RD::SHADER_STAGE_MISS);
+ 		ADD_PROPERTYI(PropertyInfo(Variant::STRING, "compile_error_intersection"), "set_stage_compile_error", "get_stage_compile_error", RD::SHADER_STAGE_INTERSECTION);
++		ADD_PROPERTYI(PropertyInfo(Variant::STRING, "compile_error_task"), "set_stage_compile_error", "get_stage_compile_error", RD::SHADER_STAGE_TASK);
++		ADD_PROPERTYI(PropertyInfo(Variant::STRING, "compile_error_mesh"), "set_stage_compile_error", "get_stage_compile_error", RD::SHADER_STAGE_MESH);
+ 	}
+ };
+ 
+@@ -420,7 +426,14 @@ public:
+ 							"fragment",
+ 							"tesselation_control",
+ 							"tesselation_evaluation",
+-							"compute"
++							"compute",
++							"raygen",
++							"any_hit",
++							"closest_hit",
++							"miss",
++							"intersection",
++							"task",
++							"mesh"
+ 						};
+ 
+ 						print_error("Error parsing shader '" + p_file + "', version '" + String(E.key) + "', stage '" + stage_str[i] + "':\n\n" + error);
+diff --git a/servers/rendering/rendering_device_commons.cpp b/servers/rendering/rendering_device_commons.cpp
+index 66499d5..38ca8db 100644
+--- a/servers/rendering/rendering_device_commons.cpp
++++ b/servers/rendering/rendering_device_commons.cpp
+@@ -982,4 +982,11 @@ const char *RenderingDeviceCommons::SHADER_STAGE_NAMES[SHADER_STAGE_MAX] = {
+ 	"TesselationControl",
+ 	"TesselationEvaluation",
+ 	"Compute",
++	"Raygen",
++	"AnyHit",
++	"ClosestHit",
++	"Miss",
++	"Intersection",
++	"Task",
++	"Mesh",
+ };
+diff --git a/servers/rendering/rendering_device_commons.h b/servers/rendering/rendering_device_commons.h
+index 217119a..f6f86dc 100644
+--- a/servers/rendering/rendering_device_commons.h
++++ b/servers/rendering/rendering_device_commons.h
+@@ -597,6 +597,8 @@ public:
+ 		SHADER_STAGE_CLOSEST_HIT,
+ 		SHADER_STAGE_MISS,
+ 		SHADER_STAGE_INTERSECTION,
++		SHADER_STAGE_TASK,
++		SHADER_STAGE_MESH,
+ 		SHADER_STAGE_MAX,
+ 		SHADER_STAGE_VERTEX_BIT = (1 << SHADER_STAGE_VERTEX),
+ 		SHADER_STAGE_FRAGMENT_BIT = (1 << SHADER_STAGE_FRAGMENT),
+@@ -608,6 +610,8 @@ public:
+ 		SHADER_STAGE_CLOSEST_HIT_BIT = (1 << SHADER_STAGE_CLOSEST_HIT),
+ 		SHADER_STAGE_MISS_BIT = (1 << SHADER_STAGE_MISS),
+ 		SHADER_STAGE_INTERSECTION_BIT = (1 << SHADER_STAGE_INTERSECTION),
++		SHADER_STAGE_TASK_BIT = (1 << SHADER_STAGE_TASK),
++		SHADER_STAGE_MESH_BIT = (1 << SHADER_STAGE_MESH),
+ 	};
+ 
+ 	enum ShaderLanguage {
+@@ -1018,6 +1022,14 @@ public:
+ 		LIMIT_METALFX_TEMPORAL_SCALER_MIN_SCALE = 46,
+ 		LIMIT_METALFX_TEMPORAL_SCALER_MAX_SCALE,
+ 		LIMIT_MAX_SHADER_VARYINGS,
++		LIMIT_MAX_TASK_WORKGROUP_COUNT_X,
++		LIMIT_MAX_TASK_WORKGROUP_COUNT_Y,
++		LIMIT_MAX_TASK_WORKGROUP_COUNT_Z,
++		LIMIT_MAX_TASK_WORKGROUP_COUNT_TOTAL,
++		LIMIT_MAX_MESH_WORKGROUP_COUNT_X,
++		LIMIT_MAX_MESH_WORKGROUP_COUNT_Y,
++		LIMIT_MAX_MESH_WORKGROUP_COUNT_Z,
++		LIMIT_MAX_MESH_WORKGROUP_COUNT_TOTAL,
+ 	};
+ 
+ 	enum Features {
+@@ -1037,6 +1049,8 @@ public:
+ 		SUPPORTS_RAYTRACING_PIPELINE,
+ 		SUPPORTS_HDR_OUTPUT,
+ 		SUPPORTS_DRAW_INDIRECT_COUNT,
++		SUPPORTS_MESH_SHADER,
++		SUPPORTS_TASK_SHADER,
+ 	};
+ 
+ 	enum SubgroupOperations {
+diff --git a/servers/rendering/rendering_device_driver.h b/servers/rendering/rendering_device_driver.h
+index 103bd99..aa1a190 100644
+--- a/servers/rendering/rendering_device_driver.h
++++ b/servers/rendering/rendering_device_driver.h
+@@ -330,6 +330,8 @@ public:
+ 		PIPELINE_STAGE_ALL_GRAPHICS_BIT = (1 << 15),
+ 		PIPELINE_STAGE_ALL_COMMANDS_BIT = (1 << 16),
+ 		PIPELINE_STAGE_CLEAR_STORAGE_BIT = (1 << 17),
++		PIPELINE_STAGE_TASK_SHADER_BIT = (1 << 19),
++		PIPELINE_STAGE_MESH_SHADER_BIT = (1 << 20),
+ 		PIPELINE_STAGE_RAY_TRACING_SHADER_BIT = (1 << 21),
+ 		PIPELINE_STAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT = (1 << 22),
+ 		PIPELINE_STAGE_FRAGMENT_DENSITY_PROCESS_BIT = (1 << 23),
+@@ -696,6 +698,7 @@ public:
+ 	virtual void command_render_draw_indexed_indirect_count(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, BufferID p_count_buffer, uint64_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) = 0;
+ 	virtual void command_render_draw_indirect(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, uint32_t p_draw_count, uint32_t p_stride) = 0;
+ 	virtual void command_render_draw_indirect_count(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, BufferID p_count_buffer, uint64_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) = 0;
++	virtual void command_render_draw_mesh_tasks(CommandBufferID p_cmd_buffer, uint32_t p_x_count, uint32_t p_y_count, uint32_t p_z_count) { ERR_FAIL_MSG("Mesh shaders are not supported by this rendering driver."); }
+ 
+ 	// Buffer binding.
+ 	virtual void command_render_bind_vertex_buffers(CommandBufferID p_cmd_buffer, uint32_t p_binding_count, const BufferID *p_buffers, const uint64_t *p_offsets, uint64_t p_dynamic_offsets) = 0;
+diff --git a/servers/rendering/rendering_device_graph.cpp b/servers/rendering/rendering_device_graph.cpp
+index 6f8d22f..8f07a1b 100644
+--- a/servers/rendering/rendering_device_graph.cpp
++++ b/servers/rendering/rendering_device_graph.cpp
+@@ -991,6 +991,11 @@ void RenderingDeviceGraph::_run_draw_list_command(RDD::CommandBufferID p_command
+ 				driver->command_render_draw_indexed_indirect_count(p_command_buffer, draw_indirect_count_instruction->buffer, draw_indirect_count_instruction->offset, draw_indirect_count_instruction->count_buffer, draw_indirect_count_instruction->count_buffer_offset, draw_indirect_count_instruction->max_draw_count, draw_indirect_count_instruction->stride);
+ 				instruction_data_cursor += sizeof(DrawListDrawIndirectCountInstruction);
+ 			} break;
++			case DrawListInstruction::TYPE_DRAW_MESH_TASKS: {
++				const DrawListDrawMeshTasksInstruction *draw_mesh_tasks_instruction = reinterpret_cast<const DrawListDrawMeshTasksInstruction *>(instruction);
++				driver->command_render_draw_mesh_tasks(p_command_buffer, draw_mesh_tasks_instruction->x_count, draw_mesh_tasks_instruction->y_count, draw_mesh_tasks_instruction->z_count);
++				instruction_data_cursor += sizeof(DrawListDrawMeshTasksInstruction);
++			} break;
+ 			case DrawListInstruction::TYPE_EXECUTE_COMMANDS: {
+ 				const DrawListExecuteCommandsInstruction *execute_commands_instruction = reinterpret_cast<const DrawListExecuteCommandsInstruction *>(instruction);
+ 				driver->command_buffer_execute_secondary(p_command_buffer, execute_commands_instruction->command_buffer);
+@@ -1590,6 +1595,11 @@ void RenderingDeviceGraph::_print_draw_list(const uint8_t *p_instruction_data, u
+ 				print_line(instruction->type == DrawListInstruction::TYPE_DRAW_INDIRECT_COUNT ? "\tDRAW INDIRECT COUNT" : "\tDRAW INDEXED INDIRECT COUNT", "BUFFER ID", itos(draw_indirect_count_instruction->buffer.id), "OFFSET", draw_indirect_count_instruction->offset, "COUNT BUFFER ID", itos(draw_indirect_count_instruction->count_buffer.id), "COUNT OFFSET", draw_indirect_count_instruction->count_buffer_offset, "MAX DRAW COUNT", draw_indirect_count_instruction->max_draw_count, "STRIDE", draw_indirect_count_instruction->stride);
+ 				instruction_data_cursor += sizeof(DrawListDrawIndirectCountInstruction);
+ 			} break;
++			case DrawListInstruction::TYPE_DRAW_MESH_TASKS: {
++				const DrawListDrawMeshTasksInstruction *draw_mesh_tasks_instruction = reinterpret_cast<const DrawListDrawMeshTasksInstruction *>(instruction);
++				print_line("\tDRAW MESH TASKS", draw_mesh_tasks_instruction->x_count, draw_mesh_tasks_instruction->y_count, draw_mesh_tasks_instruction->z_count);
++				instruction_data_cursor += sizeof(DrawListDrawMeshTasksInstruction);
++			} break;
+ 			case DrawListInstruction::TYPE_EXECUTE_COMMANDS: {
+ 				print_line("\tEXECUTE COMMANDS");
+ 				instruction_data_cursor += sizeof(DrawListExecuteCommandsInstruction);
+@@ -2260,6 +2270,14 @@ void RenderingDeviceGraph::add_draw_list_draw_indexed_indirect(RDD::BufferID p_b
+ 	draw_instruction_list.stages.set_flag(RDD::PIPELINE_STAGE_DRAW_INDIRECT_BIT);
+ }
+ 
++void RenderingDeviceGraph::add_draw_list_draw_mesh_tasks(uint32_t p_x_count, uint32_t p_y_count, uint32_t p_z_count) {
++	DrawListDrawMeshTasksInstruction *instruction = reinterpret_cast<DrawListDrawMeshTasksInstruction *>(_allocate_draw_list_instruction(sizeof(DrawListDrawMeshTasksInstruction)));
++	instruction->type = DrawListInstruction::TYPE_DRAW_MESH_TASKS;
++	instruction->x_count = p_x_count;
++	instruction->y_count = p_y_count;
++	instruction->z_count = p_z_count;
++}
++
+ void RenderingDeviceGraph::add_draw_list_draw_indirect_count(bool p_indexed, RDD::BufferID p_buffer, uint32_t p_offset, RDD::BufferID p_count_buffer, uint32_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) {
+ 	DrawListDrawIndirectCountInstruction *instruction = reinterpret_cast<DrawListDrawIndirectCountInstruction *>(_allocate_draw_list_instruction(sizeof(DrawListDrawIndirectCountInstruction)));
+ 	instruction->type = p_indexed ? DrawListInstruction::TYPE_DRAW_INDEXED_INDIRECT_COUNT : DrawListInstruction::TYPE_DRAW_INDIRECT_COUNT;
+diff --git a/servers/rendering/rendering_device_graph.h b/servers/rendering/rendering_device_graph.h
+index fc061b0..8a66ea5 100644
+--- a/servers/rendering/rendering_device_graph.h
++++ b/servers/rendering/rendering_device_graph.h
+@@ -89,6 +89,7 @@ public:
+ 			TYPE_DRAW_INDEXED_INDIRECT,
+ 			TYPE_DRAW_INDIRECT_COUNT,
+ 			TYPE_DRAW_INDEXED_INDIRECT_COUNT,
++			TYPE_DRAW_MESH_TASKS,
+ 			TYPE_EXECUTE_COMMANDS,
+ 			TYPE_NEXT_SUBPASS,
+ 			TYPE_SET_BLEND_CONSTANTS,
+@@ -643,6 +644,12 @@ private:
+ 		uint32_t stride = 0;
+ 	};
+ 
++	struct DrawListDrawMeshTasksInstruction : DrawListInstruction {
++		uint32_t x_count = 0;
++		uint32_t y_count = 0;
++		uint32_t z_count = 0;
++	};
++
+ 	struct DrawListEndRenderPassInstruction : DrawListInstruction {
+ 		// No contents.
+ 	};
+@@ -940,6 +947,7 @@ public:
+ 	void add_draw_list_draw_indexed(uint32_t p_index_count, uint32_t p_instance_count, uint32_t p_first_index);
+ 	void add_draw_list_draw_indirect(RDD::BufferID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride);
+ 	void add_draw_list_draw_indexed_indirect(RDD::BufferID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride);
++	void add_draw_list_draw_mesh_tasks(uint32_t p_x_count, uint32_t p_y_count, uint32_t p_z_count);
+ 	void add_draw_list_draw_indirect_count(bool p_indexed, RDD::BufferID p_buffer, uint32_t p_offset, RDD::BufferID p_count_buffer, uint32_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride);
+ 	void add_draw_list_execute_commands(RDD::CommandBufferID p_command_buffer);
+ 	void add_draw_list_next_subpass(RDD::CommandBufferType p_command_buffer_type);
+diff --git a/servers/rendering/rendering_shader_container.cpp b/servers/rendering/rendering_shader_container.cpp
+index 9b464f6..76ae8d2 100644
+--- a/servers/rendering/rendering_shader_container.cpp
++++ b/servers/rendering/rendering_shader_container.cpp
+@@ -255,6 +255,8 @@ Error RenderingShaderContainer::reflect_spirv(const String &p_shader_name, Span<
+ 			case RDC::SHADER_STAGE_FRAGMENT:
+ 			case RDC::SHADER_STAGE_TESSELATION_CONTROL:
+ 			case RDC::SHADER_STAGE_TESSELATION_EVALUATION:
++			case RDC::SHADER_STAGE_TASK:
++			case RDC::SHADER_STAGE_MESH:
+ 				pipeline_type = RDC::PIPELINE_TYPE_RASTERIZATION;
+ 				break;
+ 			case RDC::SHADER_STAGE_COMPUTE:
