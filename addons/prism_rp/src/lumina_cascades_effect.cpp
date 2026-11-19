@@ -369,6 +369,7 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 u.push_back(make_sampler_texture_uniform(1, nearest_sampler, world_probes));
                 u.push_back(make_sampler_texture_uniform(2, nearest_sampler, world_state));
                 u.push_back(make_image_uniform(3, top.texture));
+                u.push_back(make_sampler_texture_uniform(4, nearest_sampler, normal_tex));
                 const godot::RID mset = godot::UniformSetCacheRD::get_cache(ws_merge_shader, 0, u);
                 if (mset.is_valid()) {
                     dispatch_compute(rd, ws_merge_pipeline, mset, make_push_constant_bytes(mpc),

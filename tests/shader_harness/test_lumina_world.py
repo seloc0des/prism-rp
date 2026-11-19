@@ -95,6 +95,20 @@ def test_update_picks_up_visible_wall_and_skips_rays_behind_camera(gpu):
     assert back[3] == 0.0                                    # toward/behind the camera: no information
 
 
+def test_probe_just_behind_a_wall_records_nothing(gpu):
+    # A probe whose centre sits a little behind a visible wall (0.2 m, inside the old half-cell margin) can't
+    # see anything from there: every ray starts hidden behind the wall. Its first step counted as a hit on the
+    # wall's lit front, so it took the wall's colour in every direction and lit its surroundings like a lamp
+    # (the streaks on Sponza's columns with the cache on).
+    cam = Camera(width=64, height=48)
+    g = render(cam, [Plane((0, 0, -1.3), (0, 0, 1), (2.0, 0.0, 0.0))])
+    _, probes, base = classify_and_update(gpu, cam, g, (0.0, 0.0, 0.0), *FORWARD)
+    cell = (0, 0, -2)                                       # centre (0.5, 0.5, -1.5): 0.2 m behind the wall
+    slot = tuple(c % N for c in cell)
+    x0, y0 = atlas_texel(slot, (0, 0))
+    block = probes[y0:y0 + WORLD_BLOCK, x0:x0 + WORLD_BLOCK]
+    assert block[..., 0].max() < 0.1, f"{(block[..., 0] > 0.1).sum()} of {WORLD_BLOCK ** 2} directions took the wall's red"
+
 def test_cache_remembers_light_after_turning_away(gpu):
     cam = Camera(width=48, height=36)
     g = red_wall_scene(cam)
@@ -122,14 +136,15 @@ def test_scrolled_in_cells_start_empty(gpu):
     assert probes2[..., 3].max() <= 1.0
 
 
-def _ws_merge(gpu, cam, g, interval, probes, state, cam_pos, right, up, screen_block, spacing_px, flags=0):
+def _ws_merge(gpu, cam, g, interval, probes, state, cam_pos, right, up, screen_block, spacing_px, flags=0, normal=None):
     base = base_cell_for(cam_pos)
     push = world_pc(cam, cam_pos, right, up, base, a1w=flags, screen_block=screen_block, misc_z=float(spacing_px))
     return gpu.run(
         {"depth": Img("r32f", data=g["depth"]), "probes": Img("rgba16f", data=probes), "state": Img("rgba32f", data=state),
-         "lvl": Img("rgba16f", data=interval)},
+         "lvl": Img("rgba16f", data=interval), "normal": Img("rgba8", data=g["normal"] if normal is None else normal)},
         [Dispatch("lumina/lumina_ws_merge.comp.glsl",
-                  {0: ("depth", "sampled_nearest"), 1: ("probes", "sampled_nearest"), 2: ("state", "sampled_nearest"), 3: ("lvl", "storage")},
+                  {0: ("depth", "sampled_nearest"), 1: ("probes", "sampled_nearest"), 2: ("state", "sampled_nearest"), 3: ("lvl", "storage"),
+                   4: ("normal", "sampled_nearest")},
                   push, groups_for(interval.shape[1], interval.shape[0]))], ["lvl"])["lvl"]
 
 
@@ -152,3 +167,26 @@ def test_ws_merge_adds_far_field_through_open_intervals(gpu):
 
     only_world = _ws_merge(gpu, cam, g, interval, probes, state, (0.0, 0.0, 0.0), *FORWARD, block, spacing_px, flags=1)
     np.testing.assert_allclose(only_world[..., :3].reshape(-1, 3).mean(0), W, rtol=0.02)
+
+
+def test_ws_merge_ignores_cells_behind_the_probes_surface(gpu):
+    # A probe on a wall blends the 8 cache cells around it. Cells on the far side of the wall see a different
+    # space (outside a room, inside a pillar) and classify can't always mark them buried: from the camera they
+    # can line up with empty background. Blending them in let a wall light itself (the Cornell box came out
+    # nearly twice the reference with the cache on). Only cells on the side the surface faces may count.
+    cam = Camera(width=32, height=24)
+    g = render(cam, [Plane((0, 0, -1.2), (0, 0, 1), (0.1, 0.1, 0.1))])   # wall facing the camera, inside the grid
+    spacing_px, block = 16, 8
+    interval = np.zeros((2 * block, 2 * block, 4)); interval[..., 3] = 1.0  # all open: everything reads the cache
+    front, behind = np.array([0.1, 0.5, 0.9]), np.array([5.0, 0.0, 0.0])
+    probes = np.zeros((N * WORLD_BLOCK, N * N * WORLD_BLOCK, 4)); probes[..., 3] = 1.0
+    base = base_cell_for((0.0, 0.0, 0.0))
+    for z in range(base[2], base[2] + N):                 # cell z = -2 (centre -1.5) is behind the wall at -1.2
+        for y in range(base[1], base[1] + N):
+            for x in range(base[0], base[0] + N):
+                sx, sy, sz = x % N, y % N, z % N
+                x0, y0 = atlas_texel((sx, sy, sz), (0, 0))
+                probes[y0:y0 + WORLD_BLOCK, x0:x0 + WORLD_BLOCK, :3] = behind if (z + 0.5) * SPACING < -1.2 else front
+    state = np.zeros((N, N * N, 4))
+    out = _ws_merge(gpu, cam, g, interval, probes, state, (0.0, 0.0, 0.0), *FORWARD, block, spacing_px, normal=g["normal"])
+    np.testing.assert_allclose(out[..., :3].reshape(-1, 3).mean(0), front, rtol=0.02)

@@ -7,7 +7,8 @@
 
 // Merge for the TOP screen-space cascade level: instead of ending in nothing, rays that make it
 // through the level's interval (transmittance a) pick up the world-space radiance cache at the
-// probe's world position, in the matching world direction (trilinear over the 8 nearest cells).
+// probe's world position, in the matching world direction (trilinear over the 8 nearest cells that lie
+// in front of the probe's surface).
 // flags bit 0 (debug "world cascade only"): ignore the screen interval, show only the cache.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -16,8 +17,9 @@ layout(set = 0, binding = 0) uniform sampler2D u_depth_tex;
 layout(set = 0, binding = 1) uniform sampler2D u_world_probes_tex;
 layout(set = 0, binding = 2) uniform sampler2D u_state_tex;
 layout(rgba16f, set = 0, binding = 3) uniform image2D u_cascade_io;
+layout(set = 0, binding = 4) uniform sampler2D u_normal_roughness_tex;
 
-vec3 sample_world(vec3 p, vec3 world_dir, out float coverage) {
+vec3 sample_world(vec3 p, vec3 world_normal, vec3 world_dir, out float coverage) {
     int n = wpc.a0.z;
     float spacing = wpc.cam_pos.w;
     vec3 coord = p / spacing - 0.5;
@@ -27,9 +29,16 @@ vec3 sample_world(vec3 p, vec3 world_dir, out float coverage) {
 
     vec3 sum = vec3(0.0);
     float weight = 0.0;
+    float behind = 0.0;   // trilinear weight of cells behind the surface: not missing, just not applicable
     for (int i = 0; i < 8; ++i) {
         ivec3 o = ivec3(i & 1, (i >> 1) & 1, i >> 2);
         ivec3 cell = c0 + o;
+        vec3 w3 = mix(vec3(1.0) - f, f, vec3(o));
+        float w = w3.x * w3.y * w3.z;
+        if (dot(lumina_cell_center(cell, spacing) - p, world_normal) <= 0.0) {
+            behind += w;   // behind the probe's surface: it sees another space (outside the room, inside a pillar)
+            continue;
+        }
         if (any(lessThan(cell, wpc.a1.xyz)) || any(greaterThanEqual(cell, wpc.a1.xyz + n))) {
             continue;   // outside the live grid
         }
@@ -42,12 +51,10 @@ vec3 sample_world(vec3 p, vec3 world_dir, out float coverage) {
         if (probe.a <= 0.0) {
             continue;   // never sampled
         }
-        vec3 w3 = mix(vec3(1.0) - f, f, vec3(o));
-        float w = w3.x * w3.y * w3.z;
         sum += probe.rgb * w;
         weight += w;
     }
-    coverage = weight;
+    coverage = weight / max(1.0 - behind, 1e-4);
     return weight > 1e-4 ? sum / weight : vec3(0.0);
 }
 
@@ -78,9 +85,10 @@ void main() {
 
     vec3 view_pos = lumina_view_position((vec2(center_px) + 0.5) / vec2(res), depth, wpc.proj, wpc.misc.xy);
     vec3 world_pos = lumina_view_to_world(view_pos);
+    vec3 world_normal = lumina_view_to_world_dir(lumina_decode_normal(textureLod(u_normal_roughness_tex, (vec2(center_px) + 0.5) / vec2(res), 0.0)));
     vec3 world_dir = lumina_view_to_world_dir(lumina_block_direction(dir_texel, block));
 
     float coverage;
-    vec3 far_field = sample_world(world_pos, world_dir, coverage);
+    vec3 far_field = sample_world(world_pos, world_normal, world_dir, coverage);
     imageStore(u_cascade_io, texel, vec4(interval.rgb + interval.a * far_field, interval.a * (1.0 - min(coverage, 1.0))));
 }
