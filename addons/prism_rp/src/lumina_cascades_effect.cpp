@@ -277,9 +277,12 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                     continue;
                 }
 
-                // Interval i covers [l0 * (4^i - 1) / 3, l0 * (4^(i+1) - 1) / 3) screen pixels, l0 = probe spacing.
+                // Interval i covers [l0 * (4^i - 1) / 3, l0 * (4^(i+1) - 1) / 3) screen pixels along the ray's
+                // projection, l0 = probe spacing. The top level runs on to the edge of the screen (length <= 0),
+                // with twice the steps since it covers the most screen.
                 const float l0 = static_cast<float>(probe_spacing);
                 const float scale = std::pow(4.0f, static_cast<float>(level));
+                const bool top = level + 1 == cascade_count;
                 TracePushConstants pc;
                 pc.internal_res_x = size.x;
                 pc.internal_res_y = size.y;
@@ -288,8 +291,8 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 pc.block = cl.block;
                 pc.probe_spacing_px = cl.spacing_px;
                 pc.interval_start_px = l0 * (scale - 1.0f) / 3.0f;
-                pc.interval_length_px = l0 * scale;
-                pc.steps = steps_per_interval;
+                pc.interval_length_px = top ? -1.0f : l0 * scale;
+                pc.steps = top ? 2 * steps_per_interval : steps_per_interval;
                 pc.thickness = thickness;
                 pc.frame_index = frame_counter;
                 pc.normal_bias = 0.01f;
