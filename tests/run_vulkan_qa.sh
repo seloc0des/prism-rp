@@ -10,6 +10,8 @@ set -o pipefail
 
 GODOT="${1:?usage: run_vulkan_qa.sh <godot-binary>}"
 export VK_INSTANCE_LAYERS="${VK_INSTANCE_LAYERS:-VK_LAYER_KHRONOS_validation}"
+# Extra rig arguments for every run, e.g. QA_RIG_ARGS="--prism-trackb=auto".
+read -ra EXTRA_RIG_ARGS <<< "${QA_RIG_ARGS:-}"
 SCENES="01_cornell_box 02_foliage_overdraw 03_thin_geometry_aliasing 04_dynamic_sponza 05_volumetrics_wboit"
 
 # CI has Xvfb; a developer machine without it gets real windows.
@@ -28,7 +30,7 @@ run_scenes() {  # $1 = log file, remaining = rig user args
     # Not --headless: headless forces the dummy renderer, so Vulkan would never start.
     "${DISPLAY_WRAP[@]}" \
       "$GODOT" --rendering-driver vulkan --path project --fixed-fps 60 \
-        "res://benchmarks/${scene}.tscn" --quit-after 30 -- "$@" 2>&1 | tee -a "$log"
+        "res://benchmarks/${scene}.tscn" --quit-after 30 -- "$@" "${EXTRA_RIG_ARGS[@]}" 2>&1 | tee -a "$log"
   done
 }
 

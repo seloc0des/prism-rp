@@ -255,6 +255,22 @@ jobs:
       - name: Check the engine module loaded
         run: grep -qF "[Prism RP] engine module loaded" godot_vulkan_qa.log
 
+      - name: Check the Track B line (off by default)
+        run: |
+          grep -qF "[Prism RP] Track B: off (setting) | GPU path:" godot_vulkan_qa.log
+
+      # The Track B hook returns the stock renderer for now, so the scenes must come out the same,
+      # with the same baseline comparison and no new validation findings.
+      - name: Boot every benchmark scene again with Track B on auto
+        env:
+          QA_RIG_ARGS: "--prism-trackb=auto"
+        run: |
+          mkdir track-b-off
+          mv godot_*.log track-b-off/
+          tests/run_vulkan_qa.sh ./custom-editor/godot.linuxbsd.editor.x86_64
+          grep -qF "[Prism RP] Track B: auto (command line) | GPU path:" godot_vulkan_qa.log
+          mv track-b-off/godot_vulkan_qa.log godot_track_b_off.log
+
       - name: Upload Vulkan QA log
         if: always()
         uses: actions/upload-artifact@v4
@@ -316,3 +332,31 @@ jobs:
 
       - name: Run the test
         run: tests/engine/run_mesh_shader.sh ./custom-editor/godot.linuxbsd.editor.x86_64
+
+  track-b:
+    name: Track B switch (lavapipe)
+    needs: linux-editor
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download the custom editor
+        uses: actions/download-artifact@v4
+        with:
+          name: prism-godot-linux-editor
+          path: custom-editor
+
+      - name: Install Mesa Lavapipe, Xvfb and vulkaninfo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-tools xvfb
+          chmod +x custom-editor/godot.linuxbsd.editor.x86_64
+          echo "VK_DRIVER_FILES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)" >> "$GITHUB_ENV"
+
+      # The test expects the mesh GPU path, which needs a lavapipe with VK_EXT_mesh_shader (Mesa 25.1 or newer).
+      - name: Check that this lavapipe has mesh shaders
+        run: vulkaninfo | grep -q VK_EXT_mesh_shader || { echo "::error::This Mesa's lavapipe has no VK_EXT_mesh_shader."; exit 1; }
+
+      - name: Run the test
+        run: tests/engine/run_track_b.sh ./custom-editor/godot.linuxbsd.editor.x86_64

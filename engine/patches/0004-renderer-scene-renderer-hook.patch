@@ -1,0 +1,43 @@
+diff --git a/servers/rendering/renderer_rd/renderer_compositor_rd.cpp b/servers/rendering/renderer_rd/renderer_compositor_rd.cpp
+index 06535cf..9d860cb 100644
+--- a/servers/rendering/renderer_rd/renderer_compositor_rd.cpp
++++ b/servers/rendering/renderer_rd/renderer_compositor_rd.cpp
+@@ -311,6 +311,7 @@ void RendererCompositorRD::set_boot_image_with_stretch(const Ref<Image> &p_image
+ }
+ 
+ RendererCompositorRD *RendererCompositorRD::singleton = nullptr;
++RendererCompositorRD::SceneRendererFactory RendererCompositorRD::scene_renderer_factory = nullptr;
+ 
+ RendererCompositorRD::RendererCompositorRD() {
+ 	uniform_set_cache = memnew(UniformSetCacheRD);
+@@ -379,7 +380,12 @@ RendererCompositorRD::RendererCompositorRD() {
+ 		}
+ 		scene = memnew(RendererSceneRenderImplementation::RenderForwardMobile());
+ 	} else if (rendering_method == "forward_plus") {
+-		scene = memnew(RendererSceneRenderImplementation::RenderForwardClustered());
++		if (scene_renderer_factory != nullptr) {
++			scene = scene_renderer_factory();
++		}
++		if (scene == nullptr) {
++			scene = memnew(RendererSceneRenderImplementation::RenderForwardClustered());
++		}
+ 	} else {
+ 		// Fall back to our high end renderer.
+ 		ERR_PRINT(vformat("Cannot instantiate RenderingDevice-based renderer with renderer type '%s'. Defaulting to Forward+ renderer.", rendering_method));
+diff --git a/servers/rendering/renderer_rd/renderer_compositor_rd.h b/servers/rendering/renderer_rd/renderer_compositor_rd.h
+index 5061909..be8175d 100644
+--- a/servers/rendering/renderer_rd/renderer_compositor_rd.h
++++ b/servers/rendering/renderer_rd/renderer_compositor_rd.h
+@@ -164,6 +164,12 @@ public:
+ 	}
+ 
+ 	static RendererCompositorRD *get_singleton() { return singleton; }
++
++	// Lets a module provide the scene renderer used with Forward+. It runs once, when the compositor is created and
++	// the RenderingDevice exists. Returning nullptr, or leaving it unset, selects the stock Forward+ renderer.
++	typedef RendererSceneRenderRD *(*SceneRendererFactory)();
++	static SceneRendererFactory scene_renderer_factory;
++
+ 	RendererCompositorRD();
+ 	~RendererCompositorRD();
+ };
