@@ -194,7 +194,7 @@ What changed, and what's left:
 - **Blobs:** bright, round probe blobs are back in the Cornell box. Before #11 a few faint ones sat on the ceiling;
   now there is a strong one on the right wall, a fainter one beside it and one on the ceiling.
 - **Thin geometry (scene 03):** the louvre slats and upper wire grid are still black with Lumina, so the short reach
-  wasn't the cause.
+  wasn't the cause. Black turns out to be nearly right (below).
 - **Translucency (scene 05):** with Lumina, the red and green translucent panes come out grey; with SDFGI they're
   tinted. Not investigated yet.
 - **Cost:** Lumina takes 1.1–1.8 ms in each scene's default view, 1.3–2.0 ms in the full pipeline and at most 2.3 ms
@@ -202,19 +202,52 @@ What changed, and what's left:
   2.40–2.42 ms foliage frames had a running average of 2.20–2.23 ms. The budget check reads a single frame, and in
   these two sessions a single frame sat up to 0.66 ms above or 0.40 ms below the running average. Running the top
   level's rays until they leave the screen added about 0.1 ms to the trace pass.
+
+**The Gate 2 reference rendered Godot's colours undecoded (fixed in #13).** Godot treats every authored colour
+(albedo, emission, light, ambient and background colours) as sRGB and decodes it to linear before lighting. The scene
+export handed Blender the authored numbers, which Blender reads as linear, so the reference's surfaces were brighter
+and less saturated than the ones Godot draws: a 0.5 grey reflected 50% of the light instead of 21%, and a saturated
+red (0.8, 0.1, 0.1) bounced 8 parts red to 1 green instead of 60 to 1. The ambient and background were too bright in
+the same way. Every Gate 2 number above was measured against that reference, SDFGI's as much as Lumina's. The export
+now writes colours as authored with their energies kept separate, `godot_to_blender.py` decodes them the way Godot
+does, and a reference test renders an authored 0.5 background and ambient and expects 0.214.
+
+Gate 2 against the corrected reference (same build as the fourth session, Tier 2, 512 samples):
+
+| Scene | Lumina, fitted (centre) | SDFGI, fitted (centre) | Lumina's mean vs the reference |
+| :--- | :--- | :--- | :--- |
+| Cornell box | 21.5 dB (19.3) | 18.7 dB (16.9) | 1.07x |
+| Sponza | 32.4 dB (32.5) | 34.2 dB (33.6), 6.7x too bright before the fit | 2.36x |
+
+The Cornell box passes Gate 2's image checks, 1.5 dB over the floor and 2.9 dB ahead of SDFGI. In Sponza SDFGI leads
+by 1.7 dB, not 4.9. Colour is now a larger share of Lumina's Sponza error (28%, up from 16%), so the smears on the
+columns are real and are the next Lumina fix.
+
+**Thin geometry (scene 03) isn't a Lumina bug.** A Cycles render of scene 03 with its real materials (copper and steel,
+metallic 1.0, roughness 0.06–0.10) shows the slats and wires nearly black: they're smooth metals reflecting a dark
+sky, and the sun lights only their backs. Lumina's wires match that render and its slats are a little too dark, while
+SDFGI makes the slats 85 times too bright. What Lumina misses on the slats is a faint copper reflection, because it has
+no specular term for metals. That needs each metal's real colour, which stock Godot doesn't give a compositor effect
+(`needs_separate_specular` does give it the metallic value), so it belongs with the custom build's real albedo.
+
+**Still not matched: light units.** In Sponza, Godot's direct sunlight is about twice the reference's while its lamps
+match, and Godot's lamps fade with their own curve (`omni_attenuation` 1.0–1.2 and a range window) where Blender's fade
+with the inverse square. The brightness fit removes one overall factor, not a mismatch between the sun and the lamps,
+so Sponza's numbers still carry some of it, and so does Lumina's 2.36x.
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
 3. Next, in order:
-   - thin geometry that goes black with Lumina (scene 03), reproduced in the shader harness first;
+   - the reference's lights matched to Godot's: single-light scenes rendered by both pin down the sun's factor, and
+     Cycles models Godot's lamp falloff, so Sponza's Gate 2 numbers measure GI and nothing else;
    - the colour tint next to bright, saturated surfaces (Sponza's columns) and the Cornell box's probe blobs, and
      whether the integrate pass's firefly clamp (8x the mean of the other directions) throws away real light when
      the rest of the hemisphere is dark;
    - keep Lumina under the 2.40 ms Tier 2 budget in the foliage scene;
    - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
      templates;
-   - on the custom build, Lumina's real albedo instead of the albedo proxy, and the ray-query fallback for off-screen
-     and hidden light, to finish Gate 2;
+   - on the custom build, Lumina's real albedo instead of the albedo proxy, a specular term so metals reflect bounced
+     light, and the ray-query fallback for off-screen and hidden light, to finish Gate 2;
    - Track B wired up for Gates 3 and 4, then Gate 5.
 
 ## Custom Godot build (decided 2026-11-19)

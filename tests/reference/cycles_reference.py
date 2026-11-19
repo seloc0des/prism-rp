@@ -62,7 +62,8 @@ def make_material(name, spec, scene_dir):
     mat.use_nodes = True
     nodes, links = mat.node_tree.nodes, mat.node_tree.links
     bsdf = nodes.get("Principled BSDF")
-    r, g, b, a = spec["albedo"]
+    r, g, b = g2b.linear(spec["albedo"])
+    a = spec["albedo"][3]
     bsdf.inputs["Roughness"].default_value = spec["roughness"]
 
     # Camera rays see a white, non-metallic, non-specular surface; other rays the real material.
@@ -84,7 +85,7 @@ def make_material(name, spec, scene_dir):
         scaled.inputs[1].default_value = value
         links.new(not_cam.outputs["Value"], scaled.inputs[0])
         links.new(scaled.outputs["Value"], bsdf.inputs[socket])
-    e = spec["emission"]
+    e = [c * spec["emission_energy"] for c in g2b.linear(spec["emission"])]
     if max(e) > 0.0:
         bsdf.inputs["Emission Color"].default_value = (e[0], e[1], e[2], 1.0)
         strength = nodes.new("ShaderNodeMath")   # not visible to camera rays; set_sources() toggles it
@@ -145,7 +146,7 @@ def build_lights(lights):
             data = bpy.data.lights.new(f"omni{i}", "POINT")
             data.energy = g2b.omni_power_watts(l["energy"])
             data.shadow_soft_size = 0.0
-            data.color = l["color"]
+            data.color = g2b.linear(l["color"])
             data.use_shadow = l["shadow"]
             obj = bpy.data.objects.new(data.name, data)
             obj.location = g2b.vec(l["position"])
@@ -153,7 +154,7 @@ def build_lights(lights):
             data = bpy.data.lights.new(f"sun{i}", "SUN")
             data.energy = g2b.sun_strength(l["energy"])
             data.angle = 0.0
-            data.color = l["color"]
+            data.color = g2b.linear(l["color"])
             data.use_shadow = l["shadow"]
             obj = bpy.data.objects.new(data.name, data)
             rot = g2b.look_rotation_matrix(g2b.vec(l["direction"]))
@@ -185,10 +186,10 @@ def build_world(env):
     # (Godot's BG_COLOR background doesn't light the scene, its ambient colour does).
     path = nodes.new("ShaderNodeLightPath")
     bg_cam = nodes.new("ShaderNodeBackground")
-    bg_cam.inputs["Color"].default_value = (*env["background"], 1.0)
+    bg_cam.inputs["Color"].default_value = (*g2b.linear(env["background"]), 1.0)
     CAMERA_BACKGROUND.append(bg_cam)
     bg_amb = nodes.new("ShaderNodeBackground")
-    bg_amb.inputs["Color"].default_value = (*env["ambient"], 1.0)
+    bg_amb.inputs["Color"].default_value = (*(c * env["ambient_energy"] for c in g2b.linear(env["ambient"])), 1.0)
     mix = nodes.new("ShaderNodeMixShader")
     links.new(path.outputs["Is Camera Ray"], mix.inputs["Fac"])
     links.new(bg_amb.outputs["Background"], mix.inputs[1])
@@ -263,6 +264,9 @@ def main():
     args = parse_args()
     with open(args.scene, encoding="utf-8") as f:
         data = json.load(f)
+    if data.get("version") != 2:
+        raise SystemExit(f"{args.scene}: scene export version {data.get('version')}, this script reads version 2 "
+                         "(prism_scene_export.gd); export the scene again")
     scene_dir = os.path.dirname(os.path.abspath(args.scene))
     width, height = args.resolution or data["resolution"]
 

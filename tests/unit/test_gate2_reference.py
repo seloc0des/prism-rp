@@ -53,6 +53,13 @@ def test_light_unit_conversions():
     assert g2b.sun_strength(2.5) == 2.5
 
 
+def test_authored_colours_are_decoded_from_srgb_like_godot():
+    # Godot decodes authored colours with Color::srgb_to_linear() before lighting; the reference must too.
+    assert g2b.linear((0.5, 0.5, 0.5, 1.0)) == pytest.approx((0.214041,) * 3, abs=1e-6)
+    assert g2b.linear((0.0, 0.02, 1.0)) == pytest.approx((0.0, 0.02 / 12.92, 1.0))
+    assert g2b.linear((0.8, 0.1, 0.1)) == pytest.approx((0.603827, 0.010023, 0.010023), abs=1e-6)
+
+
 def test_metrics():
     rng = np.random.default_rng(0)
     ref = rng.random((16, 16, 3)) * 0.8

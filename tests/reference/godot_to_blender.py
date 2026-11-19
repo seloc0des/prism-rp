@@ -11,11 +11,20 @@ Light units are approximate, which is why Gate 2 also reports a scale-fitted PSN
     So P = 4 pi^2 * energy.
   - Godot directional energy is irradiance; Blender sun strength is irradiance (W/m^2): equal.
   - Emission: both are radiance (color * strength), equal.
+
+Colours: Godot treats authored colours (albedo, emission, lights, ambient, background) as
+sRGB-encoded and decodes them to linear before lighting; Blender's colour inputs are linear. So
+every exported colour goes through linear() first.
 """
 
 from __future__ import annotations
 
 import math
+
+
+def linear(color):
+    """Godot colour as authored (sRGB-encoded) -> linear RGB, as Godot's Color::srgb_to_linear()."""
+    return tuple(c * (1.0 / 12.92) if c < 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in color[:3])
 
 
 def vec(v):
