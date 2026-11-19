@@ -252,11 +252,22 @@ Lumina's light level is now right in both scenes (the fit scales it by 0.89 and 
 Sponza. Three quarters of Lumina's Sponza error is where it is too dark: the undersides of the upper galleries, the near
 left wall and the pillar along the right edge of the frame. It is too bright on the far wall, and 30% of the error is
 colour (the smears on the columns).
+
+**Where Sponza's dark areas come from.** All three are surfaces seen at a grazing angle, and the integrate pass did
+reject a grazing surface's own probes: it compared depths, which change fast across a probe spacing on such a surface,
+and a pixel with no accepted probe got no light (8% of a floor seen from just above it, in a shader test). It now
+measures a probe's distance from the pixel's tangent plane instead (#15). That fixes 0.3–0.6% of the pixels in the two
+Gate 2 scenes and leaves their scores where they were, so it isn't the main cause. The main cause is light that never
+reaches the screen: the sunlit floor that lights the gallery undersides is under the galleries or behind the camera.
+The world-space radiance cache is meant to supply it, and it does light those undersides, but it also brightens the
+rest of the frame (1.56x the default's irradiance at the median, up to 6x in streaks on the columns), so Sponza scores
+21.9 dB with it on against 22.7 dB without. That cache is the next fix.
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
 3. Next, in order:
-   - Sponza's remaining gap to SDFGI: the too-dark gallery undersides and screen edges, and the too-bright far wall;
+   - Sponza's remaining gap to SDFGI: a world-space cache that adds only the light the screen misses, for the
+     too-dark gallery undersides and screen edges, and the too-bright far wall;
    - the colour tint next to bright, saturated surfaces (Sponza's columns) and the Cornell box's probe blobs, and
      whether the integrate pass's firefly clamp (8x the mean of the other directions) throws away real light when
      the rest of the hemisphere is dark;

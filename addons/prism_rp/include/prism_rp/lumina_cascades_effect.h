@@ -157,8 +157,9 @@ private:
         int32_t block = kBaseBlock;
         float probe_spacing_px = 8.0f;
         float depth_params[2] = { 0.05f, 0.0f };
+        float proj[4] = { 1.0f, 1.0f, 0.0f, 0.0f };   // P00, P11, P20, P21 (see lumina_view_position)
     };
-    static_assert(sizeof(IntegratePushConstants) == 32);
+    static_assert(sizeof(IntegratePushConstants) == 48);
 
     struct alignas(16) TemporalPushConstants {
         int32_t internal_res_x = 0;

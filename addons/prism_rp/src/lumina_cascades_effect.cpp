@@ -423,6 +423,7 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 pc.block = c0.block;
                 pc.probe_spacing_px = c0.spacing_px;
                 std::copy(std::begin(depth_params), std::end(depth_params), pc.depth_params);
+                std::copy(std::begin(proj4), std::end(proj4), pc.proj);
                 dispatch_compute(rd, integrate_pipeline, uset, make_push_constant_bytes(pc), gx, gy);
             }
         }

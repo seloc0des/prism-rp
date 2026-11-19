@@ -64,7 +64,7 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefi
     dispatches.append(Dispatch(
         "lumina/lumina_rc_integrate.comp.glsl",
         {0: ("c0", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("normal", "sampled_nearest"), 3: ("irr", "storage")},
-        pc.integrate(cam.width, cam.height, lv0["probes"], lv0["block"], float(lv0["spacing"]), cam.depth_params),
+        pc.integrate(cam.width, cam.height, lv0["probes"], lv0["block"], float(lv0["spacing"]), cam.depth_params, cam.proj),
         groups_for(cam.width, cam.height)))
     return gpu.run(images, dispatches, ["irr"])["irr"]
 
@@ -85,9 +85,28 @@ def test_integrate_uniform_radiance_returns_it(gpu):
          "irr": Img("rgba16f", 32, 32)},
         [Dispatch("lumina/lumina_rc_integrate.comp.glsl",
                   {0: ("c0", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("normal", "sampled_nearest"), 3: ("irr", "storage")},
-                  pc.integrate(32, 32, lv["probes"], lv["block"], 8.0, cam.depth_params), groups_for(32, 32))], ["irr"])["irr"]
+                  pc.integrate(32, 32, lv["probes"], lv["block"], 8.0, cam.depth_params, cam.proj), groups_for(32, 32))], ["irr"])["irr"]
     np.testing.assert_allclose(out[8:24, 8:24, :3].mean(axis=(0, 1)), L, rtol=0.01)
 
+
+def test_integrate_lights_a_surface_seen_at_a_grazing_angle(gpu):
+    # A floor seen from just above it: across 8 px its depth changes by far more than 5%, though every probe
+    # sits on the same plane. Uniform light must reach every floor pixel; a depth-difference test rejected
+    # the probes and left grazing surfaces (Sponza's gallery undersides, the walls beside the camera) black.
+    cam = Camera(width=64, height=48)
+    g = render(cam, [Plane((0, -0.15, 0), (0, 1, 0), (0, 0, 0))])
+    lv = cascade_layout(cam, 8, 1)[0]
+    L = np.array([0.3, 0.6, 0.9])
+    c0 = np.zeros((lv["size"][1], lv["size"][0], 4)); c0[..., :3] = L
+    out = gpu.run(
+        {"c0": Img("rgba16f", data=c0), "depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"]),
+         "irr": Img("rgba16f", 64, 48)},
+        [Dispatch("lumina/lumina_rc_integrate.comp.glsl",
+                  {0: ("c0", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("normal", "sampled_nearest"), 3: ("irr", "storage")},
+                  pc.integrate(64, 48, lv["probes"], lv["block"], 8.0, cam.depth_params, cam.proj), groups_for(64, 48))], ["irr"])["irr"]
+    floor = g["depth"] > 0
+    lit = out[..., 1][floor]
+    assert (lit > 0.5 * L[1]).mean() == 1.0, f"{(lit <= 0.5 * L[1]).mean():.0%} of floor pixels unlit"
 
 def test_integrate_clamps_a_single_hot_direction(gpu):
     # One direction of every probe lands on a tiny, very bright spot (the hotspot a light makes on a
@@ -105,7 +124,7 @@ def test_integrate_clamps_a_single_hot_direction(gpu):
          "irr": Img("rgba16f", 32, 32)},
         [Dispatch("lumina/lumina_rc_integrate.comp.glsl",
                   {0: ("c0", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("normal", "sampled_nearest"), 3: ("irr", "storage")},
-                  pc.integrate(32, 32, lv["probes"], lv["block"], 8.0, cam.depth_params), groups_for(32, 32))], ["irr"])["irr"]
+                  pc.integrate(32, 32, lv["probes"], lv["block"], 8.0, cam.depth_params, cam.proj), groups_for(32, 32))], ["irr"])["irr"]
     assert out[8:24, 8:24, 0].mean() < 0.4, out[8:24, 8:24, 0].mean()   # unclamped: about 20
 
 
