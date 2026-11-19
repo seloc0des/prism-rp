@@ -9,7 +9,7 @@ def _quad(name, corners, color, emission=(0, 0, 0)):
     # corners in Godot coords, ordered so (0, 1, 2) / (0, 2, 3) are clockwise seen from the front.
     pos = [c for p in corners for c in p]
     return {"name": name, "positions": pos, "normals": [], "uvs": [], "indices": [0, 1, 2, 0, 2, 3],
-            "material": {"albedo": [*color, 1.0], "roughness": 1.0, "metallic": 0.0, "emission": list(emission),
+            "material": {"albedo": [*color, 1.0], "roughness": 1.0, "metallic": 0.0, "specular": 0.5, "emission": list(emission),
                          "emission_energy": 1.0, "albedo_texture": None, "transparency": "opaque", "alpha_scissor": 0.5, "unshaded": False}}
 
 
@@ -29,7 +29,7 @@ def cornell(red=(0.7, 0.05, 0.05)):
         _quad("right", [(s, 0, -s), (s, 3, -s), (s, 3, s), (s, 0, s)], white),
     ]
     return {
-        "version": 2,
+        "version": 3,
         "resolution": [96, 72],
         "camera": {"basis_columns": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], "origin": [0, 1.5, 4.2],
                    "fov_deg": 50.0, "keep_aspect": "height", "near": 0.05, "far": 100.0},
@@ -44,7 +44,7 @@ def floor_under_light(light, resolution=(64, 48)):
     """A white floor seen straight down from 2 m (fov 75) and lit by one light: checks light units."""
     s = 20.0
     return {
-        "version": 2,
+        "version": 3,
         "resolution": list(resolution),
         "camera": {"basis_columns": [[1, 0, 0], [0, 0, -1], [0, 1, 0]], "origin": [0, 2, 0],
                    "fov_deg": 75.0, "keep_aspect": "height", "near": 0.05, "far": 100.0},

@@ -8,7 +8,7 @@ extends RefCounted
 ## Colours are written as authored, sRGB-encoded; Godot decodes them to linear before lighting, and
 ## so does tests/reference/godot_to_blender.py. Energies stay separate so the decode comes first.
 
-const FORMAT_VERSION := 2
+const FORMAT_VERSION := 3
 
 static func export_scene(root: Node, camera: Camera3D, environment: Environment, out_dir: String, resolution: Vector2i) -> Error:
 	DirAccess.make_dir_recursive_absolute(out_dir)
@@ -100,7 +100,7 @@ static func _surface(name: String, mesh: Mesh, surface: int, xf: Transform3D, ma
 
 static func _material(mat: Material, textures: Dictionary, out_dir: String) -> Dictionary:
 	var m := {
-		"albedo": [1.0, 1.0, 1.0, 1.0], "roughness": 1.0, "metallic": 0.0, "emission": [0.0, 0.0, 0.0],
+		"albedo": [1.0, 1.0, 1.0, 1.0], "roughness": 1.0, "metallic": 0.0, "specular": 0.5, "emission": [0.0, 0.0, 0.0],
 		"emission_energy": 0.0, "albedo_texture": null, "transparency": "opaque", "alpha_scissor": 0.5, "unshaded": false,
 	}
 	if not (mat is BaseMaterial3D):
@@ -109,6 +109,7 @@ static func _material(mat: Material, textures: Dictionary, out_dir: String) -> D
 	m["albedo"] = [bm.albedo_color.r, bm.albedo_color.g, bm.albedo_color.b, bm.albedo_color.a]
 	m["roughness"] = bm.roughness
 	m["metallic"] = bm.metallic
+	m["specular"] = bm.metallic_specular
 	m["unshaded"] = bm.shading_mode == BaseMaterial3D.SHADING_MODE_UNSHADED
 	if bm.emission_enabled:
 		m["emission"] = _color(bm.emission)

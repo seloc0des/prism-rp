@@ -79,7 +79,8 @@ def make_material(name, spec, scene_dir):
     not_cam.operation = "SUBTRACT"
     not_cam.inputs[0].default_value = 1.0
     links.new(path.outputs["Is Camera Ray"], not_cam.inputs[1])
-    for socket, value in (("Metallic", spec["metallic"]), ("Specular IOR Level", 0.5)):
+    # Godot's specular 0.5 and Blender's Specular IOR Level 0.5 both mean F0 = 0.04; 0 means no specular.
+    for socket, value in (("Metallic", spec["metallic"]), ("Specular IOR Level", spec["specular"])):
         scaled = nodes.new("ShaderNodeMath")
         scaled.operation = "MULTIPLY"
         scaled.inputs[1].default_value = value
@@ -288,8 +289,8 @@ def main():
     args = parse_args()
     with open(args.scene, encoding="utf-8") as f:
         data = json.load(f)
-    if data.get("version") != 2:
-        raise SystemExit(f"{args.scene}: scene export version {data.get('version')}, this script reads version 2 "
+    if data.get("version") != 3:
+        raise SystemExit(f"{args.scene}: scene export version {data.get('version')}, this script reads version 3 "
                          "(prism_scene_export.gd); export the scene again")
     scene_dir = os.path.dirname(os.path.abspath(args.scene))
     width, height = args.resolution or data["resolution"]
