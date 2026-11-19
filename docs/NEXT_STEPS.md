@@ -1,8 +1,9 @@
 # Next steps: from here to the first GPU test
 
-**Where things stand (2026-11-18).** `main` is green, the Godot Vulkan smoke test included. The Track B shaders are
-fixed and their compute passes tested on lavapipe. Phases 1–3 are done, and the first GPU session (Phase 4) ran
-on Tier 2 hardware: its findings are under Phase 5, which is in progress.
+**Where things stand (2026-11-19).** `main` is green, the Godot Vulkan smoke test included. The Track B shaders are
+fixed and their compute passes tested on lavapipe. Phases 1–3 are done, and four GPU sessions (Phase 4) have run
+on Tier 2 hardware: their findings are under Phase 5, which is in progress. Gates 0 and 1 pass. Gate 2 doesn't yet:
+Lumina beats SDFGI in the Cornell box but not in Sponza. Track B waits on a custom Godot build, decided below.
 
 **Target engine: Godot 4.7.2**, the current stable release. The reasons are in "Godot 4.5 → 4.8" below.
 
@@ -165,16 +166,74 @@ world length at the probe's own depth, so a probe could see about as far as it w
 Intervals are now measured in pixels along the ray's projection on screen, and the top level runs on until the
 ray leaves the screen. A lavapipe test (a corridor whose far half is lit) gets 1.07x the analytically integrated
 light on the near wall, against 0.007x before.
+
+**Fourth GPU session (Tier 2, after #11, 512 samples):** every stage ran again. Gate 1 5/5, no validation errors
+caused by Prism RP, Lumina within 10% of its settled light on the first frame (2% at 6 frames), motion vectors 0.037 px
+off, and the release exports run on Linux and on Windows through Wine.
+
+| Scene | Lumina, fitted (centre) | SDFGI, fitted (centre) | Lumina's mean vs the reference | Lumina before #11 |
+| :--- | :--- | :--- | :--- | :--- |
+| Cornell box | 20.05 dB (17.9) | 17.3 dB (15.6) | 0.79x | 15.2 dB, 0.50x |
+| Sponza | 25.2 dB (25.3) | 30.1 dB (28.8), 2.8x too bright before the fit | 0.97x | 21.8 dB, 0.38x |
+
+The Cornell box now passes Gate 2's image checks, by 0.05 dB over the floor. Sponza doesn't: SDFGI is 4.9 dB ahead
+on the GPU (8.3 dB before #11). On lavapipe the gap is only 2.1 dB because SDFGI scores 2.8 dB lower there, while
+Lumina scores the same on both (25.2 dB), so the GPU numbers are the ones to beat.
+
+What changed, and what's left:
+
+- **Near the camera:** measured the same way on both sessions (after the brightness fit), the share of Lumina's
+  squared error where it is darker than the reference fell from 85% to 61% (Cornell) and from 90% to 75% (Sponza).
+  In the validation screenshots the Cornell box's near floor is now nearly as bright as stock Godot's, and so is
+  Sponza's near left wall. Still too dark: surfaces whose light comes from off
+  screen or behind the camera, such as the camera-facing side of the Cornell box's small block (about half as bright
+  as with SDFGI), the Sponza pillar face along the right edge of the frame and the undersides of Sponza's upper
+  gallery. The ray-query fallback is the fix for light that was never on screen.
+- **Colour:** 16% of Lumina's Sponza error is in colour rather than brightness (12% before). The red and blue smears
+  on Sponza's columns are now its most visible artifact.
+- **Blobs:** bright, round probe blobs are back in the Cornell box. Before #11 a few faint ones sat on the ceiling;
+  now there is a strong one on the right wall, a fainter one beside it and one on the ceiling.
+- **Thin geometry (scene 03):** the louvre slats and upper wire grid are still black with Lumina, so the short reach
+  wasn't the cause.
+- **Translucency (scene 05):** with Lumina, the red and green translucent panes come out grey; with SDFGI they're
+  tinted. Not investigated yet.
+- **Cost:** Lumina takes 1.1–1.8 ms in each scene's default view, 1.3–2.0 ms in the full pipeline and at most 2.3 ms
+  in a debug view, all under the 2.40 ms budget. Foliage takes 1.67 ms (2.02 ms in the full pipeline). Last session's
+  2.40–2.42 ms foliage frames had a running average of 2.20–2.23 ms. The budget check reads a single frame, and in
+  these two sessions a single frame sat up to 0.66 ms above or 0.40 ms below the running average. Running the top
+  level's rays until they leave the screen added about 0.1 ms to the trace pass.
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
-3. Next plan: Lumina's ray-query fallback. Godot 4.7 exposes ray queries, and lavapipe supports them, so it can be
-   built and tested remotely. After that comes the Track B decision.
+3. Next, in order:
+   - thin geometry that goes black with Lumina (scene 03), reproduced in the shader harness first;
+   - the colour tint next to bright, saturated surfaces (Sponza's columns) and the Cornell box's probe blobs, and
+     whether the integrate pass's firefly clamp (8x the mean of the other directions) throws away real light when
+     the rest of the hemisphere is dark;
+   - keep Lumina under the 2.40 ms Tier 2 budget in the foliage scene;
+   - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
+     templates;
+   - on the custom build, Lumina's real albedo instead of the albedo proxy, and the ray-query fallback for off-screen
+     and hidden light, to finish Gate 2;
+   - Track B wired up for Gates 3 and 4, then Gate 5.
+
+## Custom Godot build (decided 2026-11-19)
+
+Track B can't run as a GDExtension: it has to replace Godot's opaque pass, and Godot's `RenderingDevice` has no
+mesh-shader stage and no indirect-count draws (through 4.8). So:
+
+- Prism RP becomes a Godot engine module, plus a small, separate patch set on Godot 4.7.2 that adds the mesh-shader
+  stage and indirect-count draws. Keeping the patches separate keeps them small enough to carry to later Godot
+  releases.
+- Chronos and Lumina stay a GDExtension that also works in stock Godot.
+- The editor is supported on Linux only. Shipped games run on Linux and Windows only, so the build makes export
+  templates for those two, with Windows cross-compiled using MinGW. No macOS, iOS, Android or web.
+- Every feature checks GPU support at startup and falls back to stock Godot rendering when the GPU lacks it.
 
 ## Not in this plan, and why
 
 - **Track B host code:** a GDExtension can't replace Godot's opaque pass, and Godot (up to 4.8 beta) has no mesh
-  shaders and no indirect-count draws. It needs the engine-module decision first.
+  shaders and no indirect-count draws. It waits on the custom Godot build above.
 - **Cluster LOD, software rasterizer, FSR / XeSS / DLSS backends:** cluster LOD is useful once Track B renders
   meshlets. The software rasterizer is blocked on stock Godot, which has no 64-bit image atomics. The compositor has
   no hook after upscaling, so the backends can't upscale.
