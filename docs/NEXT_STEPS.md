@@ -268,7 +268,8 @@ fails without the fix:
 
 - A cache cell whose centre sat less than half a cell behind a visible surface wasn't marked buried. Its rays started
   hidden behind the surface, and their first step read the surface's lit front as a hit, so the cell took that colour
-  in all 64 directions and lit its surroundings like a lamp. Any cell behind the visible surface now counts as buried.
+  in all 64 directions and lit its surroundings like a lamp. Any cell behind the visible surface by more than 1% of its
+  depth now counts as buried.
 - A probe blended the 8 cells around it, including cells on the far side of its own surface (outside the room, inside a
   pillar). Classify can't always bury those, because from the camera they can line up with empty background, so a
   wall could light itself. Cells behind the probe's surface no longer count.
@@ -277,19 +278,19 @@ With both, turning the cache on improves Lumina in both Gate 2 scenes (Tier 2 GP
 
 | Scene | Lumina, cache off | Lumina, cache on | SDFGI |
 | :--- | :--- | :--- | :--- |
-| Cornell box | 21.5 dB, 0.97x the reference's level | 21.8 dB, 1.25x | 18.9 dB |
+| Cornell box | 21.5 dB, 0.97x the reference's level | 22.1 dB, 1.34x | 18.9 dB |
 | Sponza | 22.7 dB, 0.81x | 23.2 dB, 1.22x | 24.4 dB |
 
-It still adds about a quarter too much light, and the streaks on Sponza's pillars are still there. One likely cause:
+It still adds a quarter to a third too much light, and the streaks on Sponza's pillars are still there. One likely cause:
 each cache texel always traces the centre of its patch of directions, so a small bright spot can stand in for the
-whole patch. Spreading the rays over the patch helped Sponza (23.9 dB) but hurt the Cornell box (17.8 dB, 1.65x),
+whole patch. Spreading the rays over the patch helped Sponza (23.9 dB) but hurt the Cornell box (18.0 dB, 1.81x),
 probably because the cache stores what the camera sees, highlights included, with no clamp against them as the
 screen-space path has. The cache stays off by default until it adds the right amount of light.
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
 3. Next, in order:
-   - Sponza's remaining gap to SDFGI: the world-space cache's extra quarter of light and the streaks on Sponza's
+   - Sponza's remaining gap to SDFGI: the world-space cache's extra light and the streaks on Sponza's
      pillars, then the cache on by default; the too-bright far wall;
    - the colour tint next to bright, saturated surfaces (Sponza's columns) and the Cornell box's probe blobs, and
      whether the integrate pass's firefly clamp (8x the mean of the other directions) throws away real light when

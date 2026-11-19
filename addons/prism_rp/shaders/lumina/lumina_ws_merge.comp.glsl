@@ -35,8 +35,10 @@ vec3 sample_world(vec3 p, vec3 world_normal, vec3 world_dir, out float coverage)
         ivec3 cell = c0 + o;
         vec3 w3 = mix(vec3(1.0) - f, f, vec3(o));
         float w = w3.x * w3.y * w3.z;
-        if (dot(lumina_cell_center(cell, spacing) - p, world_normal) <= 0.0) {
-            behind += w;   // behind the probe's surface: it sees another space (outside the room, inside a pillar)
+        // Behind the probe's surface, it sees another space (outside the room, inside a pillar). The tolerance
+        // keeps cells lying on the surface's plane, where normal quantisation alone would decide the sign.
+        if (dot(lumina_cell_center(cell, spacing) - p, world_normal) < -0.01 * spacing) {
+            behind += w;
             continue;
         }
         if (any(lessThan(cell, wpc.a1.xyz)) || any(greaterThanEqual(cell, wpc.a1.xyz + n))) {
@@ -54,8 +56,13 @@ vec3 sample_world(vec3 p, vec3 world_normal, vec3 world_dir, out float coverage)
         sum += probe.rgb * w;
         weight += w;
     }
-    coverage = weight / max(1.0 - behind, 1e-4);
-    return weight > 1e-4 ? sum / weight : vec3(0.0);
+    float applicable = 1.0 - behind;
+    if (weight <= 0.0 || weight <= 1e-4 * applicable) {
+        coverage = 0.0;
+        return vec3(0.0);
+    }
+    coverage = weight / applicable;
+    return sum / weight;
 }
 
 void main() {

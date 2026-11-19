@@ -109,6 +109,7 @@ def test_probe_just_behind_a_wall_records_nothing(gpu):
     block = probes[y0:y0 + WORLD_BLOCK, x0:x0 + WORLD_BLOCK]
     assert block[..., 0].max() < 0.1, f"{(block[..., 0] > 0.1).sum()} of {WORLD_BLOCK ** 2} directions took the wall's red"
 
+
 def test_cache_remembers_light_after_turning_away(gpu):
     cam = Camera(width=48, height=36)
     g = red_wall_scene(cam)
@@ -136,12 +137,12 @@ def test_scrolled_in_cells_start_empty(gpu):
     assert probes2[..., 3].max() <= 1.0
 
 
-def _ws_merge(gpu, cam, g, interval, probes, state, cam_pos, right, up, screen_block, spacing_px, flags=0, normal=None):
+def _ws_merge(gpu, cam, g, interval, probes, state, cam_pos, right, up, screen_block, spacing_px, flags=0):
     base = base_cell_for(cam_pos)
     push = world_pc(cam, cam_pos, right, up, base, a1w=flags, screen_block=screen_block, misc_z=float(spacing_px))
     return gpu.run(
         {"depth": Img("r32f", data=g["depth"]), "probes": Img("rgba16f", data=probes), "state": Img("rgba32f", data=state),
-         "lvl": Img("rgba16f", data=interval), "normal": Img("rgba8", data=g["normal"] if normal is None else normal)},
+         "lvl": Img("rgba16f", data=interval), "normal": Img("rgba8", data=g["normal"])},
         [Dispatch("lumina/lumina_ws_merge.comp.glsl",
                   {0: ("depth", "sampled_nearest"), 1: ("probes", "sampled_nearest"), 2: ("state", "sampled_nearest"), 3: ("lvl", "storage"),
                    4: ("normal", "sampled_nearest")},
@@ -169,24 +170,58 @@ def test_ws_merge_adds_far_field_through_open_intervals(gpu):
     np.testing.assert_allclose(only_world[..., :3].reshape(-1, 3).mean(0), W, rtol=0.02)
 
 
-def test_ws_merge_ignores_cells_behind_the_probes_surface(gpu):
+def _view_to_world(v, right, up):
+    return np.array(right) * v[0] + np.array(up) * v[1] + np.cross(right, up) * v[2]
+
+
+def _fill_cells(value_for_cell):
+    """World-cache atlas where every direction of a live cell holds value_for_cell(cell, centre)."""
+    probes = np.zeros((N * WORLD_BLOCK, N * N * WORLD_BLOCK, 4)); probes[..., 3] = 1.0
+    base = base_cell_for((0.0, 0.0, 0.0))
+    for z in range(base[2], base[2] + N):
+        for y in range(base[1], base[1] + N):
+            for x in range(base[0], base[0] + N):
+                x0, y0 = atlas_texel((x % N, y % N, z % N), (0, 0))
+                centre = (np.array([x, y, z]) + 0.5) * SPACING
+                probes[y0:y0 + WORLD_BLOCK, x0:x0 + WORLD_BLOCK, :3] = value_for_cell((x, y, z), centre)
+    return probes
+
+
+@pytest.mark.parametrize("basis", [FORWARD, BACKWARD], ids=["forward", "turned_around"])
+def test_ws_merge_ignores_cells_behind_the_probes_surface(gpu, basis):
     # A probe on a wall blends the 8 cache cells around it. Cells on the far side of the wall see a different
     # space (outside a room, inside a pillar) and classify can't always mark them buried: from the camera they
     # can line up with empty background. Blending them in let a wall light itself (the Cornell box came out
     # nearly twice the reference with the cache on). Only cells on the side the surface faces may count.
+    # Turned around, view and world axes differ, so a view/world mix-up in the merge would fail here.
     cam = Camera(width=32, height=24)
     g = render(cam, [Plane((0, 0, -1.2), (0, 0, 1), (0.1, 0.1, 0.1))])   # wall facing the camera, inside the grid
     spacing_px, block = 16, 8
     interval = np.zeros((2 * block, 2 * block, 4)); interval[..., 3] = 1.0  # all open: everything reads the cache
+    wall_point, wall_normal = _view_to_world((0, 0, -1.2), *basis), _view_to_world((0, 0, 1), *basis)
     front, behind = np.array([0.1, 0.5, 0.9]), np.array([5.0, 0.0, 0.0])
-    probes = np.zeros((N * WORLD_BLOCK, N * N * WORLD_BLOCK, 4)); probes[..., 3] = 1.0
-    base = base_cell_for((0.0, 0.0, 0.0))
-    for z in range(base[2], base[2] + N):                 # cell z = -2 (centre -1.5) is behind the wall at -1.2
-        for y in range(base[1], base[1] + N):
-            for x in range(base[0], base[0] + N):
-                sx, sy, sz = x % N, y % N, z % N
-                x0, y0 = atlas_texel((sx, sy, sz), (0, 0))
-                probes[y0:y0 + WORLD_BLOCK, x0:x0 + WORLD_BLOCK, :3] = behind if (z + 0.5) * SPACING < -1.2 else front
+    probes = _fill_cells(lambda cell, centre: behind if np.dot(centre - wall_point, wall_normal) < 0 else front)
     state = np.zeros((N, N * N, 4))
-    out = _ws_merge(gpu, cam, g, interval, probes, state, (0.0, 0.0, 0.0), *FORWARD, block, spacing_px, normal=g["normal"])
+    out = _ws_merge(gpu, cam, g, interval, probes, state, (0.0, 0.0, 0.0), *basis, block, spacing_px)
     np.testing.assert_allclose(out[..., :3].reshape(-1, 3).mean(0), front, rtol=0.02)
+
+
+def test_ws_merge_interpolates_on_a_plane_of_cell_centres(gpu):
+    # A wall lying exactly on a plane of cell centres (the Cornell box's back and side walls at 1 m spacing): the
+    # cells on that plane carry the interpolation. With no tolerance, normal quantisation alone decided which of
+    # them counted as behind, and probes came out wrong by up to a whole cell's value in a noise pattern.
+    cam = Camera(width=32, height=24)
+    g = render(cam, [Plane((0, 0, -1.5), (0, 0, 1), (0.1, 0.1, 0.1))])   # z = -1.5: cell centres at k + 0.5
+    spacing_px, block = 16, 8
+    interval = np.zeros((2 * block, 2 * block, 4)); interval[..., 3] = 1.0
+    probes = _fill_cells(lambda cell, centre: float(cell[0] + cell[1]))   # linear ramp: trilinear is exact
+    state = np.zeros((N, N * N, 4))
+    out = _ws_merge(gpu, cam, g, interval, probes, state, (0.0, 0.0, 0.0), *FORWARD, block, spacing_px)
+    dirs = cam.ray_dirs()
+    for py in range(2):
+        for px in range(2):
+            cx, cy = min(int((px + 0.5) * spacing_px), cam.width - 1), min(int((py + 0.5) * spacing_px), cam.height - 1)
+            p = dirs[cy, cx] * g["linear_z"][cy, cx]                       # FORWARD at the origin: view == world
+            expected = (p[0] / SPACING - 0.5) + (p[1] / SPACING - 0.5)
+            got = out[py * block:(py + 1) * block, px * block:(px + 1) * block, 0]
+            assert np.abs(got - expected).max() < 0.01, f"probe ({px}, {py}): {got.mean():.3f}, expected {expected:.3f}"
