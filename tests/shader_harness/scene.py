@@ -46,6 +46,7 @@ class Plane:
     point: tuple[float, float, float]
     normal: tuple[float, float, float]
     color: tuple[float, float, float]
+    bounds: tuple | None = None   # ((xmin, xmax), (ymin, ymax), (zmin, zmax)) in view space; None = infinite
 
 
 def render(cam: Camera, planes: list[Plane]) -> dict[str, np.ndarray]:
@@ -61,6 +62,10 @@ def render(cam: Camera, planes: list[Plane]) -> dict[str, np.ndarray]:
         with np.errstate(divide="ignore", invalid="ignore"):
             t = (p @ n) / denom
         hit = (denom < -1e-6) & (t > cam.near) & (t < cam.far) & (t < best_t)
+        if pl.bounds is not None:
+            pos = dirs * np.where(np.isfinite(t), t, 0.0)[..., None]
+            for axis, (lo, hi) in enumerate(pl.bounds):
+                hit &= (pos[..., axis] >= lo) & (pos[..., axis] <= hi)
         best_t[hit] = t[hit]
         normal[hit] = n
         color[hit] = pl.color

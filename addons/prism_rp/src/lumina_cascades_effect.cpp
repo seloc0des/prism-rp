@@ -362,6 +362,7 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 godot::TypedArray<godot::RDUniform> u;
                 u.push_back(make_sampler_texture_uniform(0, nearest_sampler, parent.texture));
                 u.push_back(make_image_uniform(1, cl.texture));
+                u.push_back(make_sampler_texture_uniform(2, nearest_sampler, depth_tex));
                 const godot::RID uset = godot::UniformSetCacheRD::get_cache(merge_shader, 0, u);
                 if (!uset.is_valid()) {
                     continue;
@@ -370,7 +371,9 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                     cl.probe_count.x, cl.probe_count.y,
                     parent.probe_count.x, parent.probe_count.y,
                     cl.block, parent.block,
-                    cl.spacing_px, parent.spacing_px
+                    cl.spacing_px, parent.spacing_px,
+                    { size.x, size.y },
+                    { depth_params[0], depth_params[1] }
                 };
                 dispatch_compute(rd, merge_pipeline, uset, make_push_constant_bytes(pc),
                     groups_for(cl.probe_count.x * cl.block), groups_for(cl.probe_count.y * cl.block));

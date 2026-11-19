@@ -41,8 +41,10 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2):
     for i in range(count - 2, -1, -1):
         lv, parent = levels[i], levels[i + 1]
         dispatches.append(Dispatch(
-            "lumina/lumina_rc_merge.comp.glsl", {0: (f"c{i + 1}", "sampled_nearest"), 1: (f"c{i}", "storage")},
-            pc.merge(lv["probes"], parent["probes"], lv["block"], parent["block"], float(lv["spacing"]), float(parent["spacing"])),
+            "lumina/lumina_rc_merge.comp.glsl",
+            {0: (f"c{i + 1}", "sampled_nearest"), 1: (f"c{i}", "storage"), 2: ("depth", "sampled_nearest")},
+            pc.merge(lv["probes"], parent["probes"], lv["block"], parent["block"], float(lv["spacing"]), float(parent["spacing"]),
+                     (cam.width, cam.height), cam.depth_params),
             groups_for(*lv["size"])))
     lv0 = levels[0]
     dispatches.append(Dispatch(
@@ -73,6 +75,26 @@ def test_integrate_uniform_radiance_returns_it(gpu):
     np.testing.assert_allclose(out[8:24, 8:24, :3].mean(axis=(0, 1)), L, rtol=0.01)
 
 
+def test_integrate_clamps_a_single_hot_direction(gpu):
+    # One direction of every probe lands on a tiny, very bright spot (the hotspot a light makes on a
+    # nearby wall); the rest see dim surroundings. Unclamped, that one sample lights the whole probe and
+    # leaves probe-sized blobs (found in the Cornell box). A broad bright area, seen by many directions,
+    # must still come through: see the uniform test above.
+    cam = Camera(width=32, height=32)
+    g = render(cam, [Plane((0, 0, -5), (0, 0, 1), (0, 0, 0))])
+    lv = cascade_layout(cam, 8, 1)[0]
+    block = lv["block"]
+    c0 = np.zeros((lv["size"][1], lv["size"][0], 4)); c0[..., :3] = 0.1
+    c0[block // 2::block, block // 2::block, :3] = 200.0      # one direction near the normal, per probe
+    out = gpu.run(
+        {"c0": Img("rgba16f", data=c0), "depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"]),
+         "irr": Img("rgba16f", 32, 32)},
+        [Dispatch("lumina/lumina_rc_integrate.comp.glsl",
+                  {0: ("c0", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("normal", "sampled_nearest"), 3: ("irr", "storage")},
+                  pc.integrate(32, 32, lv["probes"], lv["block"], 8.0, cam.depth_params), groups_for(32, 32))], ["irr"])["irr"]
+    assert out[8:24, 8:24, 0].mean() < 0.4, out[8:24, 8:24, 0].mean()   # unclamped: about 20
+
+
 def test_merge_combines_interval_transmittance_and_parent(gpu):
     probes, parent_probes = (4, 4), (2, 2)
     block, parent_block = 4, 8
@@ -82,12 +104,42 @@ def test_merge_combines_interval_transmittance_and_parent(gpu):
     level = np.zeros((size[1], size[0], 4))
     level[:, : size[0] // 2] = (0.0, 0.0, 0.0, 1.0)      # clear interval: sees the parent
     level[:, size[0] // 2:] = (1.0, 0.5, 0.25, 0.0)      # blocked interval: parent hidden
+    cam = Camera(width=32, height=32)
+    flat = render(cam, [Plane((0, 0, -4), (0, 0, 1), (1, 1, 1))])   # one depth everywhere: plain bilinear
     out = gpu.run(
-        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level)},
-        [Dispatch("lumina/lumina_rc_merge.comp.glsl", {0: ("parent", "sampled_nearest"), 1: ("lvl", "storage")},
-                  pc.merge(probes, parent_probes, block, parent_block, 8.0, 16.0), groups_for(*size))], ["lvl"])["lvl"]
+        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=flat["depth"])},
+        [Dispatch("lumina/lumina_rc_merge.comp.glsl",
+                  {0: ("parent", "sampled_nearest"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
+                  pc.merge(probes, parent_probes, block, parent_block, 8.0, 16.0, (cam.width, cam.height), cam.depth_params),
+                  groups_for(*size))], ["lvl"])["lvl"]
     np.testing.assert_allclose(out[:, : size[0] // 2], np.broadcast_to((0.2, 0.4, 0.6, 0.5), out[:, : size[0] // 2].shape), atol=2e-3)
     np.testing.assert_allclose(out[:, size[0] // 2:], np.broadcast_to((1.0, 0.5, 0.25, 0.0), out[:, size[0] // 2:].shape), atol=2e-3)
+
+
+def test_merge_does_not_take_parents_from_another_depth(gpu):
+    # Parent probes on a near surface hold light this probe (on a far surface) can't see; with a plain
+    # screen-space blend it inherited part of it. Depth weights keep only the parent at its depth.
+    probes, parent_probes = (4, 4), (2, 2)
+    block, parent_block = 4, 8
+    size = (probes[0] * block, probes[1] * block)
+    psize = (parent_probes[0] * parent_block, parent_probes[1] * parent_block)
+    cam = Camera(width=32, height=32)
+    # Left half of the screen far (z = 8), right half near (z = 2).
+    g = render(cam, [Plane((0, 0, -8), (0, 0, 1), (1, 1, 1)),
+                     Plane((0, 0, -2), (0, 0, 1), (1, 1, 1), bounds=((0.0, 10.0), (-10.0, 10.0), (-3.0, -1.0)))])
+    parent = np.zeros((psize[1], psize[0], 4))
+    parent[:, : psize[0] // 2] = (0.1, 0.1, 0.1, 1.0)     # parent probe on the far half
+    parent[:, psize[0] // 2:] = (5.0, 0.0, 0.0, 1.0)      # parent probe on the near half: bright red
+    level = np.zeros((size[1], size[0], 4)); level[..., 3] = 1.0   # every interval clear: all parent
+    out = gpu.run(
+        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=g["depth"])},
+        [Dispatch("lumina/lumina_rc_merge.comp.glsl",
+                  {0: ("parent", "sampled_nearest"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
+                  pc.merge(probes, parent_probes, block, parent_block, 8.0, 16.0, (cam.width, cam.height), cam.depth_params),
+                  groups_for(*size))], ["lvl"])["lvl"]
+    # Child probe column 1 (centre x = 12 px) is on the far half but between the two parent probes.
+    far_child = out[:, 1 * block:(1 + 1) * block, 0]
+    assert far_child.max() < 0.2, far_child.max()
 
 
 def test_red_wall_bleeds_onto_nearby_floor(gpu):
@@ -106,6 +158,31 @@ def test_red_wall_bleeds_onto_nearby_floor(gpu):
     assert red_near > 2.0 * red_far
     # Light from a pure red emitter stays red.
     assert irr[..., 0][near_wall].mean() > 5.0 * irr[..., 1][near_wall].mean()
+
+
+def test_light_does_not_leak_through_the_back_of_objects(gpu):
+    # A bright red card faces the camera. Floor in front of it sees its lit face and should turn red;
+    # floor behind it only sees its unlit back. A screen-space ray passing behind the card lands
+    # inside its depth "thickness" and used to pick up the lit front face's colour: the red and blue
+    # smears found on Sponza's columns.
+    cam = Camera(width=96, height=64)
+    floor = (0.05, 0.05, 0.05)
+    g = render(cam, [
+        Plane((0, -1, 0), (0, 1, 0), floor),
+        Plane((0, 0, -7), (0, 0, 1), floor),
+        Plane((0, 0, -3.5), (0, 0, 1), (4.0, 0.0, 0.0), bounds=((-0.6, 0.6), (-1.0, 0.6), (-4.0, -3.0))),
+    ])
+    irr = run_cascades(gpu, cam, g, thickness=0.2)
+    pos = cam.ray_dirs() * g["linear_z"][..., None]
+    on_floor = (g["normal"][..., 1] > 0.9) & (g["linear_z"] > 0)
+    beside = (np.abs(pos[..., 0]) > 0.7) & (np.abs(pos[..., 0]) < 1.6)
+    front = on_floor & beside & (pos[..., 2] > -3.0) & (pos[..., 2] < -2.0)
+    behind = on_floor & beside & (pos[..., 2] > -5.5) & (pos[..., 2] < -4.2)
+    assert front.sum() > 20 and behind.sum() > 20
+    red_front = float(irr[front, 0].mean())
+    red_behind = float(irr[behind, 0].mean())
+    assert red_front > 0.05                      # the lit face does bounce onto the floor in front
+    assert red_behind < 0.25 * red_front, (red_front, red_behind)
 
 
 def test_black_scene_has_no_gi(gpu):
@@ -145,20 +222,61 @@ def test_svgf_temporal_accumulates_and_resets(gpu):
     g = render(cam, [Plane((0, 0, -4), (0, 0, 1), (1, 1, 1))])
     h, w = 24, 32
     empty = {"hist": np.zeros((h, w, 4)), "mom": np.zeros((h, w, 2)), "geo": np.zeros((h, w, 4))}
-    a = np.zeros((h, w, 4)); a[..., :3] = 0.2
-    b = np.zeros((h, w, 4)); b[..., :3] = 0.6
+    # A change within the noise band (see the next test for a real lighting change).
+    a = np.zeros((h, w, 4)); a[..., :3] = 0.50
+    b = np.zeros((h, w, 4)); b[..., :3] = 0.55
 
     f1 = _temporal(gpu, cam, g, a, empty, flags=1)
     np.testing.assert_allclose(f1["hist"][..., 3], 1.0, atol=1e-3)          # history length 1
-    np.testing.assert_allclose(f1["hist"][..., 0], 0.2, atol=1e-3)
+    np.testing.assert_allclose(f1["hist"][..., 0], 0.50, atol=1e-3)
     np.testing.assert_allclose(f1["geo"][..., 3], g["linear_z"], rtol=2e-3)  # linear depth stored
 
     f2 = _temporal(gpu, cam, g, b, f1)
     np.testing.assert_allclose(f2["hist"][..., 3], 2.0, atol=1e-3)
-    np.testing.assert_allclose(f2["hist"][..., 0], 0.4, atol=2e-3)          # alpha = 1/2
+    np.testing.assert_allclose(f2["hist"][..., 0], 0.525, atol=2e-3)        # alpha = 1/2
 
     f2_reset = _temporal(gpu, cam, g, b, f1, flags=1)
-    np.testing.assert_allclose(f2_reset["hist"][..., 0], 0.6, atol=1e-3)
+    np.testing.assert_allclose(f2_reset["hist"][..., 0], 0.55, atol=1e-3)
+
+
+def _settled_history(g, value, length=32.0):
+    h, w = g["depth"].shape
+    hist = np.zeros((h, w, 4)); hist[..., :3] = value; hist[..., 3] = length
+    mom = np.zeros((h, w, 2)); mom[..., 0] = value; mom[..., 1] = value * value
+    geo = np.zeros((h, w, 4)); geo[..., 2] = 1.0; geo[..., 3] = g["linear_z"]
+    return {"hist": hist, "mom": mom, "geo": geo}
+
+
+def test_svgf_temporal_follows_a_lighting_change_within_frames(gpu):
+    # A light switches on: the raw irradiance triples. Long history must not hold the result back for
+    # many frames (Gate 2: settled within 10% in 6 frames). Blending alone, at alpha_min 0.1, is still
+    # 47% off after 6 frames.
+    cam = Camera(width=32, height=24)
+    g = render(cam, [Plane((0, 0, -4), (0, 0, 1), (1, 1, 1))])
+    h, w = 24, 32
+    bright = np.zeros((h, w, 4)); bright[..., :3] = 0.6
+    frame = _settled_history(g, 0.2)
+    errors = []
+    for _ in range(4):
+        frame = _temporal(gpu, cam, g, bright, frame)
+        errors.append(abs(float(frame["hist"][8:16, 8:24, 0].mean()) - 0.6) / 0.6)
+    assert errors[0] < 0.10 and all(e1 < e0 for e0, e1 in zip(errors, errors[1:])) and errors[-1] < 0.05, errors
+
+
+def test_svgf_temporal_still_averages_out_noise(gpu):
+    # Frame-to-frame noise in the raw irradiance stays inside the clamp band, so history keeps averaging it.
+    cam = Camera(width=32, height=24)
+    g = render(cam, [Plane((0, 0, -4), (0, 0, 1), (1, 1, 1))])
+    h, w = 24, 32
+    rng = np.random.default_rng(7)
+    frame = _settled_history(g, 0.5)
+    noisy = None
+    for _ in range(24):
+        noisy = np.zeros((h, w, 4)); noisy[..., :3] = 0.5 + rng.uniform(-0.05, 0.05, (h, w, 1))
+        frame = _temporal(gpu, cam, g, noisy, frame)
+    out = frame["hist"][2:-2, 2:-2, 0]
+    assert out.std() < 0.4 * noisy[2:-2, 2:-2, 0].std(), (out.std(), noisy[..., 0].std())
+    assert abs(out.mean() - 0.5) < 0.01
 
 
 def test_svgf_temporal_rejects_history_across_depth_change(gpu):
