@@ -58,8 +58,8 @@ def merge(probes, parent_probes, block, parent_block, spacing, parent_spacing, r
     return pack("iiiiiiffii2f", *probes, *parent_probes, block, parent_block, spacing, parent_spacing, *resolution, *depth_params)
 
 
-def integrate(w, h, probes, block, spacing, depth_params):
-    return pack("iiiiif2f", w, h, *probes, block, spacing, *depth_params)
+def integrate(w, h, probes, block, spacing, depth_params, proj):
+    return pack("iiiiif2f4f", w, h, *probes, block, spacing, *depth_params, *proj)
 
 
 def temporal(w, h, depth_params, flags=0, alpha_min=0.1, moments_alpha_min=0.2, max_history=32.0):

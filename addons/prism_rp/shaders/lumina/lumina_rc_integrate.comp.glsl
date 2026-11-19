@@ -5,8 +5,9 @@
 #include "lumina_common.glsl"
 
 // Per-pixel irradiance from the merged level-0 cascade: cosine-weighted sum over each probe's
-// directions, blended over the 4 nearest probes with depth/normal-aware bilinear weights.
-// Output is E / pi, i.e. outgoing diffuse radiance for albedo 1.
+// directions, blended over the 4 nearest probes with surface-aware bilinear weights (a probe must lie
+// on the pixel's tangent plane and face the same way). Output is E / pi, i.e. outgoing diffuse
+// radiance for albedo 1.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -21,6 +22,7 @@ layout(push_constant, std430) uniform PushConstants {
     int block;
     float probe_spacing_px;
     vec2 depth_params;
+    vec4 proj;   // P00, P11, P20, P21 (see lumina_view_position)
 } pc;
 
 // Firefly clamp: a direction may be at most kFireflyClamp times the mean luminance of the probe's other
@@ -73,7 +75,9 @@ void main() {
         imageStore(u_irradiance_out, pixel, vec4(0.0));
         return;
     }
-    float z = prism_linearize_depth(depth, pc.depth_params);
+    vec2 res = vec2(pc.internal_resolution);
+    vec3 pos = lumina_view_position((vec2(pixel) + 0.5) / res, depth, pc.proj, pc.depth_params);
+    float z = -pos.z;
     vec3 n = lumina_decode_normal(texelFetch(u_normal_roughness_tex, pixel, 0));
 
     vec2 coord = (vec2(pixel) + 0.5) / pc.probe_spacing_px - 0.5;
@@ -93,10 +97,12 @@ void main() {
         if (lumina_is_sky(probe_depth)) {
             continue;
         }
-        float probe_z = prism_linearize_depth(probe_depth, pc.depth_params);
+        vec3 probe_pos = lumina_view_position((vec2(probe_px) + 0.5) / res, probe_depth, pc.proj, pc.depth_params);
         vec3 probe_n = lumina_decode_normal(texelFetch(u_normal_roughness_tex, probe_px, 0));
-        w *= exp(-abs(probe_z - z) / max(0.05 * z, 1e-3));   // reject probes across depth edges
-        w *= pow(max(dot(probe_n, n), 0.0), 8.0);            // and across creases
+        // Distance from the pixel's tangent plane, not depth difference: on a surface seen at a grazing
+        // angle depth changes fast across a probe spacing, and a depth test rejected the surface's own probes.
+        w *= exp(-abs(dot(n, probe_pos - pos)) / max(0.05 * z, 1e-3));   // reject probes on other surfaces
+        w *= pow(max(dot(probe_n, n), 0.0), 8.0);                        // and across creases
         if (w <= 1e-5) {
             continue;
         }
