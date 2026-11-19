@@ -26,7 +26,7 @@ PIPELINES = [
     ("vis_raster_masked.mesh.glsl", "vis_raster_ms_masked.frag.glsl", True),
 ]
 
-DECL = re.compile(r"layout\(location = (\d+)\)\s+(perprimitiveEXT\s+)?(?:flat\s+)?(in|out)\s+(\w+)\s+(\w+)(\[\])?;")
+DECL = re.compile(r"layout\(location = (\d+)\)\s*(perprimitiveEXT\s+)?(?:flat\s+)?(in|out)\s+(\w+)\s+(\w+)(\[\])?;")
 
 
 def preprocess(path: Path, stage: str) -> str:
