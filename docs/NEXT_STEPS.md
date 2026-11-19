@@ -286,12 +286,25 @@ each cache texel always traces the centre of its patch of directions, so a small
 whole patch. Spreading the rays over the patch helped Sponza (23.9 dB) but hurt the Cornell box (18.0 dB, 1.81x),
 probably because the cache stores what the camera sees, highlights included, with no clamp against them as the
 screen-space path has. The cache stays off by default until it adds the right amount of light.
+
+**Sponza's extra light was the cache's hit thickness (fixed in #20).** The cache's update counted a ray as hitting a
+surface when it was up to 25% of the view depth behind it (2 m at 8 m away), two and a half times the screen-space
+trace's 10% (the effect's `thickness` setting). A cache ray passing behind a sunlit pillar half a metre thick therefore
+recorded the pillar's lit face. The cache now uses the same thickness as the screen-space trace. With the cache on,
+Sponza scores 23.75 dB at 1.05x the reference's light level (SDFGI 24.4 dB), and the Cornell box 22.2 dB, still 1.35x.
+The cache costs about 0.07 ms on Tier 2.
+
+The colour smears on Sponza's columns turn out to be the same missing light: the worst column's camera-facing side is
+lit mostly from behind the camera (the large red drape and the warm floor), so without the cache it is half as bright
+as the reference and greyer, and the drapes in view dominate what is left. What remains for the cache is the Cornell
+box, where it adds light evenly to every surface; a likely cause is its coarse directions (each texel spans about
+25 degrees), so directions that should leave through the box's open front borrow a lit wall's light.
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
 3. Next, in order:
-   - Sponza's remaining gap to SDFGI: the world-space cache's extra light and the streaks on Sponza's
-     pillars, then the cache on by default; the too-bright far wall;
+   - the world-space cache's extra light in the Cornell box, then the cache on by default; it also fills Sponza's
+     dark, camera-facing surfaces and their colour smears;
    - the colour tint next to bright, saturated surfaces (Sponza's columns) and the Cornell box's probe blobs, and
      whether the integrate pass's firefly clamp (8x the mean of the other directions) throws away real light when
      the rest of the hemisphere is dark;
