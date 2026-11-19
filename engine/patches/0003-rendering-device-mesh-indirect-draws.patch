@@ -1,0 +1,397 @@
+diff --git a/doc/classes/RenderingDevice.xml b/doc/classes/RenderingDevice.xml
+index 31d495f..8c4d758 100644
+--- a/doc/classes/RenderingDevice.xml
++++ b/doc/classes/RenderingDevice.xml
+@@ -417,6 +417,32 @@
+ 				[b]Note:[/b] Requires [constant SUPPORTS_MESH_SHADER]. Mesh shader pipelines cannot be used with multiview framebuffers.
+ 			</description>
+ 		</method>
++		<method name="draw_list_draw_mesh_tasks_indirect">
++			<return type="void" />
++			<param index="0" name="draw_list" type="int" />
++			<param index="1" name="buffer" type="RID" />
++			<param index="2" name="offset" type="int" default="0" />
++			<param index="3" name="draw_count" type="int" default="1" />
++			<param index="4" name="stride" type="int" default="12" />
++			<description>
++				Like [method draw_list_draw_mesh_tasks], but the group counts are read by the GPU from [param draw_count] commands in [param buffer], starting at [param offset] and [param stride] bytes apart. Each command is three 32-bit integers: the X, Y and Z group counts. The buffer must have been created with the indirect usage flag. [param offset] and [param stride] must be multiples of 4, and [param stride] at least 12 when [param draw_count] is above 1.
++				[b]Note:[/b] The group counts live in GPU memory, so they cannot be checked against the device's workgroup count limits. The draw count is not checked against the device's maximum draw count either.
++			</description>
++		</method>
++		<method name="draw_list_draw_mesh_tasks_indirect_count">
++			<return type="void" />
++			<param index="0" name="draw_list" type="int" />
++			<param index="1" name="buffer" type="RID" />
++			<param index="2" name="offset" type="int" />
++			<param index="3" name="count_buffer" type="RID" />
++			<param index="4" name="count_buffer_offset" type="int" />
++			<param index="5" name="max_draw_count" type="int" />
++			<param index="6" name="stride" type="int" />
++			<description>
++				Like [method draw_list_draw_mesh_tasks_indirect], but the number of commands is read by the GPU from a 32-bit integer in [param count_buffer] at [param count_buffer_offset], clamped to [param max_draw_count]. Both buffers must have been created with the indirect usage flag, and [param count_buffer_offset] must be a multiple of 4.
++				[b]Note:[/b] Requires [constant SUPPORTS_MESH_SHADER] and [constant SUPPORTS_DRAW_INDIRECT_COUNT]. Fails with an error otherwise.
++			</description>
++		</method>
+ 		<method name="draw_list_enable_scissor">
+ 			<return type="void" />
+ 			<param index="0" name="draw_list" type="int" />
+diff --git a/drivers/vulkan/rendering_device_driver_vulkan.cpp b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+index 07ef00c..e634089 100644
+--- a/drivers/vulkan/rendering_device_driver_vulkan.cpp
++++ b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+@@ -1592,6 +1592,10 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
+ 
+ 		if (mesh_shader_support) {
+ 			device_functions.CmdDrawMeshTasksEXT = PFN_vkCmdDrawMeshTasksEXT(functions.GetDeviceProcAddr(vk_device, "vkCmdDrawMeshTasksEXT"));
++			device_functions.CmdDrawMeshTasksIndirectEXT = PFN_vkCmdDrawMeshTasksIndirectEXT(functions.GetDeviceProcAddr(vk_device, "vkCmdDrawMeshTasksIndirectEXT"));
++			if (draw_indirect_count_support) {
++				device_functions.CmdDrawMeshTasksIndirectCountEXT = PFN_vkCmdDrawMeshTasksIndirectCountEXT(functions.GetDeviceProcAddr(vk_device, "vkCmdDrawMeshTasksIndirectCountEXT"));
++			}
+ 		}
+ 	}
+ 
+@@ -5823,6 +5827,19 @@ void RenderingDeviceDriverVulkan::command_render_draw_mesh_tasks(CommandBufferID
+ 	device_functions.CmdDrawMeshTasksEXT(command_buffer->vk_command_buffer, p_x_count, p_y_count, p_z_count);
+ }
+ 
++void RenderingDeviceDriverVulkan::command_render_draw_mesh_tasks_indirect(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, uint32_t p_draw_count, uint32_t p_stride) {
++	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
++	const BufferInfo *buf_info = (const BufferInfo *)p_indirect_buffer.id;
++	device_functions.CmdDrawMeshTasksIndirectEXT(command_buffer->vk_command_buffer, buf_info->vk_buffer, p_offset, p_draw_count, p_stride);
++}
++
++void RenderingDeviceDriverVulkan::command_render_draw_mesh_tasks_indirect_count(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, BufferID p_count_buffer, uint64_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) {
++	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
++	const BufferInfo *indirect_buf_info = (const BufferInfo *)p_indirect_buffer.id;
++	const BufferInfo *count_buf_info = (const BufferInfo *)p_count_buffer.id;
++	device_functions.CmdDrawMeshTasksIndirectCountEXT(command_buffer->vk_command_buffer, indirect_buf_info->vk_buffer, p_offset, count_buf_info->vk_buffer, p_count_buffer_offset, p_max_draw_count, p_stride);
++}
++
+ void RenderingDeviceDriverVulkan::command_render_bind_vertex_buffers(CommandBufferID p_cmd_buffer, uint32_t p_binding_count, const BufferID *p_buffers, const uint64_t *p_offsets, uint64_t p_dynamic_offsets) {
+ 	const CommandBufferInfo *command_buffer = (const CommandBufferInfo *)p_cmd_buffer.id;
+ 	VkBuffer *vk_buffers = ALLOCA_ARRAY(VkBuffer, p_binding_count);
+diff --git a/drivers/vulkan/rendering_device_driver_vulkan.h b/drivers/vulkan/rendering_device_driver_vulkan.h
+index c8f3ce5..ff62c5f 100644
+--- a/drivers/vulkan/rendering_device_driver_vulkan.h
++++ b/drivers/vulkan/rendering_device_driver_vulkan.h
+@@ -138,6 +138,8 @@ class RenderingDeviceDriverVulkan : public RenderingDeviceDriver {
+ 
+ 		// Mesh shader extension.
+ 		PFN_vkCmdDrawMeshTasksEXT CmdDrawMeshTasksEXT = nullptr;
++		PFN_vkCmdDrawMeshTasksIndirectEXT CmdDrawMeshTasksIndirectEXT = nullptr;
++		PFN_vkCmdDrawMeshTasksIndirectCountEXT CmdDrawMeshTasksIndirectCountEXT = nullptr;
+ 	};
+ 	// Debug marker extensions.
+ 	VkDebugReportObjectTypeEXT _convert_to_debug_report_objectType(VkObjectType p_object_type);
+@@ -662,6 +664,8 @@ public:
+ 	virtual void command_render_draw_indirect(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, uint32_t p_draw_count, uint32_t p_stride) override final;
+ 	virtual void command_render_draw_indirect_count(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, BufferID p_count_buffer, uint64_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) override final;
+ 	virtual void command_render_draw_mesh_tasks(CommandBufferID p_cmd_buffer, uint32_t p_x_count, uint32_t p_y_count, uint32_t p_z_count) override final;
++	virtual void command_render_draw_mesh_tasks_indirect(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, uint32_t p_draw_count, uint32_t p_stride) override final;
++	virtual void command_render_draw_mesh_tasks_indirect_count(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, BufferID p_count_buffer, uint64_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) override final;
+ 
+ 	// Buffer binding.
+ 	virtual void command_render_bind_vertex_buffers(CommandBufferID p_cmd_buffer, uint32_t p_binding_count, const BufferID *p_buffers, const uint64_t *p_offsets, uint64_t p_dynamic_offsets) override final;
+diff --git a/servers/rendering/rendering_device.cpp b/servers/rendering/rendering_device.cpp
+index efcd8d4..190ca43 100644
+--- a/servers/rendering/rendering_device.cpp
++++ b/servers/rendering/rendering_device.cpp
+@@ -6329,31 +6329,12 @@ void RenderingDevice::_draw_list_draw_indirect(DrawListID p_list, bool p_use_ind
+ 	}
+ }
+ 
+-void RenderingDevice::draw_list_draw_mesh_tasks(DrawListID p_list, uint32_t p_x_count, uint32_t p_y_count, uint32_t p_z_count) {
+-	ERR_RENDER_THREAD_GUARD();
+-
+-	ERR_FAIL_COND(!draw_list.active);
+-	ERR_FAIL_COND_MSG(!draw_list.state.pipeline_uses_mesh, "The bound render pipeline has no mesh shader.");
+-
++// Validates the push constants and uniform sets for a mesh draw, and binds the uniform sets it needs.
++bool RenderingDevice::_draw_list_mesh_draw_prepare() {
+ #ifdef DEBUG_ENABLED
+-	const bool uses_task = draw_list.state.pipeline_uses_task;
+-	const String stage_name = uses_task ? "task" : "mesh";
+-	const uint64_t max_x = driver->limit_get(uses_task ? LIMIT_MAX_TASK_WORKGROUP_COUNT_X : LIMIT_MAX_MESH_WORKGROUP_COUNT_X);
+-	const uint64_t max_y = driver->limit_get(uses_task ? LIMIT_MAX_TASK_WORKGROUP_COUNT_Y : LIMIT_MAX_MESH_WORKGROUP_COUNT_Y);
+-	const uint64_t max_z = driver->limit_get(uses_task ? LIMIT_MAX_TASK_WORKGROUP_COUNT_Z : LIMIT_MAX_MESH_WORKGROUP_COUNT_Z);
+-	const uint64_t max_total = driver->limit_get(uses_task ? LIMIT_MAX_TASK_WORKGROUP_COUNT_TOTAL : LIMIT_MAX_MESH_WORKGROUP_COUNT_TOTAL);
+-	ERR_FAIL_COND_MSG(p_x_count > max_x,
+-			"Amount of X " + stage_name + " workgroups (" + itos(p_x_count) + ") is larger than device limit (" + itos(max_x) + ")");
+-	ERR_FAIL_COND_MSG(p_y_count > max_y,
+-			"Amount of Y " + stage_name + " workgroups (" + itos(p_y_count) + ") is larger than device limit (" + itos(max_y) + ")");
+-	ERR_FAIL_COND_MSG(p_z_count > max_z,
+-			"Amount of Z " + stage_name + " workgroups (" + itos(p_z_count) + ") is larger than device limit (" + itos(max_z) + ")");
+-	ERR_FAIL_COND_MSG((uint64_t)p_x_count * p_y_count * p_z_count > max_total,
+-			"Total amount of " + stage_name + " workgroups is larger than device limit (" + itos(max_total) + ")");
+-
+ 	if (draw_list.validation.pipeline_push_constant_size > 0) {
+ 		// Using push constants, check that they were supplied.
+-		ERR_FAIL_COND_MSG(!draw_list.validation.pipeline_push_constant_supplied,
++		ERR_FAIL_COND_V_MSG(!draw_list.validation.pipeline_push_constant_supplied, false,
+ 				"The shader in this pipeline requires a push constant to be set before drawing, but it's not present.");
+ 	}
+ 
+@@ -6365,9 +6346,9 @@ void RenderingDevice::draw_list_draw_mesh_tasks(DrawListID p_list, uint32_t p_x_
+ 
+ 		if (draw_list.state.sets[i].pipeline_expected_format != draw_list.state.sets[i].uniform_set_format) {
+ 			if (draw_list.state.sets[i].uniform_set_format == 0) {
+-				ERR_FAIL_MSG(vformat("Uniforms were never supplied for set (%d) at the time of drawing, which are required by the pipeline.", i));
++				ERR_FAIL_V_MSG(false, vformat("Uniforms were never supplied for set (%d) at the time of drawing, which are required by the pipeline.", i));
+ 			} else {
+-				ERR_FAIL_MSG(vformat("Uniforms supplied for set (%d) are not the same format as required by the pipeline shader. Pipeline shader requires the following bindings:\n%s", i, _shader_uniform_debug(draw_list.state.pipeline_shader)));
++				ERR_FAIL_V_MSG(false, vformat("Uniforms supplied for set (%d) are not the same format as required by the pipeline shader. Pipeline shader requires the following bindings:\n%s", i, _shader_uniform_debug(draw_list.state.pipeline_shader)));
+ 			}
+ 		}
+ 	}
+@@ -6393,7 +6374,7 @@ void RenderingDevice::draw_list_draw_mesh_tasks(DrawListID p_list, uint32_t p_x_
+ 			draw_graph.add_draw_list_bind_uniform_set(draw_list.state.pipeline_shader_driver_id, draw_list.state.sets[i].uniform_set_driver_id, i);
+ 
+ 			UniformSet *uniform_set = uniform_set_owner.get_or_null(draw_list.state.sets[i].uniform_set);
+-			ERR_FAIL_NULL(uniform_set);
++			ERR_FAIL_NULL_V(uniform_set, false);
+ 			_uniform_set_update_shared(uniform_set);
+ 			_uniform_set_update_clears(uniform_set);
+ 
+@@ -6403,11 +6384,109 @@ void RenderingDevice::draw_list_draw_mesh_tasks(DrawListID p_list, uint32_t p_x_
+ 		}
+ 	}
+ 
++	return true;
++}
++
++void RenderingDevice::draw_list_draw_mesh_tasks(DrawListID p_list, uint32_t p_x_count, uint32_t p_y_count, uint32_t p_z_count) {
++	ERR_RENDER_THREAD_GUARD();
++
++	ERR_FAIL_COND(!draw_list.active);
++	ERR_FAIL_COND_MSG(!draw_list.state.pipeline_uses_mesh, "The bound render pipeline has no mesh shader.");
++
++#ifdef DEBUG_ENABLED
++	const bool uses_task = draw_list.state.pipeline_uses_task;
++	const String stage_name = uses_task ? "task" : "mesh";
++	const uint64_t max_x = driver->limit_get(uses_task ? LIMIT_MAX_TASK_WORKGROUP_COUNT_X : LIMIT_MAX_MESH_WORKGROUP_COUNT_X);
++	const uint64_t max_y = driver->limit_get(uses_task ? LIMIT_MAX_TASK_WORKGROUP_COUNT_Y : LIMIT_MAX_MESH_WORKGROUP_COUNT_Y);
++	const uint64_t max_z = driver->limit_get(uses_task ? LIMIT_MAX_TASK_WORKGROUP_COUNT_Z : LIMIT_MAX_MESH_WORKGROUP_COUNT_Z);
++	const uint64_t max_total = driver->limit_get(uses_task ? LIMIT_MAX_TASK_WORKGROUP_COUNT_TOTAL : LIMIT_MAX_MESH_WORKGROUP_COUNT_TOTAL);
++	ERR_FAIL_COND_MSG(p_x_count > max_x,
++			"Amount of X " + stage_name + " workgroups (" + itos(p_x_count) + ") is larger than device limit (" + itos(max_x) + ")");
++	ERR_FAIL_COND_MSG(p_y_count > max_y,
++			"Amount of Y " + stage_name + " workgroups (" + itos(p_y_count) + ") is larger than device limit (" + itos(max_y) + ")");
++	ERR_FAIL_COND_MSG(p_z_count > max_z,
++			"Amount of Z " + stage_name + " workgroups (" + itos(p_z_count) + ") is larger than device limit (" + itos(max_z) + ")");
++	ERR_FAIL_COND_MSG((uint64_t)p_x_count * p_y_count * p_z_count > max_total,
++			"Total amount of " + stage_name + " workgroups is larger than device limit (" + itos(max_total) + ")");
++#endif
++
++	if (!_draw_list_mesh_draw_prepare()) {
++		return;
++	}
++
+ 	draw_graph.add_draw_list_draw_mesh_tasks(p_x_count, p_y_count, p_z_count);
+ 
+ 	draw_list.state.draw_count++;
+ }
+ 
++void RenderingDevice::draw_list_draw_mesh_tasks_indirect(DrawListID p_list, RID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride) {
++	_draw_list_draw_mesh_tasks_indirect(p_buffer, p_offset, p_draw_count, p_stride, RID(), 0);
++}
++
++void RenderingDevice::draw_list_draw_mesh_tasks_indirect_count(DrawListID p_list, RID p_buffer, uint32_t p_offset, RID p_count_buffer, uint32_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) {
++	ERR_RENDER_THREAD_GUARD();
++
++	ERR_FAIL_COND_MSG(!has_feature(SUPPORTS_DRAW_INDIRECT_COUNT), "The current rendering device does not support indirect draws with a count buffer.");
++	ERR_FAIL_COND_MSG(!p_count_buffer.is_valid(), "A count buffer is required.");
++	ERR_FAIL_COND_MSG((p_count_buffer_offset % 4) != 0, "Offsets and stride must be multiples of 4.");
++
++	_draw_list_draw_mesh_tasks_indirect(p_buffer, p_offset, p_max_draw_count, p_stride, p_count_buffer, p_count_buffer_offset);
++}
++
++// With a valid p_count_buffer, p_draw_count is the maximum draw count and the GPU reads the actual count from the buffer.
++// The group counts inside the commands are written by the GPU, so they cannot be checked here.
++void RenderingDevice::_draw_list_draw_mesh_tasks_indirect(RID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride, RID p_count_buffer, uint32_t p_count_buffer_offset) {
++	ERR_RENDER_THREAD_GUARD();
++
++	ERR_FAIL_COND(!draw_list.active);
++	ERR_FAIL_COND_MSG(!draw_list.state.pipeline_uses_mesh, "The bound render pipeline has no mesh shader.");
++	ERR_FAIL_COND_MSG((p_offset % 4) != 0 || (p_stride % 4) != 0, "Offsets and stride must be multiples of 4.");
++
++	// VkDrawMeshTasksIndirectCommandEXT: the X, Y and Z group counts.
++	const uint32_t command_size = 3 * sizeof(uint32_t);
++	ERR_FAIL_COND_MSG(p_draw_count > 1 && p_stride < command_size, "Stride must be at least 12 bytes (the size of a mesh tasks command) when drawing more than one command.");
++
++	Buffer *buffer = storage_buffer_owner.get_or_null(p_buffer);
++	ERR_FAIL_NULL(buffer);
++	ERR_FAIL_COND_MSG(!buffer->usage.has_flag(RDD::BUFFER_USAGE_INDIRECT_BIT), "Buffer provided was not created to do indirect dispatch.");
++	const uint64_t commands_end = (uint64_t)p_offset + (p_draw_count > 0 ? (uint64_t)(p_draw_count - 1) * p_stride + command_size : 0);
++	ERR_FAIL_COND_MSG(commands_end > buffer->size, "Mesh tasks commands extend past the end of the buffer.");
++
++	Buffer *count_buffer = nullptr;
++	if (p_count_buffer.is_valid()) {
++		count_buffer = storage_buffer_owner.get_or_null(p_count_buffer);
++		ERR_FAIL_NULL(count_buffer);
++		ERR_FAIL_COND_MSG(!count_buffer->usage.has_flag(RDD::BUFFER_USAGE_INDIRECT_BIT), "Count buffer provided was not created to do indirect dispatch.");
++		ERR_FAIL_COND_MSG(p_count_buffer_offset + 4 > count_buffer->size, "Count buffer offset provided (+4) is past the end of buffer.");
++	}
++
++	if (!_draw_list_mesh_draw_prepare()) {
++		return;
++	}
++
++	if (count_buffer != nullptr) {
++		draw_graph.add_draw_list_draw_mesh_tasks_indirect_count(buffer->driver_id, p_offset, count_buffer->driver_id, p_count_buffer_offset, p_draw_count, p_stride);
++	} else {
++		draw_graph.add_draw_list_draw_mesh_tasks_indirect(buffer->driver_id, p_offset, p_draw_count, p_stride);
++	}
++
++	draw_list.state.draw_count++;
++
++	if (buffer->draw_tracker != nullptr) {
++		draw_graph.add_draw_list_usage(buffer->draw_tracker, RDG::RESOURCE_USAGE_INDIRECT_BUFFER_READ);
++	}
++
++	_check_transfer_worker_buffer(buffer);
++
++	if (count_buffer != nullptr) {
++		if (count_buffer->draw_tracker != nullptr) {
++			draw_graph.add_draw_list_usage(count_buffer->draw_tracker, RDG::RESOURCE_USAGE_INDIRECT_BUFFER_READ);
++		}
++
++		_check_transfer_worker_buffer(count_buffer);
++	}
++}
++
+ void RenderingDevice::draw_list_set_viewport(DrawListID p_list, const Rect2 &p_rect) {
+ 	ERR_FAIL_COND(!draw_list.active);
+ 
+@@ -9305,6 +9384,8 @@ void RenderingDevice::_bind_methods() {
+ 	ClassDB::bind_method(D_METHOD("draw_list_draw_indirect", "draw_list", "use_indices", "buffer", "offset", "draw_count", "stride"), &RenderingDevice::draw_list_draw_indirect, DEFVAL(0), DEFVAL(1), DEFVAL(0));
+ 	ClassDB::bind_method(D_METHOD("draw_list_draw_indirect_count", "draw_list", "use_indices", "buffer", "offset", "count_buffer", "count_buffer_offset", "max_draw_count", "stride"), &RenderingDevice::draw_list_draw_indirect_count);
+ 	ClassDB::bind_method(D_METHOD("draw_list_draw_mesh_tasks", "draw_list", "x_count", "y_count", "z_count"), &RenderingDevice::draw_list_draw_mesh_tasks);
++	ClassDB::bind_method(D_METHOD("draw_list_draw_mesh_tasks_indirect", "draw_list", "buffer", "offset", "draw_count", "stride"), &RenderingDevice::draw_list_draw_mesh_tasks_indirect, DEFVAL(0), DEFVAL(1), DEFVAL(12));
++	ClassDB::bind_method(D_METHOD("draw_list_draw_mesh_tasks_indirect_count", "draw_list", "buffer", "offset", "count_buffer", "count_buffer_offset", "max_draw_count", "stride"), &RenderingDevice::draw_list_draw_mesh_tasks_indirect_count);
+ 
+ 	ClassDB::bind_method(D_METHOD("draw_list_enable_scissor", "draw_list", "rect"), &RenderingDevice::draw_list_enable_scissor, DEFVAL(Rect2()));
+ 	ClassDB::bind_method(D_METHOD("draw_list_disable_scissor", "draw_list"), &RenderingDevice::draw_list_disable_scissor);
+diff --git a/servers/rendering/rendering_device.h b/servers/rendering/rendering_device.h
+index 3bbbf04..d32113c 100644
+--- a/servers/rendering/rendering_device.h
++++ b/servers/rendering/rendering_device.h
+@@ -1562,6 +1562,8 @@ public:
+ 	void draw_list_draw_indirect(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset = 0, uint32_t p_draw_count = 1, uint32_t p_stride = 0);
+ 	void draw_list_draw_indirect_count(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset, RID p_count_buffer, uint32_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride);
+ 	void draw_list_draw_mesh_tasks(DrawListID p_list, uint32_t p_x_count, uint32_t p_y_count, uint32_t p_z_count);
++	void draw_list_draw_mesh_tasks_indirect(DrawListID p_list, RID p_buffer, uint32_t p_offset = 0, uint32_t p_draw_count = 1, uint32_t p_stride = 12);
++	void draw_list_draw_mesh_tasks_indirect_count(DrawListID p_list, RID p_buffer, uint32_t p_offset, RID p_count_buffer, uint32_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride);
+ 
+ 	void draw_list_set_viewport(DrawListID p_list, const Rect2 &p_rect);
+ 	void draw_list_enable_scissor(DrawListID p_list, const Rect2 &p_rect);
+@@ -1731,6 +1733,8 @@ private:
+ 	void _check_transfer_worker_operation(uint32_t p_transfer_worker_index, uint64_t p_transfer_worker_operation);
+ 	void _check_transfer_worker_buffer(Buffer *p_buffer);
+ 	void _draw_list_draw_indirect(DrawListID p_list, bool p_use_indices, RID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride, RID p_count_buffer, uint32_t p_count_buffer_offset);
++	bool _draw_list_mesh_draw_prepare();
++	void _draw_list_draw_mesh_tasks_indirect(RID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride, RID p_count_buffer, uint32_t p_count_buffer_offset);
+ 	void _check_transfer_worker_texture(Texture *p_texture);
+ 	void _check_transfer_worker_vertex_array(VertexArray *p_vertex_array);
+ 	void _check_transfer_worker_index_array(IndexArray *p_index_array);
+diff --git a/servers/rendering/rendering_device_driver.h b/servers/rendering/rendering_device_driver.h
+index aa1a190..0bcebd0 100644
+--- a/servers/rendering/rendering_device_driver.h
++++ b/servers/rendering/rendering_device_driver.h
+@@ -699,6 +699,8 @@ public:
+ 	virtual void command_render_draw_indirect(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, uint32_t p_draw_count, uint32_t p_stride) = 0;
+ 	virtual void command_render_draw_indirect_count(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, BufferID p_count_buffer, uint64_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) = 0;
+ 	virtual void command_render_draw_mesh_tasks(CommandBufferID p_cmd_buffer, uint32_t p_x_count, uint32_t p_y_count, uint32_t p_z_count) { ERR_FAIL_MSG("Mesh shaders are not supported by this rendering driver."); }
++	virtual void command_render_draw_mesh_tasks_indirect(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, uint32_t p_draw_count, uint32_t p_stride) { ERR_FAIL_MSG("Mesh shaders are not supported by this rendering driver."); }
++	virtual void command_render_draw_mesh_tasks_indirect_count(CommandBufferID p_cmd_buffer, BufferID p_indirect_buffer, uint64_t p_offset, BufferID p_count_buffer, uint64_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) { ERR_FAIL_MSG("Mesh shaders are not supported by this rendering driver."); }
+ 
+ 	// Buffer binding.
+ 	virtual void command_render_bind_vertex_buffers(CommandBufferID p_cmd_buffer, uint32_t p_binding_count, const BufferID *p_buffers, const uint64_t *p_offsets, uint64_t p_dynamic_offsets) = 0;
+diff --git a/servers/rendering/rendering_device_graph.cpp b/servers/rendering/rendering_device_graph.cpp
+index 8f07a1b..deda3b7 100644
+--- a/servers/rendering/rendering_device_graph.cpp
++++ b/servers/rendering/rendering_device_graph.cpp
+@@ -996,6 +996,16 @@ void RenderingDeviceGraph::_run_draw_list_command(RDD::CommandBufferID p_command
+ 				driver->command_render_draw_mesh_tasks(p_command_buffer, draw_mesh_tasks_instruction->x_count, draw_mesh_tasks_instruction->y_count, draw_mesh_tasks_instruction->z_count);
+ 				instruction_data_cursor += sizeof(DrawListDrawMeshTasksInstruction);
+ 			} break;
++			case DrawListInstruction::TYPE_DRAW_MESH_TASKS_INDIRECT: {
++				const DrawListDrawIndirectInstruction *draw_indirect_instruction = reinterpret_cast<const DrawListDrawIndirectInstruction *>(instruction);
++				driver->command_render_draw_mesh_tasks_indirect(p_command_buffer, draw_indirect_instruction->buffer, draw_indirect_instruction->offset, draw_indirect_instruction->draw_count, draw_indirect_instruction->stride);
++				instruction_data_cursor += sizeof(DrawListDrawIndirectInstruction);
++			} break;
++			case DrawListInstruction::TYPE_DRAW_MESH_TASKS_INDIRECT_COUNT: {
++				const DrawListDrawIndirectCountInstruction *draw_indirect_count_instruction = reinterpret_cast<const DrawListDrawIndirectCountInstruction *>(instruction);
++				driver->command_render_draw_mesh_tasks_indirect_count(p_command_buffer, draw_indirect_count_instruction->buffer, draw_indirect_count_instruction->offset, draw_indirect_count_instruction->count_buffer, draw_indirect_count_instruction->count_buffer_offset, draw_indirect_count_instruction->max_draw_count, draw_indirect_count_instruction->stride);
++				instruction_data_cursor += sizeof(DrawListDrawIndirectCountInstruction);
++			} break;
+ 			case DrawListInstruction::TYPE_EXECUTE_COMMANDS: {
+ 				const DrawListExecuteCommandsInstruction *execute_commands_instruction = reinterpret_cast<const DrawListExecuteCommandsInstruction *>(instruction);
+ 				driver->command_buffer_execute_secondary(p_command_buffer, execute_commands_instruction->command_buffer);
+@@ -1600,6 +1610,16 @@ void RenderingDeviceGraph::_print_draw_list(const uint8_t *p_instruction_data, u
+ 				print_line("\tDRAW MESH TASKS", draw_mesh_tasks_instruction->x_count, draw_mesh_tasks_instruction->y_count, draw_mesh_tasks_instruction->z_count);
+ 				instruction_data_cursor += sizeof(DrawListDrawMeshTasksInstruction);
+ 			} break;
++			case DrawListInstruction::TYPE_DRAW_MESH_TASKS_INDIRECT: {
++				const DrawListDrawIndirectInstruction *draw_indirect_instruction = reinterpret_cast<const DrawListDrawIndirectInstruction *>(instruction);
++				print_line("\tDRAW MESH TASKS INDIRECT BUFFER ID", itos(draw_indirect_instruction->buffer.id), "OFFSET", draw_indirect_instruction->offset, "DRAW COUNT", draw_indirect_instruction->draw_count, "STRIDE", draw_indirect_instruction->stride);
++				instruction_data_cursor += sizeof(DrawListDrawIndirectInstruction);
++			} break;
++			case DrawListInstruction::TYPE_DRAW_MESH_TASKS_INDIRECT_COUNT: {
++				const DrawListDrawIndirectCountInstruction *draw_indirect_count_instruction = reinterpret_cast<const DrawListDrawIndirectCountInstruction *>(instruction);
++				print_line("\tDRAW MESH TASKS INDIRECT COUNT BUFFER ID", itos(draw_indirect_count_instruction->buffer.id), "OFFSET", draw_indirect_count_instruction->offset, "COUNT BUFFER ID", itos(draw_indirect_count_instruction->count_buffer.id), "COUNT OFFSET", draw_indirect_count_instruction->count_buffer_offset, "MAX DRAW COUNT", draw_indirect_count_instruction->max_draw_count, "STRIDE", draw_indirect_count_instruction->stride);
++				instruction_data_cursor += sizeof(DrawListDrawIndirectCountInstruction);
++			} break;
+ 			case DrawListInstruction::TYPE_EXECUTE_COMMANDS: {
+ 				print_line("\tEXECUTE COMMANDS");
+ 				instruction_data_cursor += sizeof(DrawListExecuteCommandsInstruction);
+@@ -2278,6 +2298,28 @@ void RenderingDeviceGraph::add_draw_list_draw_mesh_tasks(uint32_t p_x_count, uin
+ 	instruction->z_count = p_z_count;
+ }
+ 
++void RenderingDeviceGraph::add_draw_list_draw_mesh_tasks_indirect(RDD::BufferID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride) {
++	DrawListDrawIndirectInstruction *instruction = reinterpret_cast<DrawListDrawIndirectInstruction *>(_allocate_draw_list_instruction(sizeof(DrawListDrawIndirectInstruction)));
++	instruction->type = DrawListInstruction::TYPE_DRAW_MESH_TASKS_INDIRECT;
++	instruction->buffer = p_buffer;
++	instruction->offset = p_offset;
++	instruction->draw_count = p_draw_count;
++	instruction->stride = p_stride;
++	draw_instruction_list.stages.set_flag(RDD::PIPELINE_STAGE_DRAW_INDIRECT_BIT);
++}
++
++void RenderingDeviceGraph::add_draw_list_draw_mesh_tasks_indirect_count(RDD::BufferID p_buffer, uint32_t p_offset, RDD::BufferID p_count_buffer, uint32_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) {
++	DrawListDrawIndirectCountInstruction *instruction = reinterpret_cast<DrawListDrawIndirectCountInstruction *>(_allocate_draw_list_instruction(sizeof(DrawListDrawIndirectCountInstruction)));
++	instruction->type = DrawListInstruction::TYPE_DRAW_MESH_TASKS_INDIRECT_COUNT;
++	instruction->buffer = p_buffer;
++	instruction->count_buffer = p_count_buffer;
++	instruction->offset = p_offset;
++	instruction->count_buffer_offset = p_count_buffer_offset;
++	instruction->max_draw_count = p_max_draw_count;
++	instruction->stride = p_stride;
++	draw_instruction_list.stages.set_flag(RDD::PIPELINE_STAGE_DRAW_INDIRECT_BIT);
++}
++
+ void RenderingDeviceGraph::add_draw_list_draw_indirect_count(bool p_indexed, RDD::BufferID p_buffer, uint32_t p_offset, RDD::BufferID p_count_buffer, uint32_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride) {
+ 	DrawListDrawIndirectCountInstruction *instruction = reinterpret_cast<DrawListDrawIndirectCountInstruction *>(_allocate_draw_list_instruction(sizeof(DrawListDrawIndirectCountInstruction)));
+ 	instruction->type = p_indexed ? DrawListInstruction::TYPE_DRAW_INDEXED_INDIRECT_COUNT : DrawListInstruction::TYPE_DRAW_INDIRECT_COUNT;
+diff --git a/servers/rendering/rendering_device_graph.h b/servers/rendering/rendering_device_graph.h
+index 8a66ea5..63c7167 100644
+--- a/servers/rendering/rendering_device_graph.h
++++ b/servers/rendering/rendering_device_graph.h
+@@ -90,6 +90,8 @@ public:
+ 			TYPE_DRAW_INDIRECT_COUNT,
+ 			TYPE_DRAW_INDEXED_INDIRECT_COUNT,
+ 			TYPE_DRAW_MESH_TASKS,
++			TYPE_DRAW_MESH_TASKS_INDIRECT,
++			TYPE_DRAW_MESH_TASKS_INDIRECT_COUNT,
+ 			TYPE_EXECUTE_COMMANDS,
+ 			TYPE_NEXT_SUBPASS,
+ 			TYPE_SET_BLEND_CONSTANTS,
+@@ -948,6 +950,8 @@ public:
+ 	void add_draw_list_draw_indirect(RDD::BufferID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride);
+ 	void add_draw_list_draw_indexed_indirect(RDD::BufferID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride);
+ 	void add_draw_list_draw_mesh_tasks(uint32_t p_x_count, uint32_t p_y_count, uint32_t p_z_count);
++	void add_draw_list_draw_mesh_tasks_indirect(RDD::BufferID p_buffer, uint32_t p_offset, uint32_t p_draw_count, uint32_t p_stride);
++	void add_draw_list_draw_mesh_tasks_indirect_count(RDD::BufferID p_buffer, uint32_t p_offset, RDD::BufferID p_count_buffer, uint32_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride);
+ 	void add_draw_list_draw_indirect_count(bool p_indexed, RDD::BufferID p_buffer, uint32_t p_offset, RDD::BufferID p_count_buffer, uint32_t p_count_buffer_offset, uint32_t p_max_draw_count, uint32_t p_stride);
+ 	void add_draw_list_execute_commands(RDD::CommandBufferID p_command_buffer);
+ 	void add_draw_list_next_subpass(RDD::CommandBufferType p_command_buffer_type);
