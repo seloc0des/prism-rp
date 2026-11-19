@@ -142,7 +142,7 @@ So Lumina doesn't pass the revised Gate 2 yet: SDFGI is ahead by 3 dB in the Cor
 Lumina settles far too slowly. The Cornell reference is noisy enough at 128 samples that nothing can score above about
 28 dB (about 34 dB at 512): the old 36 dB was out of reach there whatever the GI.
 
-**Interim floor: 20 dB fitted** on every Gate 2 scene (25 dB since #22, on the corrected measurement below). Beating SDFGI is the real bar; the floor catches output that
+**Interim floor: 25 dB fitted** on every Gate 2 scene since #22 (20 dB on the measurement before it, described below). Beating SDFGI is the real bar; the floor catches output that
 is badly wrong in a scene where SDFGI also does poorly (it sits above SDFGI's Cornell score, below Lumina's Sponza
 score and well below the reference's noise ceiling).
 
@@ -308,20 +308,22 @@ hotspot when the rest of the hemisphere is dark.
 debug view, which swaps every material for Godot's grey default (albedo 0.6, roughness 0.8, metallic 0.2), and does so
 in every pass except shadows: also where SDFGI captures the scene's colours. So SDFGI computed its bounce light as if
 every wall were grey, with no red or green in the Cornell box and no coloured drapes in Sponza, while the reference had
-them. Now every Gate 2 capture renders the same matte scene (`--prism-diffuse-only`), SDFGI's light is the final image
-with SDFGI on minus off, Godot's unshaded view gives each surface's albedo, and Lumina's irradiance and the reference's
-are multiplied by it. Gate 2 compares bounce light as a viewer sees it. The export now carries each material's
-specular level, so the reference's matte scene is matte too.
+them. Now every Gate 2 capture renders the reference's scene: matte (`--prism-diffuse-only`), no environment light
+(ambient off and a black background, which GI rays that miss would otherwise pick up), and one bounce of GI
+(`--prism-gi-single-bounce`: SDFGI's default bounce feedback computes several, while the reference and Lumina compute
+one). SDFGI's light is the final image with SDFGI on minus off, Godot's unshaded view gives each surface's albedo, and
+Lumina's irradiance and the reference's are multiplied by it, so Gate 2 compares bounce light as a viewer sees it. The
+export now carries each material's specular level, so the reference's matte scene is matte too.
 
 Gate 2 on the corrected measurement (Tier 2 GPU, 512 samples; Lumina's world cache off, as by default):
 
 | Scene | Lumina, fitted (centre) | SDFGI, fitted (centre) | Lumina's mean vs the reference | Best possible |
 | :--- | :--- | :--- | :--- | :--- |
-| Cornell box | 28.4 dB (26.9) | 23.3 dB (22.5) | 1.07x | 41.7 dB |
-| Sponza | 29.3 dB (29.5) | 35.2 dB (33.6) | 0.77x | 41.2 dB |
+| Cornell box | 28.4 dB (26.9) | 22.6 dB (22.0) | 1.07x | 41.7 dB |
+| Sponza | 29.3 dB (29.5) | 34.9 dB (33.3) | 0.77x | 41.2 dB |
 
-Seen fairly, SDFGI is good in Sponza: 5.9 dB ahead of Lumina, not the 0.6–1.6 dB the old measurement suggested, while
-Lumina leads the Cornell box by 5.2 dB. Most of the Sponza gap is light Lumina never sees from screen space (surfaces lit
+Seen fairly, SDFGI is good in Sponza: 5.6 dB ahead of Lumina, not the 0.6–1.6 dB the old measurement suggested, while
+Lumina leads the Cornell box by 5.9 dB. SDFGI's light level is right in both (the fit scales it by 1.02 and 0.89). Most of the Sponza gap is light Lumina never sees from screen space (surfaces lit
 from behind the camera, the gallery undersides): the world cache recovers some of it today (about 1.5 dB in a first
 measurement), and the ray-query fallback on the custom build is what closes it.
 
@@ -338,7 +340,7 @@ moves from 20 to 25 dB by the same rule as before: above SDFGI's Cornell score a
    - keep Lumina under the 2.40 ms Tier 2 budget in the foliage scene;
    - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
      templates;
-   - on the custom build, the ray-query fallback for off-screen and hidden light (Sponza's 5.9 dB gap to SDFGI is
+   - on the custom build, the ray-query fallback for off-screen and hidden light (Sponza's 5.6 dB gap to SDFGI is
      mostly that light), Lumina's real albedo instead of the albedo proxy, and a specular term so metals reflect
      bounced light, to finish Gate 2;
    - Track B wired up for Gates 3 and 4, then Gate 5.

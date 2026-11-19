@@ -59,21 +59,22 @@ sys.path.insert(0, str(HERE / "reference"))
 
 import run_visual_regression as rvr  # noqa: E402
 from exr import load_indirect, load_rgb  # noqa: E402
-from metrics import gate2_metrics, psnr, srgb_to_linear  # noqa: E402
+from metrics import gate2_metrics, psnr  # noqa: E402
 
 GATE2_SCENES = ["01_cornell_box", "04_dynamic_sponza"]
 CYCLES_SCRIPT = HERE / "reference" / "cycles_reference.py"
 
 
-# Every Gate 2 capture renders the same matte scene (no metals, no specular), so the exported scene, Lumina and
-# SDFGI all see one set of materials and the comparison is about diffuse bounce light.
-MATTE_SCENE = ["--prism-chronos=off", "--prism-no-jitter", "--prism-ambient=off", "--prism-ssr=off",
-               "--prism-emission=off", "--prism-diffuse-only"]
+# Every Gate 2 capture renders the same scene the reference does: matte (no metals, no specular), no emission, no
+# environment light, and one bounce of GI, so the exported scene, Lumina and SDFGI share one set of materials and
+# the comparison is about a single diffuse bounce of the scene's lights.
+GATE2_SCENE = ["--prism-chronos=off", "--prism-no-jitter", "--prism-ambient=off", "--prism-ssr=off",
+               "--prism-emission=off", "--prism-diffuse-only", "--prism-gi-single-bounce"]
 
 
 def lumina_capture_args(export_dir: Path, exr_path: Path) -> list[str]:
     return [
-        *MATTE_SCENE, "--prism-set=lumina.debug_view_mode=2",
+        *GATE2_SCENE, "--prism-set=lumina.debug_view_mode=2",
         f"--qa-scene-export={export_dir}",
         f"--qa-exr-out={exr_path}",   # float capture: irradiance above 1.0 isn't clipped
     ]
@@ -82,12 +83,12 @@ def lumina_capture_args(export_dir: Path, exr_path: Path) -> list[str]:
 def sdfgi_capture_args(exr_path: Path, sdfgi_on: bool) -> list[str]:
     """The final image with SDFGI on or off; the difference is SDFGI's bounce light as seen. Not Godot's
     lighting-only view: it swaps every material for a grey default, also where SDFGI captures colours."""
-    return [*MATTE_SCENE, "--prism-lumina=off", f"--prism-sdfgi={'on' if sdfgi_on else 'off'}", f"--qa-exr-out={exr_path}"]
+    return [*GATE2_SCENE, "--prism-lumina=off", f"--prism-sdfgi={'on' if sdfgi_on else 'off'}", f"--qa-exr-out={exr_path}"]
 
 
 def albedo_capture_args(exr_path: Path) -> list[str]:
     """Godot's unshaded view: each visible surface's albedo, to weight the bounce light as a viewer sees it."""
-    return [*MATTE_SCENE, "--prism-lumina=off", "--prism-sdfgi=off", "--prism-debug-draw=unshaded", f"--qa-exr-out={exr_path}"]
+    return [*GATE2_SCENE, "--prism-lumina=off", "--prism-sdfgi=off", "--prism-debug-draw=unshaded", f"--qa-exr-out={exr_path}"]
 
 
 def jsonable(value):
@@ -156,26 +157,29 @@ def main() -> int:
         export_dir = scene_dir / "export"
         print(f"[{scene}] Godot (Lumina irradiance) ...")
         exr_path = scene_dir / "godot" / "irradiance.exr"
-        png, _, errors = rvr.capture_scene(godot, None, repo / "project", scene, rvr.CANONICAL_SCENES[scene], tier,
-                                           args.capture_frame, out_root, lumina_capture_args(export_dir, exr_path),
-                                           1.0, scene_dir / "godot")
-        print(f"[{scene}] Godot (albedo, unshaded view) ...")
         albedo_exr = scene_dir / "albedo" / "albedo.exr"
-        rvr.capture_scene(godot, None, repo / "project", scene, rvr.CANONICAL_SCENES[scene], tier, args.capture_frame,
-                          out_root, albedo_capture_args(albedo_exr), 1.0, albedo_exr.parent)
-        albedo = load_rgb(albedo_exr).astype(np.float64)
+        for stale in (exr_path, albedo_exr):   # capture_scene clears a stale PNG, not these
+            stale.unlink(missing_ok=True)
+        _, _, errors = rvr.capture_scene(godot, None, repo / "project", scene, rvr.CANONICAL_SCENES[scene], tier,
+                                         args.capture_frame, out_root, lumina_capture_args(export_dir, exr_path),
+                                         1.0, scene_dir / "godot")
+        print(f"[{scene}] Godot (albedo, unshaded view) ...")
+        _, _, albedo_errors = rvr.capture_scene(godot, None, repo / "project", scene, rvr.CANONICAL_SCENES[scene], tier,
+                                                args.capture_frame, out_root, albedo_capture_args(albedo_exr), 1.0,
+                                                albedo_exr.parent)
+        errors = [*errors, *albedo_errors]
+        for exr in (exr_path, albedo_exr):
+            if not exr.exists():
+                raise SystemExit(f"{scene}: Godot wrote no {exr} (see the godot.log beside it)")
+        test, albedo = load_rgb(exr_path).astype(np.float64), load_rgb(albedo_exr).astype(np.float64)
         print(f"[{scene}] Cycles reference ({args.samples} spp) ...")
         ref = load_indirect(render_reference(blender, export_dir / "scene.json", scene_dir / "reference", args.samples, args.diffuse_bounces))
-        if exr_path.exists():
-            test, clipped = load_rgb(exr_path).astype(np.float64), False
-        else:   # an older rig without --qa-exr-out: the 8-bit screenshot, clipped at 1
-            test, clipped = srgb_to_linear(np.asarray(Image.open(png).convert("RGB"), np.float64) / 255.0), True
         if not (test.shape == ref.shape == albedo.shape):
             raise SystemExit(f"{scene}: Godot capture {test.shape}, albedo {albedo.shape}, reference {ref.shape}")
         # Bounce light as a viewer sees it: irradiance (E / pi, the white-albedo quantity) times the surface's albedo.
         ref_seen = ref * albedo
-        m = gate2_metrics(test * albedo, ref_seen, clipped_test=clipped)
-        m.update(scene=scene, float_capture=not clipped, godot_errors=errors)
+        m = gate2_metrics(test * albedo, ref_seen, clipped_test=False)
+        m.update(scene=scene, godot_errors=errors)
         write_comparison(scene_dir / "compare.png", ref_seen, test * albedo, m["fitted_scale"])
         print(f"  Lumina: {m['psnr_db']:.2f} dB raw, {m['psnr_fitted_db']:.2f} dB fitted (scale {m['fitted_scale']:.3f}), "
               f"{m['psnr_center_db']:.2f} dB in the centre; mean level {m['mean_test']:.4f} vs reference {m['mean_reference']:.4f}")
@@ -185,8 +189,12 @@ def main() -> int:
             frames = {}
             for on in (True, False):
                 exr = scene_dir / f"sdfgi_{'on' if on else 'off'}" / "frame.exr"
-                rvr.capture_scene(godot, None, repo / "project", scene, rvr.CANONICAL_SCENES[scene], tier, args.capture_frame,
-                                  out_root, sdfgi_capture_args(exr, on), 1.0, exr.parent)
+                exr.unlink(missing_ok=True)
+                _, _, sdfgi_errors = rvr.capture_scene(godot, None, repo / "project", scene, rvr.CANONICAL_SCENES[scene], tier,
+                                                       args.capture_frame, out_root, sdfgi_capture_args(exr, on), 1.0, exr.parent)
+                m["godot_errors"] = [*m["godot_errors"], *sdfgi_errors]
+                if not exr.exists():
+                    raise SystemExit(f"{scene}: Godot wrote no {exr} (see the godot.log beside it)")
                 frames[on] = load_rgb(exr).astype(np.float64)
             sdfgi = np.maximum(frames[True] - frames[False], 0.0)   # already as seen: albedo times SDFGI's irradiance
             ms = gate2_metrics(sdfgi, ref_seen, clipped_test=False)

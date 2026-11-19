@@ -38,9 +38,12 @@ var qa_capture_frame: int = -1
 var qa_telemetry_out: String = ""
 var qa_screenshot_out: String = ""
 ## --qa-scene-export=<dir>: write the rendered scene (triangles, materials, lights, camera) for the
-## Gate 2 Cycles reference. --prism-ambient=off zeroes ambient light (indirect-only comparisons).
+## Gate 2 Cycles reference. --prism-ambient=off removes environment light: no ambient and a black background, which
+## GI rays that miss would otherwise pick up (indirect-only comparisons).
 var qa_scene_export: String = ""
 var ambient_enabled := true
+## --prism-gi-single-bounce: SDFGI computes one bounce (no bounce feedback), as Gate 2's reference and Lumina do.
+var gi_single_bounce := false
 var quit_after_frame: int = -1
 ## --prism-hdr=on: request HDR output on the window (Godot 4.7; needs platform support, e.g. Wayland on Linux).
 var hdr_requested := false
@@ -180,6 +183,8 @@ func _parse_cmdline_args() -> void:
 			qa_scene_export = arg.get_slice("=", 1)
 		elif arg.begins_with("--prism-ambient="):
 			ambient_enabled = _flag_value(arg)
+		elif arg == "--prism-gi-single-bounce":
+			gi_single_bounce = true
 		elif arg.begins_with("--quit-after="):
 			quit_after_frame = arg.get_slice("=", 1).to_int()
 		elif arg == "--prism-no-jitter":
@@ -216,6 +221,8 @@ func _parse_cmdline_args() -> void:
 			light_on_frame = arg.get_slice("=", 1).to_int()
 		elif arg.begins_with("--prism-debug-draw="):
 			debug_draw_unshaded = arg.get_slice("=", 1).to_lower() == "unshaded"
+			if not debug_draw_unshaded:
+				push_warning("[Prism RP QA] Unknown --prism-debug-draw value %s (only 'unshaded'); drawing normally." % arg.get_slice("=", 1))
 		elif arg.begins_with("--prism-diffuse-only"):
 			diffuse_only = true
 		elif arg.begins_with("--prism-emission="):
@@ -336,7 +343,7 @@ func foliage_transparency() -> BaseMaterial3D.Transparency:
 func _setup_environment_and_chronos_vpu() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.015, 0.018, 0.024)
+	env.background_color = Color(0.015, 0.018, 0.024) if ambient_enabled else Color.BLACK
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.08, 0.09, 0.11)
 	env.ambient_light_energy = 0.35 if ambient_enabled else 0.0
@@ -378,6 +385,8 @@ func _setup_environment_and_chronos_vpu() -> void:
 		sdfgi_on = false
 	env.sdfgi_enabled = sdfgi_on
 	env.sdfgi_use_occlusion = true
+	if gi_single_bounce:
+		env.sdfgi_bounce_feedback = 0.0
 	var ssr_on := lumina_effect != null and not sdfgi_on
 	if ssr_override == "on":
 		ssr_on = true

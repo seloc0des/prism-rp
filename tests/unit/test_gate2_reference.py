@@ -121,7 +121,8 @@ def test_settling_error_and_frame_count():
 def test_gate2_captures_share_a_matte_scene_and_measure_sdfgi_in_colour():
     # Godot's lighting-only debug view swaps every material for its grey default, also in the pass where SDFGI
     # captures colours, so Gate 2 measured SDFGI in a colourless scene. No capture may use it, and Lumina, SDFGI
-    # and the albedo capture must all render the same matte, emission-free, ambient-free scene.
+    # and the albedo capture must all render the reference's scene: matte, no emission, no environment light, and
+    # one GI bounce (SDFGI's default bounce feedback computes several).
     pytest.importorskip("flip_evaluator")
     import run_gate2
     on = run_gate2.sdfgi_capture_args(Path("x.exr"), True)
@@ -131,7 +132,7 @@ def test_gate2_captures_share_a_matte_scene_and_measure_sdfgi_in_colour():
     for args in (on, off, lumina, albedo):
         assert not any(a.startswith("--prism-debug-draw=lighting") for a in args)
         for flag in ("--prism-chronos=off", "--prism-ambient=off", "--prism-ssr=off", "--prism-emission=off",
-                     "--prism-diffuse-only", "--prism-no-jitter"):
+                     "--prism-diffuse-only", "--prism-no-jitter", "--prism-gi-single-bounce"):
             assert flag in args, (flag, args)
     assert "--prism-sdfgi=on" in on and "--prism-sdfgi=off" in off and "--prism-lumina=off" in on
     assert "--prism-debug-draw=unshaded" in albedo and "--prism-sdfgi=off" in albedo
