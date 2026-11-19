@@ -128,6 +128,13 @@ private:
     };
     static_assert(sizeof(TracePushConstants) == 80);
 
+    struct alignas(16) DownsamplePushConstants {
+        int32_t dst_width = 0;
+        int32_t dst_height = 0;
+        int32_t _pad[2] = { 0, 0 };
+    };
+    static_assert(sizeof(DownsamplePushConstants) == 16);
+
     struct alignas(16) MergePushConstants {
         int32_t probe_count_x = 0;
         int32_t probe_count_y = 0;
@@ -195,6 +202,9 @@ private:
 
     struct PerViewTargets {
         std::array<CascadeLevel, kMaxCascades> cascades;
+        // Prefiltered radiance for levels 1+: [i] is half the size of [i - 1] (of the colour buffer for i = 0).
+        std::array<godot::RID, kMaxCascades - 1> radiance_pyramid;
+        std::array<godot::Vector2i, kMaxCascades - 1> radiance_pyramid_size;
         godot::RID irradiance_raw;                  // RGBA16F
         std::array<godot::RID, 2> history;          // RGBA16F: rgb, a = history length
         std::array<godot::RID, 2> moments;          // RG16F
@@ -214,6 +224,7 @@ private:
     godot::RID linear_sampler;
 
     godot::RID trace_shader, trace_pipeline;
+    godot::RID downsample_shader, downsample_pipeline;
     godot::RID merge_shader, merge_pipeline;
     godot::RID integrate_shader, integrate_pipeline;
     godot::RID temporal_shader, temporal_pipeline;

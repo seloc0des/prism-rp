@@ -20,8 +20,10 @@ def cascade_layout(cam, spacing, count):
     return levels
 
 
-def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2):
-    """trace every level -> merge top-down -> integrate. Returns irradiance (h, w, 4)."""
+def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefilter=True):
+    """[downsample] -> trace every level -> merge top-down -> integrate. Returns irradiance (h, w, 4).
+    As in the C++, level 0 traces the colour buffer and level i the prefiltered radiance pyramid's level
+    i - 1 (prefilter=False traces every level against the colour buffer, as before)."""
     levels = cascade_layout(cam, spacing, count)
     images = {
         "depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"]),
@@ -30,11 +32,21 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2):
     for i, lv in enumerate(levels):
         images[f"c{i}"] = Img("rgba16f", *lv["size"])
     dispatches = []
+    if prefilter:
+        for i in range(count - 1):
+            div = 2 << i
+            size = ((cam.width + div - 1) // div, (cam.height + div - 1) // div)
+            images[f"p{i}"] = Img("rgba16f", *size)
+            dispatches.append(Dispatch(
+                "lumina/lumina_radiance_downsample.comp.glsl",
+                {0: ("color" if i == 0 else f"p{i - 1}", "sampled_linear"), 1: (f"p{i}", "storage")},
+                pc.downsample(*size), groups_for(*size)))
     for i, lv in enumerate(levels):
         scale = 4.0 ** i
+        radiance = "color" if i == 0 or not prefilter else f"p{i - 1}"
         dispatches.append(Dispatch(
             "lumina/lumina_rc_trace.comp.glsl",
-            {0: ("depth", "sampled_nearest"), 1: ("normal", "sampled_nearest"), 2: ("color", "sampled_linear"), 3: (f"c{i}", "storage")},
+            {0: ("depth", "sampled_nearest"), 1: ("normal", "sampled_nearest"), 2: (radiance, "sampled_linear"), 3: (f"c{i}", "storage")},
             pc.trace(cam.width, cam.height, lv["probes"], lv["block"], float(lv["spacing"]),
                      spacing * (scale - 1) / 3.0, spacing * scale, steps, thickness, 0, 0.01, cam.proj, cam.depth_params),
             groups_for(*lv["size"])))
@@ -93,6 +105,40 @@ def test_integrate_clamps_a_single_hot_direction(gpu):
                   {0: ("c0", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("normal", "sampled_nearest"), 3: ("irr", "storage")},
                   pc.integrate(32, 32, lv["probes"], lv["block"], 8.0, cam.depth_params), groups_for(32, 32))], ["irr"])["irr"]
     assert out[8:24, 8:24, 0].mean() < 0.4, out[8:24, 8:24, 0].mean()   # unclamped: about 20
+
+
+def test_radiance_downsample_averages_2x2_blocks(gpu):
+    rng = np.random.default_rng(3)
+    src = np.zeros((16, 24, 4)); src[..., :3] = rng.uniform(0, 4, (16, 24, 3)); src[..., 3] = 1
+    out = gpu.run({"src": Img("rgba16f", data=src), "dst": Img("rgba16f", 12, 8)},
+                  [Dispatch("lumina/lumina_radiance_downsample.comp.glsl",
+                            {0: ("src", "sampled_linear"), 1: ("dst", "storage")}, pc.downsample(12, 8), groups_for(12, 8))],
+                  ["dst"])["dst"]
+    expected = src[..., :3].reshape(8, 2, 12, 2, 3).mean(axis=(1, 3))
+    np.testing.assert_allclose(out[..., :3], expected, rtol=2e-3, atol=2e-3)
+
+
+def test_a_small_bright_patch_lights_steadily_as_it_moves(gpu):
+    # A small, bright patch on the back wall (like the spot a point light makes on a nearby wall),
+    # moved a few centimetres at a time. Coarse levels sampling it at full resolution hit it at full
+    # strength or miss it outright, so the light it throws flickers from step to step and gathers into
+    # blobs on the probes that happen to hit it. Tracing a prefiltered copy spreads each sample over the
+    # ray's footprint: the bounce light stays steady (and the patch is no longer mostly missed).
+    cam = Camera(width=128, height=96)
+    dim = (0.05, 0.05, 0.05)
+    frames = {False: [], True: []}
+    for dx in np.linspace(0.0, 0.12, 5):
+        x0 = 0.3 + dx
+        g = render(cam, [
+            Plane((0, -1, 0), (0, 1, 0), dim), Plane((0, 0, -6), (0, 0, 1), dim),
+            Plane((-1.5, 0, 0), (1, 0, 0), dim), Plane((1.5, 0, 0), (-1, 0, 0), dim),
+            Plane((x0, 0.3, -5.99), (0, 0, 1), (40.0, 40.0, 40.0), bounds=((x0 - 0.15, x0 + 0.15), (0.15, 0.45), (-6.5, -5.5))),
+        ])
+        walls = (g["linear_z"] > 0) & (g["color"][..., 0] < 1.0)
+        for prefilter in (False, True):
+            frames[prefilter].append(np.where(walls, run_cascades(gpu, cam, g, prefilter=prefilter)[..., 0], np.nan))
+    flicker = {k: float(np.nanmean(np.nanstd(np.stack(v), axis=0)) / np.nanmean(np.stack(v))) for k, v in frames.items()}
+    assert flicker[True] < 0.5 * flicker[False] and flicker[True] < 0.08, flicker   # measured: 0.03 vs 0.15
 
 
 def test_merge_combines_interval_transmittance_and_parent(gpu):
