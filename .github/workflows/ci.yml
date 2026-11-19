@@ -315,6 +315,70 @@ jobs:
             tests/artifacts/gate2_ci/*/godot/godot.log
           if-no-files-found: warn
 
+  export-check:
+    name: Exported games (Linux run on lavapipe, Windows packaging)
+    needs: [build-gdextension]
+    # Prism RP in a release export, as a game ships: the Linux export runs on lavapipe; the Windows
+    # export (DLL cross-compiled with MinGW-w64) is checked for packaging only, since there is no
+    # Windows GPU here. The GPU session runs both on real hardware (Windows through Wine).
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download Linux release GDExtension binary
+        uses: actions/download-artifact@v4
+        with:
+          name: prism-rp-linux-template_release
+          path: addons/prism_rp/bin
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install lavapipe, Xvfb, MinGW-w64 and SCons
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-tools xvfb wget unzip g++-mingw-w64-x86-64-posix
+          pip install scons
+
+      - name: Cross-compile the Windows release DLL
+        run: scons platform=windows use_mingw=yes target=template_release arch=x86_64 -j4
+
+      - name: Download Godot ${{ env.GODOT_VERSION }} Linux binary
+        run: |
+          wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" -O godot.zip
+          unzip -q godot.zip
+          chmod +x Godot_v${GODOT_VERSION}-stable_linux.x86_64
+
+      - name: Cache Godot export templates
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/godot/export_templates/${{ env.GODOT_VERSION }}.stable
+          key: godot-export-templates-${{ env.GODOT_VERSION }}
+
+      - name: Export and run
+        run: |
+          export VK_DRIVER_FILES="$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)"
+          python3 tests/check_export.py --godot-bin "$(pwd)/Godot_v${GODOT_VERSION}-stable_linux.x86_64" \
+            --download-templates --skip-build --no-run windows --out-dir tests/artifacts/export_check
+
+      - name: Upload the export check's logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: export-check
+          path: |
+            tests/artifacts/export_check/*.json
+            tests/artifacts/export_check/*.log
+            tests/artifacts/export_check/run_*/game.log
+            tests/artifacts/export_check/run_*/captured.png
+          if-no-files-found: warn
+
   vulkan-qa:
     name: Vulkan Validation Layer Smoke Test (lavapipe)
     needs: [validate-shaders, build-gdextension]
