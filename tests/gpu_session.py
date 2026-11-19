@@ -13,6 +13,8 @@ Stages, each reported as it runs (a stage that can't run stops the ones that dep
   motion      motion-vector check (tests/check_motion_vectors.py)
   validation  every scene x configuration, plus Gate 1 (tests/run_gpu_validation.py)
   settling    how many frames Lumina's bounce light takes to settle after a light comes on (tests/check_gi_convergence.py)
+  export      your-game check: release exports of scene 01 for Linux and Windows, run (Windows through Wine
+              if installed) to confirm Prism RP loads and runs in an exported game (tests/check_export.py)
   gate2       Lumina against a Blender Cycles reference, if Blender is installed (tests/run_gate2.py)
   hdr         by eye, if Godot can drive HDR here: scene 05 with HDR output, then SDR only
   package     one zip of everything (screenshots as JPEG)
@@ -364,6 +366,19 @@ def stage_settling(session: Session, godot: str, tier: str):
     return ("ok" if data.get("passed") else "issues"), detail, None
 
 
+def stage_export(session: Session, godot: str):
+    out = session.out_dir / "export_check"
+    proc = run_streamed([sys.executable, str(TESTS / "check_export.py"), "--godot-bin", godot, "--download-templates",
+                         "--out-dir", str(out)], session.out_dir / "export_check.log", timeout=3600)
+    report = out / "export_check.json"
+    if not report.exists():
+        raise StageFailed(f"no result (exit {proc.returncode}); see export_check.log")
+    platforms = json.loads(report.read_text(encoding="utf-8")).get("platforms", {})
+    detail = "; ".join(f"{name}: {r['status']} ({r['detail']})" for name, r in platforms.items())
+    failed = any(r["status"] == "failed" for r in platforms.values())
+    return ("issues" if failed else "ok"), detail, None
+
+
 def stage_hdr(session: Session, godot: str, tier: str, interactive: bool):
     sys.path.insert(0, str(TESTS))
     import run_visual_regression as rvr
@@ -444,6 +459,7 @@ def main() -> int:
     p.add_argument("--blender-bin", default=None)
     p.add_argument("--skip-build", action="store_true", help="Use the library already in addons/prism_rp/bin.")
     p.add_argument("--skip-gate2", action="store_true")
+    p.add_argument("--skip-export", action="store_true", help="Skip the exported-game check (downloads ~1 GB of templates once).")
     p.add_argument("--skip-hdr", action="store_true")
     p.add_argument("--non-interactive", action="store_true", help="Don't ask questions (HDR is checked, not judged).")
     p.add_argument("--out-dir", default=None, help="Default: tests/artifacts/gpu_session/<timestamp>")
@@ -471,6 +487,13 @@ def main() -> int:
     s.run("validation", stage_validation, s, godot, tier, args.software, needs=("python", "project"))
 
     s.run("settling", stage_settling, s, godot, tier, needs=("python", "project"))
+
+    if args.software or args.skip_export:
+        why = "software mode (CI's export-check job covers exports)" if args.software else "--skip-export"
+        s.stages["export"] = {"status": "skipped", "detail": why}
+        print(f"\n== export: skipped ({why})")
+    else:
+        s.run("export", stage_export, s, godot, needs=("python", "project"))
 
     blender = args.blender_bin or shutil.which("blender")
     if args.software or args.skip_gate2 or not blender:

@@ -30,6 +30,10 @@ Optional:
   which is too old (the session skips Gate 2 and says so); the Linux `.tar.xz` from blender.org runs unpacked.
 - **HDR check:** an HDR monitor with HDR turned on in the OS. On Linux it also needs a Wayland session:
   `echo $XDG_SESSION_TYPE` should print `wayland`.
+- **Exported Windows game:** Wine (`sudo apt install wine`) and MinGW-w64 (`sudo apt install
+  g++-mingw-w64-x86-64-posix`) let the export stage build and run the Windows export on Linux.
+  Without them it checks the Linux export only. The first run downloads Godot's export templates
+  (about 1 GB) unless the editor already has them.
 
 You don't need Godot installed: the script downloads Godot 4.7.2 into `tests/artifacts/godot/`.
 
@@ -44,7 +48,8 @@ Pick the tier that matches the GPU (`ROADMAP.md`; RTX 3060 / RX 6700 class is `t
 prints a summary and the path of the zip holding the results: `tests/artifacts/gpu_session/gpu_session_<timestamp>.zip`,
 with screenshots as JPEG. The HDR stage asks two questions, so stay at the screen for the end of the run.
 
-The stages run in this order: system, python, godot, build, project, motion, validation, gate2, hdr, package. A
+The stages run in this order: system, python, godot, build, project, motion, validation, settling, export, gate2,
+hdr, package (`--skip-export` leaves the exported-game check out). A
 stage that can't run says why and skips the ones that depend on it. The package is written either way.
 
 Useful flags:

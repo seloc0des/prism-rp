@@ -4,6 +4,8 @@
 
 Most of that is still ahead. Today the repository ships two compositor effects, **Chronos VPU** (temporal post) and a first version of **Lumina-Cascades** (screen-space GI), plus the build, CI and QA scaffolding the rest will be measured against. Neither effect has been validated on a real GPU yet: `docs/GPU_TEST_PLAN.md` is that step. The table marks what exists and what is planned; `ROADMAP.md` has the schedule.
 
+**Using it in your own game:** `docs/USING.md` (install script, setup, exporting for Linux and Windows).
+
 ## Status
 
 | Subsystem | Prism RP target | State |
