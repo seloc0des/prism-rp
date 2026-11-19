@@ -37,8 +37,10 @@ void main() {
             float d = textureLod(u_depth_tex, uv, 0.0).r;
             if (!lumina_is_sky(d)) {
                 float surface_z = prism_linearize_depth(d, wpc.misc.xy);
-                // More than half a cell behind the visible surface: inside or behind geometry.
-                buried = (-v.z - surface_z) > 0.5 * wpc.cam_pos.w ? 1.0 : 0.0;
+                // Behind the visible surface (by more than depth noise): inside or behind geometry. Every
+                // ray from here starts hidden, and the update would read the surface's lit front as a hit
+                // in almost every direction, turning the probe into a lamp.
+                buried = (-v.z - surface_z) > 0.01 * surface_z ? 1.0 : 0.0;
             }
         }
     }
