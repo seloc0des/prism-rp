@@ -142,7 +142,7 @@ So Lumina doesn't pass the revised Gate 2 yet: SDFGI is ahead by 3 dB in the Cor
 Lumina settles far too slowly. The Cornell reference is noisy enough at 128 samples that nothing can score above about
 28 dB (about 34 dB at 512): the old 36 dB was out of reach there whatever the GI.
 
-**Interim floor: 20 dB fitted** on every Gate 2 scene. Beating SDFGI is the real bar; the floor catches output that
+**Interim floor: 20 dB fitted** on every Gate 2 scene (25 dB since #22, on the corrected measurement below). Beating SDFGI is the real bar; the floor catches output that
 is badly wrong in a scene where SDFGI also does poorly (it sits above SDFGI's Cornell score, below Lumina's Sponza
 score and well below the reference's noise ceiling).
 
@@ -297,22 +297,50 @@ The cache costs about 0.07 ms on Tier 2.
 The colour smears on Sponza's columns turn out to be the same missing light: the worst column's camera-facing side is
 lit mostly from behind the camera (the large red drape and the warm floor), so without the cache it is half as bright
 as the reference and greyer, and the drapes in view dominate what is left. What remains for the cache is the Cornell
-box, where it adds light evenly to every surface; a likely cause is its coarse directions (each texel spans about
-25 degrees), so directions that should leave through the box's open front borrow a lit wall's light.
+box, where it adds light evenly to every surface. Coarse directions aren't the cause: doubling the cache's direction
+resolution made the Cornell box worse. In an analytic open box run through the whole pipeline in the shader harness,
+the cache lands within 8% of the exactly computed answer (0.95x with a bright hotspot on the ceiling, where the
+screen-space path alone gets 0.60x), so the excess comes from something particular to the real scene and is still open.
+The same test answers the firefly-clamp question below: the clamp does throw away real light from a small, bright
+hotspot when the rest of the hemisphere is dark.
+
+**Gate 2 measured SDFGI in a colourless scene (fixed in #22).** Gate 2 took SDFGI's light from Godot's lighting-only
+debug view, which swaps every material for Godot's grey default (albedo 0.6, roughness 0.8, metallic 0.2), and does so
+in every pass except shadows: also where SDFGI captures the scene's colours. So SDFGI computed its bounce light as if
+every wall were grey, with no red or green in the Cornell box and no coloured drapes in Sponza, while the reference had
+them. Now every Gate 2 capture renders the same matte scene (`--prism-diffuse-only`), SDFGI's light is the final image
+with SDFGI on minus off, Godot's unshaded view gives each surface's albedo, and Lumina's irradiance and the reference's
+are multiplied by it. Gate 2 compares bounce light as a viewer sees it. The export now carries each material's
+specular level, so the reference's matte scene is matte too.
+
+Gate 2 on the corrected measurement (Tier 2 GPU, 512 samples; Lumina's world cache off, as by default):
+
+| Scene | Lumina, fitted (centre) | SDFGI, fitted (centre) | Lumina's mean vs the reference | Best possible |
+| :--- | :--- | :--- | :--- | :--- |
+| Cornell box | 28.4 dB (26.9) | 23.3 dB (22.5) | 1.07x | 41.7 dB |
+| Sponza | 29.3 dB (29.5) | 35.2 dB (33.6) | 0.77x | 41.2 dB |
+
+Seen fairly, SDFGI is good in Sponza: 5.9 dB ahead of Lumina, not the 0.6–1.6 dB the old measurement suggested, while
+Lumina leads the Cornell box by 5.2 dB. Most of the Sponza gap is light Lumina never sees from screen space (surfaces lit
+from behind the camera, the gallery undersides): the world cache recovers some of it today (about 1.5 dB in a first
+measurement), and the ray-query fallback on the custom build is what closes it.
+
+Weighting by albedo lowers the error on dark surfaces, so these numbers sit higher than the old ones. The interim floor
+moves from 20 to 25 dB by the same rule as before: above SDFGI's Cornell score and below Lumina's Sponza score.
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
 3. Next, in order:
    - the world-space cache's extra light in the Cornell box, then the cache on by default; it also fills Sponza's
      dark, camera-facing surfaces and their colour smears;
-   - the colour tint next to bright, saturated surfaces (Sponza's columns) and the Cornell box's probe blobs, and
-     whether the integrate pass's firefly clamp (8x the mean of the other directions) throws away real light when
-     the rest of the hemisphere is dark;
+   - the Cornell box's probe blobs, and a firefly clamp that keeps a small, bright hotspot's real light (today's
+     clamp, 8x the mean of the other directions, discards it when the rest of the hemisphere is dark);
    - keep Lumina under the 2.40 ms Tier 2 budget in the foliage scene;
    - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
      templates;
-   - on the custom build, Lumina's real albedo instead of the albedo proxy, a specular term so metals reflect bounced
-     light, and the ray-query fallback for off-screen and hidden light, to finish Gate 2;
+   - on the custom build, the ray-query fallback for off-screen and hidden light (Sponza's 5.9 dB gap to SDFGI is
+     mostly that light), Lumina's real albedo instead of the albedo proxy, and a specular term so metals reflect
+     bounced light, to finish Gate 2;
    - Track B wired up for Gates 3 and 4, then Gate 5.
 
 ## Custom Godot build (decided 2026-11-19)

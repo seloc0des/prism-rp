@@ -4,8 +4,11 @@
 For each scene: Godot renders Lumina's "Denoised Irradiance" debug view (bounced diffuse light
 for white albedo; Chronos off, ambient off, no jitter, full resolution) and exports the scene
 (project/benchmarks/prism_scene_export.gd). Blender re-renders that export with Cycles, once with
-the same single diffuse bounce and once without; the difference is the bounced light. The two are compared
-in linear light:
+the same single diffuse bounce and once without; the difference is the bounced light. Every Godot
+capture uses the same matte scene (--prism-diffuse-only: no metals, no specular), so the export,
+Lumina and SDFGI share one set of materials. Godot also captures its unshaded view (each visible
+surface's albedo), and both irradiances are multiplied by it: Gate 2 compares bounce light as a
+viewer sees it, in linear light:
 
   psnr_db         raw PSNR
   psnr_fitted_db  PSNR after a least-squares brightness fit; Godot and Blender light units
@@ -21,8 +24,10 @@ light of the scene's lights. Emissive surfaces are often stand-ins drawn next to
 the Cornell box's ceiling panel, and counting their light as Lumina's would light the scene twice.
 
 Stock Godot's own GI is measured the same way (on by default; --no-sdfgi skips it): two more Godot
-captures with SDFGI on and off, in the lighting-only debug view with every material made diffuse,
-whose difference is SDFGI's indirect light at white albedo. compare_sdfgi.png shows it.
+captures of the final image with SDFGI on and off, whose difference is SDFGI's bounce light as seen.
+Not Godot's lighting-only debug view: it swaps every material, including the ones SDFGI captures its
+colours from, for a grey default, so SDFGI would be measured in a colourless scene.
+compare_sdfgi.png shows it.
 
 --noise-check renders the reference a second time with another seed. reference_ceiling_db is the
 best fitted PSNR anything could score against this reference: its self-PSNR plus 3 dB (a perfect
@@ -60,24 +65,29 @@ GATE2_SCENES = ["01_cornell_box", "04_dynamic_sponza"]
 CYCLES_SCRIPT = HERE / "reference" / "cycles_reference.py"
 
 
+# Every Gate 2 capture renders the same matte scene (no metals, no specular), so the exported scene, Lumina and
+# SDFGI all see one set of materials and the comparison is about diffuse bounce light.
+MATTE_SCENE = ["--prism-chronos=off", "--prism-no-jitter", "--prism-ambient=off", "--prism-ssr=off",
+               "--prism-emission=off", "--prism-diffuse-only"]
+
+
 def lumina_capture_args(export_dir: Path, exr_path: Path) -> list[str]:
     return [
-        "--prism-chronos=off", "--prism-no-jitter", "--prism-ambient=off", "--prism-ssr=off", "--prism-emission=off",
-        "--prism-set=lumina.debug_view_mode=2",
+        *MATTE_SCENE, "--prism-set=lumina.debug_view_mode=2",
         f"--qa-scene-export={export_dir}",
         f"--qa-exr-out={exr_path}",   # float capture: irradiance above 1.0 isn't clipped
     ]
 
 
 def sdfgi_capture_args(exr_path: Path, sdfgi_on: bool) -> list[str]:
-    """Godot's own GI in the reference's form: lighting-only view (white albedo where the camera looks),
-    diffuse materials, Lumina and Chronos off."""
-    return [
-        "--prism-lumina=off", "--prism-chronos=off", "--prism-no-jitter", "--prism-ambient=off", "--prism-ssr=off",
-        "--prism-emission=off", "--prism-debug-draw=lighting", "--prism-diffuse-only",
-        f"--prism-sdfgi={'on' if sdfgi_on else 'off'}",
-        f"--qa-exr-out={exr_path}",
-    ]
+    """The final image with SDFGI on or off; the difference is SDFGI's bounce light as seen. Not Godot's
+    lighting-only view: it swaps every material for a grey default, also where SDFGI captures colours."""
+    return [*MATTE_SCENE, "--prism-lumina=off", f"--prism-sdfgi={'on' if sdfgi_on else 'off'}", f"--qa-exr-out={exr_path}"]
+
+
+def albedo_capture_args(exr_path: Path) -> list[str]:
+    """Godot's unshaded view: each visible surface's albedo, to weight the bounce light as a viewer sees it."""
+    return [*MATTE_SCENE, "--prism-lumina=off", "--prism-sdfgi=off", "--prism-debug-draw=unshaded", f"--qa-exr-out={exr_path}"]
 
 
 def jsonable(value):
@@ -124,7 +134,7 @@ def main() -> int:
     p.add_argument("--samples", type=int, default=512)
     p.add_argument("--diffuse-bounces", type=int, default=1, help="Lumina v1 is single-bounce.")
     p.add_argument("--capture-frame", type=int, default=48)
-    p.add_argument("--min-psnr", type=float, default=20.0,
+    p.add_argument("--min-psnr", type=float, default=25.0,
                    help="Interim floor of fitted PSNR for screen-space Lumina (docs/NEXT_STEPS.md); 36 is the ray-query target.")
     p.add_argument("--out-dir", default=None)
     p.add_argument("--report-only", action="store_true", help="Exit 0 even below --min-psnr (crashes still fail).")
@@ -149,33 +159,40 @@ def main() -> int:
         png, _, errors = rvr.capture_scene(godot, None, repo / "project", scene, rvr.CANONICAL_SCENES[scene], tier,
                                            args.capture_frame, out_root, lumina_capture_args(export_dir, exr_path),
                                            1.0, scene_dir / "godot")
+        print(f"[{scene}] Godot (albedo, unshaded view) ...")
+        albedo_exr = scene_dir / "albedo" / "albedo.exr"
+        rvr.capture_scene(godot, None, repo / "project", scene, rvr.CANONICAL_SCENES[scene], tier, args.capture_frame,
+                          out_root, albedo_capture_args(albedo_exr), 1.0, albedo_exr.parent)
+        albedo = load_rgb(albedo_exr).astype(np.float64)
         print(f"[{scene}] Cycles reference ({args.samples} spp) ...")
         ref = load_indirect(render_reference(blender, export_dir / "scene.json", scene_dir / "reference", args.samples, args.diffuse_bounces))
         if exr_path.exists():
             test, clipped = load_rgb(exr_path).astype(np.float64), False
         else:   # an older rig without --qa-exr-out: the 8-bit screenshot, clipped at 1
             test, clipped = srgb_to_linear(np.asarray(Image.open(png).convert("RGB"), np.float64) / 255.0), True
-        if test.shape != ref.shape:
-            raise SystemExit(f"{scene}: Godot capture {test.shape} vs reference {ref.shape}")
-        m = gate2_metrics(test, ref, clipped_test=clipped)
+        if not (test.shape == ref.shape == albedo.shape):
+            raise SystemExit(f"{scene}: Godot capture {test.shape}, albedo {albedo.shape}, reference {ref.shape}")
+        # Bounce light as a viewer sees it: irradiance (E / pi, the white-albedo quantity) times the surface's albedo.
+        ref_seen = ref * albedo
+        m = gate2_metrics(test * albedo, ref_seen, clipped_test=clipped)
         m.update(scene=scene, float_capture=not clipped, godot_errors=errors)
-        write_comparison(scene_dir / "compare.png", ref, test, m["fitted_scale"])
+        write_comparison(scene_dir / "compare.png", ref_seen, test * albedo, m["fitted_scale"])
         print(f"  Lumina: {m['psnr_db']:.2f} dB raw, {m['psnr_fitted_db']:.2f} dB fitted (scale {m['fitted_scale']:.3f}), "
               f"{m['psnr_center_db']:.2f} dB in the centre; mean level {m['mean_test']:.4f} vs reference {m['mean_reference']:.4f}")
 
         if not args.no_sdfgi:
-            print(f"[{scene}] Godot SDFGI, on and off (lighting-only view) ...")
-            lit = {}
+            print(f"[{scene}] Godot SDFGI, on and off ...")
+            frames = {}
             for on in (True, False):
-                exr = scene_dir / f"sdfgi_{'on' if on else 'off'}" / "lighting.exr"
+                exr = scene_dir / f"sdfgi_{'on' if on else 'off'}" / "frame.exr"
                 rvr.capture_scene(godot, None, repo / "project", scene, rvr.CANONICAL_SCENES[scene], tier, args.capture_frame,
                                   out_root, sdfgi_capture_args(exr, on), 1.0, exr.parent)
-                lit[on] = load_rgb(exr).astype(np.float64)
-            sdfgi = np.maximum(lit[True] - lit[False], 0.0)
-            ms = gate2_metrics(sdfgi, ref, clipped_test=False)
+                frames[on] = load_rgb(exr).astype(np.float64)
+            sdfgi = np.maximum(frames[True] - frames[False], 0.0)   # already as seen: albedo times SDFGI's irradiance
+            ms = gate2_metrics(sdfgi, ref_seen, clipped_test=False)
             m["sdfgi"] = ms
             m["beats_sdfgi"] = m["psnr_fitted_db"] > ms["psnr_fitted_db"]
-            write_comparison(scene_dir / "compare_sdfgi.png", ref, sdfgi, ms["fitted_scale"])
+            write_comparison(scene_dir / "compare_sdfgi.png", ref_seen, sdfgi, ms["fitted_scale"])
             print(f"  SDFGI:  {ms['psnr_db']:.2f} dB raw, {ms['psnr_fitted_db']:.2f} dB fitted (scale {ms['fitted_scale']:.3f}), "
                   f"{ms['psnr_center_db']:.2f} dB in the centre -> Lumina {'beats' if m['beats_sdfgi'] else 'does not beat'} SDFGI")
 
@@ -183,7 +200,7 @@ def main() -> int:
             print(f"[{scene}] Cycles reference again, second seed ...")
             ref_b = load_indirect(render_reference(blender, export_dir / "scene.json", scene_dir / "reference_seed2",
                                                    args.samples, args.diffuse_bounces, seed=2))
-            m["reference_self_psnr_db"] = psnr(ref_b, ref)
+            m["reference_self_psnr_db"] = psnr(ref_b * albedo, ref_seen)
             m["reference_ceiling_db"] = m["reference_self_psnr_db"] + 3.01
             print(f"  Reference noise: two seeds agree to {m['reference_self_psnr_db']:.2f} dB, so nothing can score "
                   f"above about {m['reference_ceiling_db']:.2f} dB at {args.samples} samples")

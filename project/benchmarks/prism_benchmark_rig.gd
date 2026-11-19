@@ -58,10 +58,11 @@ var qa_exr_dir: String = ""
 ## --prism-light-on-frame=<n>: the scene's lights stay off until frame n (tests/check_gi_convergence.py).
 var light_on_frame: int = -1
 var _hidden_lights: Array[Light3D] = []
-## --prism-debug-draw=lighting: Godot's lighting-only view (white albedo at the visible surface), and
-## --prism-diffuse-only: every material non-metallic, non-specular and rough. Together they give Godot's
-## own GI in the form Gate 2's Cycles reference renders (tests/run_gate2.py, SDFGI comparison).
-var debug_draw_lighting := false
+## --prism-debug-draw=unshaded: Godot's unshaded view, i.e. each visible surface's albedo (Gate 2 weights
+## the bounce light by it). Not the lighting-only view: that one swaps every material, including the ones
+## SDFGI captures its colours from, for Godot's grey default.
+## --prism-diffuse-only: every material non-metallic, non-specular and rough (Gate 2's matte scene).
+var debug_draw_unshaded := false
 var diffuse_only := false
 ## --prism-emission=off: no material emits light. Gate 2 compares the bounce light of the scene's lights;
 ## an emissive surface is often a stand-in drawn next to a real light (the Cornell box's ceiling panel)
@@ -214,7 +215,7 @@ func _parse_cmdline_args() -> void:
 		elif arg.begins_with("--prism-light-on-frame="):
 			light_on_frame = arg.get_slice("=", 1).to_int()
 		elif arg.begins_with("--prism-debug-draw="):
-			debug_draw_lighting = arg.get_slice("=", 1).to_lower() == "lighting"
+			debug_draw_unshaded = arg.get_slice("=", 1).to_lower() == "unshaded"
 		elif arg.begins_with("--prism-diffuse-only"):
 			diffuse_only = true
 		elif arg.begins_with("--prism-emission="):
@@ -312,8 +313,8 @@ func _configure_viewport_scaling() -> void:
 	vp.use_taa = godot_taa
 	if not qa_exr_out.is_empty() or not qa_exr_frames.is_empty():
 		vp.use_hdr_2d = true  # keep the captured frame in floating point
-	if debug_draw_lighting:
-		vp.debug_draw = Viewport.DEBUG_DRAW_LIGHTING
+	if debug_draw_unshaded:
+		vp.debug_draw = Viewport.DEBUG_DRAW_UNSHADED
 
 func _configure_hdr_output() -> void:
 	var window := get_window()
