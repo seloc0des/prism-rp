@@ -285,7 +285,7 @@ It still adds a quarter to a third too much light, and the streaks on Sponza's p
 each cache texel always traces the centre of its patch of directions, so a small bright spot can stand in for the
 whole patch. Spreading the rays over the patch helped Sponza (23.9 dB) but hurt the Cornell box (18.0 dB, 1.81x),
 probably because the cache stores what the camera sees, highlights included, with no clamp against them as the
-screen-space path has. The cache stays off by default until it adds the right amount of light.
+screen-space path has. The cache stayed off by default until the fixes further down.
 
 **Sponza's extra light was the cache's hit thickness (fixed in #20).** The cache's update counted a ray as hitting a
 surface when it was up to 25% of the view depth behind it (2 m at 8 m away), two and a half times the screen-space
@@ -315,7 +315,7 @@ one). SDFGI's light is the final image with SDFGI on minus off, Godot's unshaded
 Lumina's irradiance and the reference's are multiplied by it, so Gate 2 compares bounce light as a viewer sees it. The
 export now carries each material's specular level, so the reference's matte scene is matte too.
 
-Gate 2 on the corrected measurement (Tier 2 GPU, 512 samples; Lumina's world cache off, as by default):
+Gate 2 on the corrected measurement (Tier 2 GPU, 512 samples; Lumina's world cache off, the default then):
 
 | Scene | Lumina, fitted (centre) | SDFGI, fitted (centre) | Lumina's mean vs the reference | Best possible |
 | :--- | :--- | :--- | :--- | :--- |
@@ -372,20 +372,36 @@ Sponza, which already reads too dark. The harness's 128 x 96 scenes can't judge 
 interval starts 168 px from the probe, past their edge. Run at 512 x 384, the shipping trace gives a 4 px hotspot
 0.55x of its light and lets 0.57x of the card's light through behind it at thickness 0.2, both outside the limits the
 small scenes pass.
+
+**The world cache is on by default, and it still adds too much light to a small open room.** Turned on after the
+trace changes above, it brought the Cornell box to 1.52x the reference's light level (27.18 dB) and Sponza to 0.97x
+(30.82 dB), against 1.00x and 0.77x with it off. More than half of the Cornell box's extra came through directions
+that leave the box by its open front, where there is nothing to see. The cache was missing two of the screen-space
+trace's rules. It read each hit at a single pixel, so the one direction that pointed at a bright spot held the spot's
+peak across its whole cone. It now samples the radiance mip chain at its cone's width. It also recorded the lit front
+of any surface it passed just behind, which the trace counts as blocked. It now checks that the surface faces the ray.
+Each fix has a harness test that fails without it. Together they bring the Cornell box to 28.96 dB at 1.38x, 0.1 dB above
+the cache off, and Sponza to 30.45 dB at 0.92x, 1.2 dB above it. The cache's two passes cost 0.04 to 0.18 ms on Tier 2.
+
+What's left is built into how the cache learns. It only sees the screen, so a ray that leaves the screen can't tell
+empty space from something out of view, and the merge fills that direction from whichever neighbouring cells did see
+something. That filling is what lights Sponza's camera-facing surfaces. In a box open toward the camera it is also
+what adds the extra light. Weighting it by how many cells saw the direction brought the Cornell box to 1.21x but gave
+back most of Sponza's gain (29.82 dB). The ray-query fallback can tell the two cases apart.
+
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
 3. Next, in order:
-   - the world-space cache's extra light in the Cornell box, then the cache on by default; it also fills Sponza's
-     dark, camera-facing surfaces and their colour smears;
    - bring Sponza and volumetrics under the 2.40 ms Tier 2 budget without losing the image: the a-trous denoiser
      (0.35 to 0.75 ms) and the top cascade level (about 0.5 ms) are the biggest passes left; time several runs per
      change;
    - harness scenes large enough to reach the top cascade level, so its changes can be tested off the GPU;
    - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
      templates;
-   - on the custom build, the ray-query fallback for off-screen and hidden light (Sponza's 5.6 dB gap to SDFGI is
-     mostly that light), Lumina's real albedo instead of the albedo proxy, and a specular term so metals reflect
+   - on the custom build, the ray-query fallback for off-screen and hidden light (Sponza's 4.4 dB gap to SDFGI is
+     mostly that light, and it can replace the world cache's guess for directions no cell has seen, which
+     over-lights the Cornell box), Lumina's real albedo instead of the albedo proxy, and a specular term so metals reflect
      bounced light, to finish Gate 2;
    - Track B wired up for Gates 3 and 4, then Gate 5.
 

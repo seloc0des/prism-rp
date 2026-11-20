@@ -362,9 +362,10 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 const godot::RID cset = godot::UniformSetCacheRD::get_cache(ws_classify_shader, 0, uc);
                 godot::TypedArray<godot::RDUniform> uu;
                 uu.push_back(make_sampler_texture_uniform(0, nearest_sampler, depth_tex));
-                uu.push_back(make_sampler_texture_uniform(1, linear_sampler, color_tex));
+                uu.push_back(make_sampler_texture_uniform(1, linear_sampler, vt.radiance_mips));
                 uu.push_back(make_sampler_texture_uniform(2, nearest_sampler, world_state));
                 uu.push_back(make_image_uniform(3, world_probes));
+                uu.push_back(make_sampler_texture_uniform(4, nearest_sampler, normal_tex));
                 const godot::RID uset = godot::UniformSetCacheRD::get_cache(ws_update_shader, 0, uu);
                 if (cset.is_valid() && uset.is_valid()) {
                     const uint32_t g3 = static_cast<uint32_t>((kWorldGridN + 3) / 4);

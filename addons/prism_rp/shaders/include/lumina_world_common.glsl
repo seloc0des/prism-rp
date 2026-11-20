@@ -32,6 +32,10 @@ vec3 lumina_world_to_view(vec3 p) {
     return vec3(dot(d, wpc.cam_right.xyz), dot(d, wpc.cam_up.xyz), dot(d, lumina_cam_back()));
 }
 
+vec3 lumina_world_to_view_dir(vec3 d) {
+    return vec3(dot(d, wpc.cam_right.xyz), dot(d, wpc.cam_up.xyz), dot(d, lumina_cam_back()));
+}
+
 vec3 lumina_view_to_world_dir(vec3 v) {
     return wpc.cam_right.xyz * v.x + wpc.cam_up.xyz * v.y + lumina_cam_back() * v.z;
 }
