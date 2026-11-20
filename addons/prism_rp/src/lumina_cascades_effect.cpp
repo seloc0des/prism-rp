@@ -487,9 +487,8 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 const uint32_t dst = 1u - src;
                 godot::TypedArray<godot::RDUniform> u;
                 u.push_back(make_sampler_texture_uniform(0, nearest_sampler, vt.filter[src]));
-                u.push_back(make_sampler_texture_uniform(1, nearest_sampler, depth_tex));
-                u.push_back(make_sampler_texture_uniform(2, nearest_sampler, normal_tex));
-                u.push_back(make_image_uniform(3, vt.filter[dst]));
+                u.push_back(make_sampler_texture_uniform(1, nearest_sampler, vt.geometry[vt.history_index]));
+                u.push_back(make_image_uniform(2, vt.filter[dst]));
                 const godot::RID uset = godot::UniformSetCacheRD::get_cache(atrous_shader, 0, u);
                 if (!uset.is_valid()) {
                     break;

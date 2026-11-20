@@ -496,14 +496,15 @@ def test_svgf_temporal_rejects_history_across_depth_change(gpu):
 
 def _atrous(gpu, cam, g, data, iterations=3):
     h, w = data.shape[:2]
-    imgs = {"a": Img("rgba16f", data=data), "b": Img("rgba16f", w, h),
-            "depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"])}
+    normal = g["normal"][..., :3] * 2.0 - 1.0
+    geo = np.concatenate([normal / np.linalg.norm(normal, axis=-1, keepdims=True), g["linear_z"][..., None]], axis=-1)
+    imgs = {"a": Img("rgba16f", data=data), "b": Img("rgba16f", w, h), "geo": Img("rgba16f", data=geo)}
     dispatches, src = [], "a"
     for it in range(iterations):
         dst = "b" if src == "a" else "a"
         dispatches.append(Dispatch(
             "lumina/lumina_svgf_atrous.comp.glsl",
-            {0: (src, "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("normal", "sampled_nearest"), 3: (dst, "storage")},
+            {0: (src, "sampled_nearest"), 1: ("geo", "sampled_nearest"), 2: (dst, "storage")},
             pc.atrous(w, h, 1 << it, depth_params=cam.depth_params), groups_for(w, h)))
         src = dst
     return gpu.run(imgs, dispatches, [src])[src]
@@ -528,7 +529,7 @@ def test_atrous_does_not_bleed_across_depth_edges(gpu):
     left = render(cam, [Plane((0, 0, -2), (0, 0, 1), (1, 1, 1))])
     right = render(cam, [Plane((0, 0, -10), (0, 0, 1), (1, 1, 1))])
     g = {k: left[k].copy() for k in left}
-    for k in ("depth", "normal"):
+    for k in ("depth", "normal", "linear_z"):
         g[k][:, 16:] = right[k][:, 16:]
     data = np.zeros((32, 32, 4)); data[:, :16, :3] = 1.0; data[..., 3] = 0.01
     out = _atrous(gpu, cam, g, data)
