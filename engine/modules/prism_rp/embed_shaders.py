@@ -12,7 +12,7 @@ SHADER_DIRS = ("visibility", "shadows")
 def resolve_includes(path: Path, include_dir: Path) -> str:
     """The source of path with each #include "x" replaced by x's own resolved source."""
     lines = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped.startswith("#extension GL_GOOGLE_include_directive"):
             continue
@@ -23,6 +23,24 @@ def resolve_includes(path: Path, include_dir: Path) -> str:
         else:
             lines.append(line)
     return "\n".join(lines)
+
+
+def raw_literals(source: str) -> str:
+    """source as adjacent raw string literals, none over 16 KB, which is all MSVC accepts in one piece (C2026).
+
+    Pieces break at line ends, so no UTF-8 character is cut, and the compiler joins them back into the source."""
+    limit = 15000
+    pieces, current, size = [], [], 0
+    for line in source.splitlines(keepends=True):
+        length = len(line.encode("utf-8"))
+        assert length < limit, "a shader line is longer than a literal piece"
+        if size + length > limit:
+            pieces.append("".join(current))
+            current, size = [], 0
+        current.append(line)
+        size += length
+    pieces.append("".join(current))
+    return "\n\t\t".join(f'R"PRISM_GLSL({piece})PRISM_GLSL"' for piece in pieces)
 
 
 def entry_points(shader_root: Path) -> list[Path]:
@@ -44,11 +62,11 @@ def header_text(shader_root: Path) -> str:
     for path in entry_points(shader_root):
         source = resolve_includes(path, shader_root / "include")
         assert ')PRISM_GLSL"' not in source
-        out.append(f'\t{{ "{path.name}", R"PRISM_GLSL({source})PRISM_GLSL" }},')
+        out.append(f'\t{{ "{path.name}",\n\t\t{raw_literals(source)} }},')
     out += ["};", ""]
     return "\n".join(out)
 
 
 def embed_shaders_builder(target, source, env):
     shader_root = Path(env["PRISM_SHADER_ROOT"])
-    Path(str(target[0])).write_text(header_text(shader_root))
+    Path(str(target[0])).write_text(header_text(shader_root), encoding="utf-8")

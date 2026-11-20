@@ -27,7 +27,7 @@ env_thirdparty = env_prism.Clone()
 env_thirdparty.disable_warnings()
 env_thirdparty.add_source_files(env.modules_sources, ["#thirdparty/meshoptimizer/meshletutils.cpp"])
 
-env.modules_sources += env_prism.Object(build_dir + "meshlet_builder" + env_prism["OBJSUFFIX"], str(meshlet_builder))
+env.modules_sources += env_prism.Object("meshlet_builder" + env_prism["OBJSUFFIX"], str(meshlet_builder))
 
 shaders_header = env_prism.CommandNoCache(
     build_dir + "prism_shaders.gen.h",

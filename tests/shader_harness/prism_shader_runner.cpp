@@ -480,7 +480,11 @@ int run(const json &job) {
                 }
                 // An array binding is declared with a fixed size; fill the unused slots with its first image.
                 if (b.contains("array_size")) {
-                    names.resize(b.at("array_size").get<size_t>(), names.at(0));
+                    const size_t array_size = b.at("array_size").get<size_t>();
+                    if (names.size() > array_size) {
+                        throw std::runtime_error("binding " + std::to_string(lb.binding) + " has " + std::to_string(names.size()) + " images for an array of " + std::to_string(array_size));
+                    }
+                    names.resize(array_size, names.at(0));
                 }
                 lb.descriptorCount = static_cast<uint32_t>(names.size());
                 for (const std::string &n : names) {

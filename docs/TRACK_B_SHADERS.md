@@ -51,9 +51,11 @@ Against Godot's `RenderingDevice` from 4.4 through 4.8 (`thirdparty/godot-cpp/gd
 - `draw_list_draw_indirect` has no count variant. The culler writes one draw per visible meshlet plus a GPU count, so a
   GDExtension host would either draw all `max_visible_meshlets` commands (zeroing the buffer each frame so unused ones
   are empty) or read the count back a frame late.
-- `vis_shade_materials`, the masked fragment shaders and `vsp_raster_pages` index a `sampler2D u_textures[PRISM_MAX_MATERIAL_TEXTURES]`
-  with `nonuniformEXT`: the device needs descriptor indexing (`shaderSampledImageArrayNonUniformIndexing`) enabled. Stock Godot only queries these features, so the validation
-  layer rejects the shaders; engine patch 0005 enables them and adds `RenderingDevice.SUPPORTS_NONUNIFORM_SAMPLED_IMAGE_INDEXING`.
+- `vis_shade_materials`, the masked fragment shaders and `vsp_raster_pages` index a
+  `sampler2D u_textures[PRISM_MAX_MATERIAL_TEXTURES]` with `nonuniformEXT`: the device needs descriptor indexing
+  (`shaderSampledImageArrayNonUniformIndexing`) enabled. Stock Godot only queries these features, so the validation
+  layer rejects the shaders; engine patch 0005 enables them and adds
+  `RenderingDevice.SUPPORTS_NONUNIFORM_SAMPLED_IMAGE_INDEXING`.
 
 ## Host contracts
 
@@ -70,7 +72,8 @@ Material textures:
 - `u_textures[]` has `PRISM_MAX_MATERIAL_TEXTURES` (256, in `vis_shading_common.glsl`) slots, and a host binds all of
   them: Godot's `RenderingDevice` reads an unsized array as length 0, which no uniform set can satisfy. Point unused
   slots at a placeholder texture (the first one will do). Texture indices in `GpuPbrMaterial` must be below 256. The
-  cap is far under the per-stage sampled-image limit of desktop GPUs (about a million on lavapipe).
+  cap is far under the per-stage limits of desktop GPUs (about a million on lavapipe). A combined image sampler counts
+  against `maxPerStageDescriptorSamplers` as well as `maxPerStageDescriptorSampledImages`.
 
 Geometry:
 
