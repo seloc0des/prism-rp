@@ -36,7 +36,7 @@ void main() {
         imageStore(u_output, pixel, center);
         return;
     }
-    vec3 n = geo.xyz;
+    vec3 n = geo.xyz * inversesqrt(dot(geo.xyz, geo.xyz));   // fp16 storage leaves |n| off 1 by up to 4e-4, and pow(., 128) amplifies it
     float luma = lumina_luminance(center.rgb);
     float sigma_l = pc.phi_color * sqrt(max(center.a, 1e-8)) + 1e-4;
 
@@ -56,7 +56,7 @@ void main() {
             if (qz <= 0.0) {
                 continue;
             }
-            vec3 qn = qg.xyz;
+            vec3 qn = qg.xyz * inversesqrt(dot(qg.xyz, qg.xyz));
 
             float w_depth = exp(-abs(qz - z) / (pc.phi_depth * 0.05 * z * float(max(abs(x), abs(y))) + 1e-4));
             float w_normal = pow(max(dot(n, qn), 0.0), pc.phi_normal);
