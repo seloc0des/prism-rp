@@ -1,0 +1,92 @@
+diff --git a/doc/classes/RenderingDevice.xml b/doc/classes/RenderingDevice.xml
+index 8c4d758..2886d42 100644
+--- a/doc/classes/RenderingDevice.xml
++++ b/doc/classes/RenderingDevice.xml
+@@ -2926,6 +2926,11 @@
+ 
+ 			[b]Note:[/b] This is currently only supported when using Vulkan.
+ 		</constant>
++		<constant name="SUPPORTS_NONUNIFORM_SAMPLED_IMAGE_INDEXING" value="17" enum="Features">
++			Support for shaders that index an array of sampled images with a value that differs between invocations (GLSL [code]nonuniformEXT[/code]).
++
++			[b]Note:[/b] This is currently only supported when using Vulkan.
++		</constant>
+ 		<constant name="LIMIT_MAX_BOUND_UNIFORM_SETS" value="0" enum="Limit">
+ 			Maximum number of uniform sets that can be bound at a given time.
+ 		</constant>
+diff --git a/drivers/vulkan/rendering_device_driver_vulkan.cpp b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+index e634089..ce372fb 100644
+--- a/drivers/vulkan/rendering_device_driver_vulkan.cpp
++++ b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+@@ -1068,6 +1068,10 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
+ 		mesh_shader_support = use_1_2_features && enabled_device_extension_names.has(VK_EXT_MESH_SHADER_EXTENSION_NAME) && mesh_shader_features.meshShader;
+ 		task_shader_support = mesh_shader_support && mesh_shader_features.taskShader;
+ 
++		// Core in Vulkan 1.2. Godot only queried these before, so a SPIR-V module using nonuniformEXT on a sampled-image
++		// array declared capabilities the device had not enabled.
++		nonuniform_sampled_image_indexing_support = use_1_2_features && device_features_vk_1_2.runtimeDescriptorArray && device_features_vk_1_2.shaderSampledImageArrayNonUniformIndexing;
++
+ 		if (enabled_device_extension_names.has(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME)) {
+ 			fsr_capabilities.pipeline_supported = fsr_features.pipelineFragmentShadingRate;
+ 			fsr_capabilities.primitive_supported = fsr_features.primitiveFragmentShadingRate;
+@@ -1441,6 +1445,15 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
+ 		create_info_next = &mesh_shader_features;
+ 	}
+ 
++	VkPhysicalDeviceDescriptorIndexingFeatures descriptor_indexing_features = {};
++	if (nonuniform_sampled_image_indexing_support) {
++		descriptor_indexing_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
++		descriptor_indexing_features.pNext = create_info_next;
++		descriptor_indexing_features.runtimeDescriptorArray = VK_TRUE;
++		descriptor_indexing_features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
++		create_info_next = &descriptor_indexing_features;
++	}
++
+ 	VkPhysicalDeviceFaultFeaturesEXT device_fault_features = {};
+ 	if (device_fault_support) {
+ 		device_fault_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT;
+@@ -7511,6 +7524,8 @@ bool RenderingDeviceDriverVulkan::has_feature(Features p_feature) {
+ 			return mesh_shader_support;
+ 		case SUPPORTS_TASK_SHADER:
+ 			return task_shader_support;
++		case SUPPORTS_NONUNIFORM_SAMPLED_IMAGE_INDEXING:
++			return nonuniform_sampled_image_indexing_support;
+ 		case SUPPORTS_HDR_OUTPUT:
+ #if defined(WINDOWS_ENABLED)
+ 			// When using a Vulkan swapchain on Windows, some configurations
+diff --git a/drivers/vulkan/rendering_device_driver_vulkan.h b/drivers/vulkan/rendering_device_driver_vulkan.h
+index ff62c5f..e7e0223 100644
+--- a/drivers/vulkan/rendering_device_driver_vulkan.h
++++ b/drivers/vulkan/rendering_device_driver_vulkan.h
+@@ -168,6 +168,7 @@ class RenderingDeviceDriverVulkan : public RenderingDeviceDriver {
+ 	bool draw_indirect_count_support = false;
+ 	bool mesh_shader_support = false;
+ 	bool task_shader_support = false;
++	bool nonuniform_sampled_image_indexing_support = false;
+ 	VkPhysicalDeviceMeshShaderPropertiesEXT mesh_shader_properties = {};
+ 	bool vulkan_memory_model_support = false;
+ 	bool vulkan_memory_model_device_scope_support = false;
+diff --git a/servers/rendering/rendering_device.cpp b/servers/rendering/rendering_device.cpp
+index 190ca43..8035126 100644
+--- a/servers/rendering/rendering_device.cpp
++++ b/servers/rendering/rendering_device.cpp
+@@ -10003,6 +10003,7 @@ void RenderingDevice::_bind_methods() {
+ 	BIND_ENUM_CONSTANT(SUPPORTS_DRAW_INDIRECT_COUNT);
+ 	BIND_ENUM_CONSTANT(SUPPORTS_MESH_SHADER);
+ 	BIND_ENUM_CONSTANT(SUPPORTS_TASK_SHADER);
++	BIND_ENUM_CONSTANT(SUPPORTS_NONUNIFORM_SAMPLED_IMAGE_INDEXING);
+ 
+ 	BIND_ENUM_CONSTANT(LIMIT_MAX_BOUND_UNIFORM_SETS);
+ 	BIND_ENUM_CONSTANT(LIMIT_MAX_FRAMEBUFFER_COLOR_ATTACHMENTS);
+diff --git a/servers/rendering/rendering_device_commons.h b/servers/rendering/rendering_device_commons.h
+index f6f86dc..9ead9c1 100644
+--- a/servers/rendering/rendering_device_commons.h
++++ b/servers/rendering/rendering_device_commons.h
+@@ -1051,6 +1051,7 @@ public:
+ 		SUPPORTS_DRAW_INDIRECT_COUNT,
+ 		SUPPORTS_MESH_SHADER,
+ 		SUPPORTS_TASK_SHADER,
++		SUPPORTS_NONUNIFORM_SAMPLED_IMAGE_INDEXING,
+ 	};
+ 
+ 	enum SubgroupOperations {

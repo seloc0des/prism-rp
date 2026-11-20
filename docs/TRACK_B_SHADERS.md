@@ -53,7 +53,8 @@ Against Godot's `RenderingDevice` from 4.4 through 4.8 (`thirdparty/godot-cpp/gd
   are empty) or read the count back a frame late.
 - `vis_shade_materials`, the masked fragment shaders and `vsp_raster_pages` index a runtime-sized `sampler2D[]` with
   `nonuniformEXT`: the device needs descriptor indexing (`runtimeDescriptorArray`,
-  `shaderSampledImageArrayNonUniformIndexing`) enabled.
+  `shaderSampledImageArrayNonUniformIndexing`) enabled. Stock Godot only queries these features, so the validation
+  layer rejects the shaders; engine patch 0005 enables them and adds `RenderingDevice.SUPPORTS_NONUNIFORM_SAMPLED_IMAGE_INDEXING`.
 
 ## Host contracts
 
@@ -128,6 +129,9 @@ Virtual shadow pages:
 ## Still open
 
 - The platform items above (mesh stage, indirect count, descriptor indexing).
+- `RenderingDevice` reflects an unsized `sampler2D u_textures[]` as an array of length 0, which no uniform set can
+  bind. `tests/engine/shade_materials.gd` gives it a size when it compiles; the shaders need a declared size (or an
+  engine change for variable descriptor counts) before a host can bind real material textures.
 - The graphics raster stages are compile- and interface-checked only; the harness runs compute shaders.
 - `vis_shade_materials` lighting is a single sun plus a flat ambient term, a placeholder for the real G-buffer design;
   albedo goes to a linear `RGBA8` target, which bands in dark tones (an sRGB format would fix it).
