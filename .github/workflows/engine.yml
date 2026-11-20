@@ -7,7 +7,7 @@ on:
     paths:
       - "engine/**"
       - "addons/prism_rp/shaders/**"
-      - "addons/prism_rp/src/meshlet/**"
+      - "addons/prism_rp/src/**"
       - "addons/prism_rp/include/**"
       - "tests/run_vulkan_qa.sh"
       - "tests/engine/**"
@@ -282,6 +282,24 @@ jobs:
           tests/run_vulkan_qa.sh ./custom-editor/godot.linuxbsd.editor.x86_64.prism
           grep -qF "[Prism RP] Track B: auto (command line) | GPU path:" godot_vulkan_qa.log
           mv track-b-off/godot_vulkan_qa.log godot_track_b_off.log
+
+      # Lumina's Ray-Traced Albedo view (camera rays through the scene mirror) against Godot's unshaded view.
+      - name: Check Lumina's scene mirror against the unshaded view
+        env:
+          SCENE_MIRROR_OUT: ${{ runner.temp }}/scene-mirror
+        run: |
+          # Lavapipe gained VK_KHR_ray_query in Mesa 24.1; fail with a clear reason on an older runner image.
+          vulkaninfo | grep -q VK_KHR_ray_query || { echo "::error::This Mesa's lavapipe has no VK_KHR_ray_query."; exit 1; }
+          mkdir -p "$SCENE_MIRROR_OUT"
+          tests/engine/run_scene_mirror.sh ./custom-editor/godot.linuxbsd.editor.x86_64.prism
+
+      - name: Upload the scene mirror captures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scene-mirror-captures
+          path: ${{ runner.temp }}/scene-mirror
+          if-no-files-found: ignore
 
       - name: Upload Vulkan QA log
         if: always()
