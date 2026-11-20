@@ -81,7 +81,7 @@ HARDWARE_TIERS: dict[str, HardwareTierSpec] = {
     ),
     "tier2": HardwareTierSpec(
         name="tier2",
-        description="Mid-Range Desktop RTX 3060 / RX 6700 (1080p -> 1440p, 90 FPS target)",
+        description="Mid-Range Desktop RTX 4060 Ti / RX 6700 (1080p -> 1440p, 90 FPS target)",
         internal_width=1920,
         internal_height=1080,
         target_width=2560,

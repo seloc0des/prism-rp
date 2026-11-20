@@ -14,7 +14,7 @@ Building **Prism RP** for Godot 4.x uses a dual-track engineering strategy:
 
 ## Hardware Tier Frame Budgets
 * **Tier 1 (Steam Deck / RDNA2):** 720p internal -> 1080p output, **16.6 ms** total frame budget (60 FPS, **13.50 ms** Prism RP target).
-* **Tier 2 (Mid-Range Desktop RTX 3060 / RX 6700):** 1080p internal -> 1440p output, **11.1 ms** total frame budget (90 FPS, **9.15 ms** Prism RP target).
+* **Tier 2 (Mid-Range Desktop RTX 4060 Ti / RX 6700):** 1080p internal -> 1440p output, **11.1 ms** total frame budget (90 FPS, **9.15 ms** Prism RP target).
 * **Tier 3 (Enthusiast RT GPU):** 1440p internal -> 4K output, **8.3 ms** total frame budget (120 FPS, **6.80 ms** Prism RP target).
 
 ---
