@@ -37,13 +37,10 @@ float probe_linear_depth(vec2 center_px) {
     return lumina_is_sky(d) ? 0.0 : prism_linearize_depth(d, pc.depth_params);
 }
 
+// The 2x2 child directions' average is one bilinear tap at their shared corner (needs a linear sampler).
 vec4 parent_direction_average(ivec2 parent_probe, ivec2 dir_texel) {
-    ivec2 base = parent_probe * pc.parent_block + dir_texel * 2;
-    return 0.25 * (
-        texelFetch(u_parent_tex, base, 0) +
-        texelFetch(u_parent_tex, base + ivec2(1, 0), 0) +
-        texelFetch(u_parent_tex, base + ivec2(0, 1), 0) +
-        texelFetch(u_parent_tex, base + ivec2(1, 1), 0));
+    ivec2 corner = parent_probe * pc.parent_block + dir_texel * 2 + ivec2(1);
+    return textureLod(u_parent_tex, vec2(corner) / vec2(textureSize(u_parent_tex, 0)), 0.0);
 }
 
 void main() {

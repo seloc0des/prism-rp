@@ -63,7 +63,7 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefi
         lv, parent = levels[i], levels[i + 1]
         dispatches.append(Dispatch(
             "lumina/lumina_rc_merge.comp.glsl",
-            {0: (f"c{i + 1}", "sampled_nearest"), 1: (f"c{i}", "storage"), 2: ("depth", "sampled_nearest")},
+            {0: (f"c{i + 1}", "sampled_linear"), 1: (f"c{i}", "storage"), 2: ("depth", "sampled_nearest")},
             pc.merge(lv["probes"], parent["probes"], lv["block"], parent["block"], float(lv["spacing"]), float(parent["spacing"]),
                      (cam.width, cam.height), cam.depth_params),
             groups_for(*lv["size"])))
@@ -191,7 +191,7 @@ def test_merge_combines_interval_transmittance_and_parent(gpu):
     out = gpu.run(
         {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=flat["depth"])},
         [Dispatch("lumina/lumina_rc_merge.comp.glsl",
-                  {0: ("parent", "sampled_nearest"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
                   pc.merge(probes, parent_probes, block, parent_block, 8.0, 16.0, (cam.width, cam.height), cam.depth_params),
                   groups_for(*size))], ["lvl"])["lvl"]
     np.testing.assert_allclose(out[:, : size[0] // 2], np.broadcast_to((0.2, 0.4, 0.6, 0.5), out[:, : size[0] // 2].shape), atol=2e-3)
@@ -216,7 +216,7 @@ def test_merge_does_not_take_parents_from_another_depth(gpu):
     out = gpu.run(
         {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=g["depth"])},
         [Dispatch("lumina/lumina_rc_merge.comp.glsl",
-                  {0: ("parent", "sampled_nearest"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
                   pc.merge(probes, parent_probes, block, parent_block, 8.0, 16.0, (cam.width, cam.height), cam.depth_params),
                   groups_for(*size))], ["lvl"])["lvl"]
     # Child probe column 1 (centre x = 12 px) is on the far half but between the two parent probes.
