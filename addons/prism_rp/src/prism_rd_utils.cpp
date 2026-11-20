@@ -46,14 +46,14 @@ godot::RID create_sampler(godot::RenderingDevice *p_rd, bool p_linear) {
 }
 
 godot::RID create_2d_texture(godot::RenderingDevice *p_rd, uint32_t p_width, uint32_t p_height,
-        godot::RenderingDevice::DataFormat p_format, uint32_t p_usage_bits) {
+        godot::RenderingDevice::DataFormat p_format, uint32_t p_usage_bits, uint32_t p_mipmaps) {
     godot::Ref<godot::RDTextureFormat> fmt;
     fmt.instantiate();
     fmt->set_width(p_width);
     fmt->set_height(p_height);
     fmt->set_depth(1);
     fmt->set_array_layers(1);
-    fmt->set_mipmaps(1);
+    fmt->set_mipmaps(p_mipmaps);
     fmt->set_texture_type(godot::RenderingDevice::TEXTURE_TYPE_2D);
     fmt->set_format(p_format);
     fmt->set_samples(godot::RenderingDevice::TEXTURE_SAMPLES_1);

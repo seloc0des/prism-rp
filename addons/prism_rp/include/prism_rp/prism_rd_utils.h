@@ -29,7 +29,7 @@ godot::Ref<godot::RDUniform> make_image_uniform(int32_t p_binding, const godot::
 
 godot::RID create_sampler(godot::RenderingDevice *p_rd, bool p_linear);
 godot::RID create_2d_texture(godot::RenderingDevice *p_rd, uint32_t p_width, uint32_t p_height,
-        godot::RenderingDevice::DataFormat p_format, uint32_t p_usage_bits);
+        godot::RenderingDevice::DataFormat p_format, uint32_t p_usage_bits, uint32_t p_mipmaps = 1);
 
 // Frees a valid RID and resets it.
 void free_rid(godot::RenderingDevice *p_rd, godot::RID &r_rid);

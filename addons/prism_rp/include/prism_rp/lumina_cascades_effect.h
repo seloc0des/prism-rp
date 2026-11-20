@@ -96,6 +96,7 @@ private:
     static constexpr int32_t kBaseBlock = 4;   // level-0 directions = 4 x 4 = 16
     static constexpr int32_t kWorldGridN = 16; // world cache: 16^3 probes
     static constexpr int32_t kWorldBlock = 8;  // 8 x 8 = 64 directions per world probe (WORLD_BLOCK)
+    static constexpr uint32_t kMaxRadianceMips = 16;   // a full chain for up to 65535 px
 
     // Shared by lumina_ws_classify / _update / _merge (lumina_world_common.glsl). 112 bytes.
     struct alignas(16) WorldPushConstants {
@@ -124,7 +125,8 @@ private:
         float normal_bias = 0.01f;
         float proj[4] = { 1.0f, 1.0f, 0.0f, 0.0f };
         float depth_params[2] = { 0.05f, 0.0f };
-        float _pad[2] = { 0.0f, 0.0f };
+        int32_t sub_rays = 2;              // per axis
+        float _pad = 0.0f;
     };
     static_assert(sizeof(TracePushConstants) == 80);
 
@@ -134,6 +136,13 @@ private:
         int32_t _pad[2] = { 0, 0 };
     };
     static_assert(sizeof(DownsamplePushConstants) == 16);
+
+    struct alignas(16) RadianceCopyPushConstants {
+        int32_t width = 0;
+        int32_t height = 0;
+        float depth_params[2] = { 0.05f, 0.0f };
+    };
+    static_assert(sizeof(RadianceCopyPushConstants) == 16);
 
     struct alignas(16) MergePushConstants {
         int32_t probe_count_x = 0;
@@ -203,9 +212,11 @@ private:
 
     struct PerViewTargets {
         std::array<CascadeLevel, kMaxCascades> cascades;
-        // Prefiltered radiance for levels 1+: [i] is half the size of [i - 1] (of the colour buffer for i = 0).
-        std::array<godot::RID, kMaxCascades - 1> radiance_pyramid;
-        std::array<godot::Vector2i, kMaxCascades - 1> radiance_pyramid_size;
+        // Radiance mip chain every level traces against: RGBA16F, rgb radiance, a nearest linear depth.
+        // radiance_mip_views[k] is mip k alone, written by its pass and read to make mip k + 1.
+        godot::RID radiance_mips;
+        std::array<godot::RID, kMaxRadianceMips> radiance_mip_views;
+        uint32_t radiance_mip_count = 0;
         godot::RID irradiance_raw;                  // RGBA16F
         std::array<godot::RID, 2> history;          // RGBA16F: rgb, a = history length
         std::array<godot::RID, 2> moments;          // RG16F
@@ -225,6 +236,7 @@ private:
     godot::RID linear_sampler;
 
     godot::RID trace_shader, trace_pipeline;
+    godot::RID radiance_copy_shader, radiance_copy_pipeline;
     godot::RID downsample_shader, downsample_pipeline;
     godot::RID merge_shader, merge_pipeline;
     godot::RID integrate_shader, integrate_pipeline;
@@ -253,7 +265,7 @@ private:
     int32_t atrous_iterations = 3;
     int32_t cascade_count = 4;
     int32_t probe_spacing = 8;
-    int32_t steps_per_interval = 8;
+    int32_t steps_per_interval = 6;
     float thickness = 0.1f;
     float intensity = 1.0f;
     float denoise_strength = 4.0f;

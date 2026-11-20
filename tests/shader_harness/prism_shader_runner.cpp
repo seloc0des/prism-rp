@@ -18,8 +18,8 @@
 //   "outputs":    { "<name>": "out.bin" }                                     (images or buffers)
 // }
 //
-// kind: sampled_nearest | sampled_linear (combined image sampler, clamp to edge, all mips) |
-//       storage (one mip, all layers) | storage_buffer | uniform_buffer.
+// kind: sampled_nearest | sampled_linear (combined image sampler, clamp to edge; linear is trilinear;
+//       all mips, or just "mip" when given) | storage (one mip, all layers) | storage_buffer | uniform_buffer.
 // Image data and readback hold every mip, mip-major then layer-major; image input may also be just
 // mip 0 (the other mips start at zero). Missing data means zero-filled. Images stay in
 // VK_IMAGE_LAYOUT_GENERAL for their whole life, so one image can be sampled in one dispatch and
@@ -344,7 +344,7 @@ VkSampler make_sampler(const Context &ctx, VkFilter filter) {
     VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
     sci.magFilter = filter;
     sci.minFilter = filter;
-    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sci.mipmapMode = filter == VK_FILTER_LINEAR ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;   // as Godot's samplers
     sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sci.maxLod = VK_LOD_CLAMP_NONE;
     VkSampler s;
@@ -486,7 +486,7 @@ int run(const json &job) {
                         info.imageView = img.mip_views.at(b.value("mip", 0u));
                     } else if (kind == "sampled_nearest" || kind == "sampled_linear") {
                         lb.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                        info.imageView = img.view_all;
+                        info.imageView = b.contains("mip") ? img.mip_views.at(b.at("mip").get<uint32_t>()) : img.view_all;
                         info.sampler = (kind == "sampled_linear") ? linear : nearest;
                     } else {
                         throw std::runtime_error("unknown binding kind: " + kind);

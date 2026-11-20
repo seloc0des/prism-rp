@@ -45,13 +45,17 @@ def composite_chronos(w, h, exposure=1.0, sharpness=0.0, debug=0, flags=0, max_l
     return pack("iiffiI2f", w, h, exposure, sharpness, debug, flags, max_linear, 0.0)
 
 
-def trace(w, h, probes, block, spacing, start, length, steps, thickness, frame, normal_bias, proj, depth_params):
-    return pack("iiiiifffifIf4f2f2f", w, h, probes[0], probes[1], block, spacing, start, length, steps,
-                thickness, frame, normal_bias, *proj, *depth_params, 0.0, 0.0)
+def trace(w, h, probes, block, spacing, start, length, steps, thickness, frame, normal_bias, proj, depth_params, sub_rays):
+    return pack("iiiiifffifIf4f2fif", w, h, probes[0], probes[1], block, spacing, start, length, steps,
+                thickness, frame, normal_bias, *proj, *depth_params, sub_rays, 0.0)
 
 
 def downsample(dst_w, dst_h):
     return pack("iiii", dst_w, dst_h, 0, 0)
+
+
+def radiance_copy(w, h, depth_params):
+    return pack("ii2f", w, h, *depth_params)
 
 
 def merge(probes, parent_probes, block, parent_block, spacing, parent_spacing, resolution, depth_params):
