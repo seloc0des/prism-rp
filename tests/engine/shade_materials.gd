@@ -8,9 +8,8 @@ extends SceneTree
 # belongs to instance 0 and the right half to instance 1. The textures are three 1x1 colours, and the
 # materials point at texture 2 (blue) and texture 1 (green) so a wrong index shows up as a wrong colour.
 #
-# RenderingDevice reflects the shader's unsized sampler2D u_textures[] as an array of length 0, which no
-# uniform set can satisfy, so the test gives the array a size of 3 in the source it compiles (TEXTURE_COUNT).
-# The shaders themselves still declare it unsized.
+# u_textures[] has a fixed size (PRISM_MAX_MATERIAL_TEXTURES), so the uniform set binds every slot: the
+# three colours first, the rest filled with the first texture as a placeholder.
 #
 # Pass the shader directory (addons/prism_rp/shaders) as --shader-dir=<path>.
 
@@ -18,7 +17,7 @@ const SIZE := 32
 const TILE := 8
 const MATERIAL_FLAG_UNSHADED := 1 << 2
 const INVALID_TEX := 0xFFFFFFFF
-const TEXTURE_COUNT := 3
+const MAX_MATERIAL_TEXTURES := 256  # PRISM_MAX_MATERIAL_TEXTURES in vis_shading_common.glsl
 
 var rd: RenderingDevice
 var failures := 0
@@ -100,8 +99,8 @@ func _run() -> void:
 	var sampler := _own(rd.sampler_create(sampler_state))
 
 	var texture_ids: Array = []
-	for texture in textures:
-		texture_ids.append_array([sampler, texture])
+	for slot in MAX_MATERIAL_TEXTURES:
+		texture_ids.append_array([sampler, textures[slot] if slot < textures.size() else textures[0]])
 
 	var ubo_buffer := _own(rd.uniform_buffer_create(ubo.size(), ubo))
 	var meshlet_buffer := _own(rd.storage_buffer_create(meshlet.size(), meshlet))
@@ -140,7 +139,7 @@ func _run() -> void:
 		_uniform(RenderingDevice.UNIFORM_TYPE_IMAGE, 14, [motion]),
 		_uniform(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 15, [dispatch_buffer]),
 	], shade, 0))
-	_check(classify_set.is_valid() and shade_set.is_valid(), "the uniform sets, with a 3-texture array at binding 10, were created")
+	_check(classify_set.is_valid() and shade_set.is_valid(), "the uniform sets, with the 256-slot texture array at binding 10, were created")
 	if failures > 0:
 		return
 
@@ -206,7 +205,7 @@ func _create_texture(format: int, width: int, height: int, usage: int, data := P
 func _create_compute_shader(relative_path: String) -> RID:
 	var source := RDShaderSource.new()
 	source.language = RenderingDevice.SHADER_LANGUAGE_GLSL
-	source.source_compute = _resolve_includes(shader_dir.path_join(relative_path)).replace("u_textures[]", "u_textures[%d]" % TEXTURE_COUNT)
+	source.source_compute = _resolve_includes(shader_dir.path_join(relative_path))
 	var spirv := rd.shader_compile_spirv_from_source(source)
 	if spirv.compile_error_compute != "":
 		_fail("%s: %s" % [relative_path, spirv.compile_error_compute])
