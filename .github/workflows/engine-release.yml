@@ -2,8 +2,9 @@ name: Custom Godot release
 
 # Builds the Linux editor and the Linux and Windows export templates, packages them with
 # engine/package_release.py, and attaches them to a GitHub release. A tag like engine-v4.7.2-prism.1
-# creates the release (only a tag that starts with engine-v does); a manual run only uploads the packages as a workflow artifact, to test the
-# packaging. The addon's own release (release.yml) uses v* tags and is separate.
+# creates the release (only a tag that starts with engine-v does). A manual run only uploads the
+# packages as a workflow artifact, to test the packaging. The addon's own release (release.yml) uses
+# v* tags and is separate.
 on:
   push:
     tags: ["engine-v*"]
@@ -96,8 +97,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # This job runs the downloaded editor, so the write token stays out of .git/config. gh reads GH_TOKEN.
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Download the builds
         uses: actions/download-artifact@v4

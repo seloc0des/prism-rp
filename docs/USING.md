@@ -111,6 +111,6 @@ hardware offers: `mesh`, `vertex-pulling` or `unavailable`. Today the stock rend
 To build the engine yourself, run `python3 engine/build.py` (editor) or
 `python3 engine/build.py platform=windows use_mingw=yes d3d12=no target=template_release` (a template). It applies
 `engine/patches/*.patch` to the pinned Godot in `engine/godot` first, and the binaries in `engine/godot/bin` end in
-`.prism`. Cutting a release is pushing a tag like
-`engine-v4.7.2-prism.1`; the **Custom Godot release** workflow builds the five binaries, packs them with
-`engine/package_release.py`, and attaches the two files to the release.
+`.prism`. Cutting a release is pushing a tag like `engine-v4.7.2-prism.1`. The **Custom Godot release** workflow
+then builds the five binaries, packs them with `engine/package_release.py`, and attaches the two files to the
+release.
