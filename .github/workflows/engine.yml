@@ -7,6 +7,8 @@ on:
     paths:
       - "engine/**"
       - "addons/prism_rp/shaders/**"
+      - "addons/prism_rp/src/meshlet/**"
+      - "addons/prism_rp/include/**"
       - "tests/run_vulkan_qa.sh"
       - "tests/engine/**"
       - ".github/workflows/engine.yml"

@@ -1,5 +1,7 @@
 #include "register_types.h"
 
+#include "prism_shaders.gen.h"
+
 #include "core/config/project_settings.h"
 #include "core/os/os.h"
 #include "core/string/print_string.h"
@@ -76,6 +78,7 @@ void initialize_prism_rp_module(ModuleInitializationLevel p_level) {
 		RendererCompositorRD::scene_renderer_factory = scene_renderer_factory;
 	} else if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
 		print_line("[Prism RP] engine module loaded");
+		print_verbose(vformat("[Prism RP] %d Track B shaders embedded", int(sizeof(PRISM_EMBEDDED_SHADERS) / sizeof(PRISM_EMBEDDED_SHADERS[0]))));
 	}
 }
 
