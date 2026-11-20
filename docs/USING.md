@@ -82,3 +82,37 @@ GPU timings are off in release builds; start the game with `-- --prism-telemetry
 
 `tests/check_export.py` exports a test scene for both platforms and runs it (Windows through Wine if
 installed); the GPU session runs it as its `export` stage, and CI runs the Linux export on every change.
+
+## 4. The custom Godot build (optional)
+
+Chronos and Lumina run on stock Godot 4.7, so you don't need this section to use them. Track B, the meshlet
+renderer, needs a modified Godot 4.7.2 with mesh shaders, indirect-count draws and a few other `RenderingDevice`
+additions. It isn't a renderer you can switch on yet: the build carries the engine changes and a Prism RP module that
+reports what your GPU supports, and the renderer itself is still being written. Take it if you want to follow that
+work or try it on your hardware.
+
+Download from the repository's **Releases** page, from a release tagged `engine-v...`:
+
+- `prism-godot-<release>-linux-editor.tar.gz`: the editor. Linux only. Unpack it and run
+  `godot.linuxbsd.editor.x86_64.prism`. `--version` prints `4.7.2.stable.prism.custom_build.<commit>`.
+- `prism-godot-<release>-templates.tpz`: the export templates for Linux and Windows (x86_64), release and debug.
+
+To use them:
+
+1. Open your project in the custom editor. Install Prism RP into it as in section 1; the addon is the same.
+2. In the editor, **Editor > Manage Export Templates > Install From File**, and pick the `.tpz`. They install into
+   their own `4.7.2.stable.prism` folder, next to the `4.7.2.stable` folder of stock Godot, and replace nothing.
+3. Export as in section 3. The custom editor reads only its own folder, so it never picks up stock templates, and the
+   stock editor keeps using its own.
+
+A game exported with the custom templates still falls back to stock Godot rendering wherever the GPU lacks a feature.
+Track B is off by default. Set the project setting `rendering/prism_rp/track_b` to Auto (Advanced Settings on), or
+start with `-- --prism-trackb=auto`, and the log prints one `[Prism RP] Track B:` line that says which GPU path your
+hardware offers: `mesh`, `vertex-pulling` or `unavailable`. Today the stock renderer runs either way.
+
+To build the engine yourself, run `python3 engine/build.py` (editor) or
+`python3 engine/build.py platform=windows use_mingw=yes d3d12=no target=template_release` (a template). It applies
+`engine/patches/*.patch` to the pinned Godot in `engine/godot` first, and the binaries in `engine/godot/bin` end in
+`.prism`. Cutting a release is pushing a tag like `engine-v4.7.2-prism.1`. The **Custom Godot release** workflow
+then builds the five binaries, packs them with `engine/package_release.py`, and attaches the two files to the
+release.
