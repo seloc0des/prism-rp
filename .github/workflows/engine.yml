@@ -369,6 +369,37 @@ jobs:
       - name: Run the test
         run: tests/engine/run_mesh_shader.sh ./custom-editor/godot.linuxbsd.editor.x86_64.prism
 
+  ray-query:
+    name: Ray query test (lavapipe)
+    needs: linux-editor
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download the custom editor
+        uses: actions/download-artifact@v4
+        with:
+          name: prism-godot-linux-editor
+          path: custom-editor
+
+      - name: Install Mesa Lavapipe, Khronos Validation Layers, Xvfb and vulkaninfo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-validationlayers vulkan-tools xvfb
+          chmod +x custom-editor/godot.linuxbsd.editor.x86_64.prism
+          echo "VK_DRIVER_FILES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)" >> "$GITHUB_ENV"
+
+      # Lavapipe gained VK_KHR_ray_query in Mesa 24.1; fail with a clear reason on an older runner image.
+      - name: Check that this lavapipe has ray queries
+        run: |
+          apt-cache policy mesa-vulkan-drivers | head -n 3
+          vulkaninfo --summary | grep -E "driverInfo|apiVersion"
+          vulkaninfo | grep -q VK_KHR_ray_query || { echo "::error::This Mesa's lavapipe has no VK_KHR_ray_query."; exit 1; }
+
+      - name: Run the test
+        run: tests/engine/run_ray_query.sh ./custom-editor/godot.linuxbsd.editor.x86_64.prism
+
   track-b:
     name: Track B switch (lavapipe)
     needs: linux-editor
