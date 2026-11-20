@@ -96,6 +96,50 @@ def test_integrate_uniform_radiance_returns_it(gpu):
     np.testing.assert_allclose(out[8:24, 8:24, :3].mean(axis=(0, 1)), L, rtol=0.01)
 
 
+def test_integrate_blends_each_probes_own_cosine_weighted_average(gpu):
+    # Every probe holds different radiance, on one flat tilted plane (so only the bilinear weights vary).
+    cam = Camera(width=64, height=48)
+    nrm = np.array([0.2, 0.3, 1.0]) / np.linalg.norm([0.2, 0.3, 1.0])
+    g = render(cam, [Plane((0, 0, -4), tuple(nrm), (1, 1, 1))])
+    assert (g["depth"] > 0).all()
+    lv = cascade_layout(cam, 8, 1)[0]
+    block, spacing = lv["block"], 8.0
+    px, py = lv["probes"]
+    rng = np.random.default_rng(5)
+    c0 = rng.uniform(0, 1, (lv["size"][1], lv["size"][0], 4)).astype(np.float16).astype(np.float64)
+    out = gpu.run(
+        {"c0": Img("rgba16f", data=c0), "depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"]),
+         "irr": Img("rgba16f", 64, 48)},
+        [Dispatch("lumina/lumina_rc_integrate.comp.glsl",
+                  {0: ("c0", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("normal", "sampled_nearest"), 3: ("irr", "storage")},
+                  pc.integrate(64, 48, lv["probes"], block, spacing, cam.depth_params, cam.proj), groups_for(64, 48))], ["irr"])["irr"]
+
+    def direction(x, y):
+        e = (np.array([x, y]) + 0.5) / block * 2.0 - 1.0
+        v = np.array([e[0], e[1], 1.0 - abs(e[0]) - abs(e[1])])
+        if v[2] < 0:
+            v[:2] = (1.0 - np.abs(v[1::-1])) * np.where(v[:2] >= 0, 1.0, -1.0)
+        return v / np.linalg.norm(v)
+
+    dirs = np.array([[direction(x, y) for x in range(block)] for y in range(block)])
+    n = g["normal"][..., :3] * 2.0 - 1.0
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    expected = np.zeros((48, 64, 3))
+    for py_ in range(48):
+        for px_ in range(64):
+            cos = np.maximum(dirs @ n[py_, px_], 0.0)
+            coord = (np.array([px_, py_]) + 0.5) / spacing - 0.5
+            p0 = np.floor(coord).astype(int)
+            f = coord - p0
+            for j in range(4):
+                o = np.array([j & 1, j >> 1])
+                pr = np.clip(p0 + o, 0, np.array([px, py]) - 1)
+                w = (f[0] if o[0] else 1 - f[0]) * (f[1] if o[1] else 1 - f[1])
+                tile = c0[pr[1] * block:(pr[1] + 1) * block, pr[0] * block:(pr[0] + 1) * block, :3]
+                expected[py_, px_] += w * (tile * cos[..., None]).sum(axis=(0, 1)) / cos.sum()
+    np.testing.assert_allclose(out[..., :3], expected, atol=2e-3)
+
+
 def test_integrate_lights_a_surface_seen_at_a_grazing_angle(gpu):
     # A floor seen from just above it: across 8 px its depth changes by far more than 5%, though every probe
     # sits on the same plane. Uniform light must reach every floor pixel; a depth-difference test rejected
