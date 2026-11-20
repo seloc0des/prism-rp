@@ -25,26 +25,6 @@ layout(push_constant, std430) uniform PushConstants {
     vec4 proj;   // P00, P11, P20, P21 (see lumina_view_position)
 } pc;
 
-// Deliberately no firefly clamp. A small bright spot rarely lands on one direction at full strength,
-// because the trace samples each hit at the mip matching its cone's footprint (lumina_rc_trace.comp.glsl).
-// A clamp would cut real light from any direction much brighter than the probe's mean, bright walls included.
-vec3 probe_irradiance(ivec2 probe, vec3 n) {
-    // Normalised cosine-weighted average over the probe's directions: E / pi = sum(L cos) / sum(cos).
-    // Exact for uniform radiance, and it doesn't depend on per-texel solid angles (octahedral texels
-    // aren't equal-area; assuming 4pi/N each made uniform light integrate ~18% dark at 16 directions).
-    vec3 sum = vec3(0.0);
-    float weight = 0.0;
-    for (int y = 0; y < pc.block; ++y) {
-        for (int x = 0; x < pc.block; ++x) {
-            vec3 dir = lumina_block_direction(ivec2(x, y), pc.block);
-            float cos_theta = max(dot(dir, n), 0.0);
-            sum += texelFetch(u_cascade0_tex, probe * pc.block + ivec2(x, y), 0).rgb * cos_theta;
-            weight += cos_theta;
-        }
-    }
-    return weight > 1e-5 ? sum / weight : vec3(0.0);
-}
-
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     if (pixel.x >= pc.internal_resolution.x || pixel.y >= pc.internal_resolution.y) {
@@ -66,9 +46,11 @@ void main() {
     vec2 f = coord - vec2(p0);
     ivec2 max_probe = pc.probe_count - ivec2(1);
 
-    vec3 total = vec3(0.0);
+    ivec2 probes[4];
+    float weights[4];
     float total_w = 0.0;
     for (int j = 0; j < 4; ++j) {
+        weights[j] = 0.0;
         ivec2 o = ivec2(j & 1, j >> 1);
         ivec2 probe = clamp(p0 + o, ivec2(0), max_probe);
         float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
@@ -87,10 +69,34 @@ void main() {
         if (w <= 1e-5) {
             continue;
         }
-        total += probe_irradiance(probe, n) * w;
+        probes[j] = probe;
+        weights[j] = w;
         total_w += w;
     }
 
-    vec3 irradiance = total_w > 1e-5 ? total / total_w : vec3(0.0);
+    // Deliberately no firefly clamp. A small bright spot rarely lands on one direction at full strength,
+    // because the trace samples each hit at the mip matching its cone's footprint (lumina_rc_trace.comp.glsl).
+    // A clamp would cut real light from any direction much brighter than the probe's mean, bright walls included.
+    //
+    // Each probe's irradiance is the normalised cosine-weighted average over its directions: E / pi =
+    // sum(L cos) / sum(cos). Exact for uniform radiance, and it doesn't depend on per-texel solid angles
+    // (octahedral texels aren't equal-area; assuming 4pi/N each made uniform light integrate ~18% dark at
+    // 16 directions). The cosines depend on the pixel's normal only, so one pass over the directions
+    // serves all four probes.
+    vec3 total = vec3(0.0);
+    float cos_sum = 0.0;
+    for (int y = 0; y < pc.block; ++y) {
+        for (int x = 0; x < pc.block; ++x) {
+            float cos_theta = max(dot(lumina_block_direction(ivec2(x, y), pc.block), n), 0.0);
+            cos_sum += cos_theta;
+            for (int j = 0; j < 4; ++j) {
+                if (weights[j] > 0.0) {
+                    total += texelFetch(u_cascade0_tex, probes[j] * pc.block + ivec2(x, y), 0).rgb * (cos_theta * weights[j]);
+                }
+            }
+        }
+    }
+
+    vec3 irradiance = (total_w > 1e-5 && cos_sum > 1e-5) ? total / (total_w * cos_sum) : vec3(0.0);
     imageStore(u_irradiance_out, pixel, vec4(irradiance, 1.0));
 }
