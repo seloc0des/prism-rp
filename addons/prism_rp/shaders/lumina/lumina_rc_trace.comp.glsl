@@ -6,7 +6,7 @@
 
 // Radiance cascade trace: one texel = one (probe, direction) pair of a single cascade level.
 // Writes the radiance found inside this level's interval (rgb) and its transmittance (a), averaged over
-// kSubRays x kSubRays rays spread across the direction's octahedral cell: a is the fraction of them that
+// sub_rays x sub_rays rays spread across the direction's octahedral cell: a is the fraction of them that
 // found nothing in the interval (or left the screen).
 //
 // Intervals are measured in screen pixels along the ray's projection: level i covers
@@ -26,9 +26,9 @@
 // is nearer than kNearerOccluder times the hit's depth.
 //
 // Near silhouettes that check falls back to sharp mips, and one ray per direction misses a small bright
-// patch again. Each of the 2 x 2 sub-rays covers a quarter of the cone, so it needs less blur and falls
-// back less. More sub-rays leak: a partly blocked direction's fractional transmittance lets parent probes'
-// light through past objects.
+// patch again. Levels above 0 (and a lone level 0) trace 2 x 2 sub-rays: each covers a quarter of the cone,
+// so it needs less blur and falls back less. More sub-rays leak: a partly blocked direction's fractional transmittance lets
+// parent probes' light through past objects.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -50,11 +50,11 @@ layout(push_constant, std430) uniform PushConstants {
     float normal_bias;         // origin push along the normal, fraction of view depth
     vec4 proj;                 // see lumina_view_position
     vec2 depth_params;
-    vec2 _pad;
+    int sub_rays;              // per axis: sub_rays x sub_rays rays per direction
+    float _pad;
 } pc;
 
 const float kNearerOccluder = 0.9;
-const int kSubRays = 2;   // per axis
 
 // One ray of a direction's interval: radiance found (rgb) and transmittance (a, 0 or 1). `cone_angle` is
 // the angular width its hit is blurred over; `jitter` places its steps along the interval.
@@ -201,15 +201,15 @@ void main() {
     // sub-rays' footprints overlap: with exactly its share a moving hotspot flickers more, and with the
     // whole cone the hotspot loses light. The jitter along the ray changes per texel and frame (SVGF
     // integrates it); golden-ratio offsets keep the sub-rays' steps apart.
-    float cone_angle = sqrt(2.0) * sqrt(4.0 * 3.14159265) / float(pc.block * kSubRays);
+    float cone_angle = sqrt(2.0) * sqrt(4.0 * 3.14159265) / float(pc.block * pc.sub_rays);
     float jitter = prism_interleaved_gradient_noise(vec2(texel), pc.frame_index);
     vec4 sum = vec4(0.0);
-    for (int sy = 0; sy < kSubRays; ++sy) {
-        for (int sx = 0; sx < kSubRays; ++sx) {
-            vec2 cell = (vec2(dir_texel) + (vec2(sx, sy) + 0.5) / float(kSubRays)) / float(pc.block);
-            float sub_jitter = fract(jitter + 0.618034 * float(sy * kSubRays + sx));
+    for (int sy = 0; sy < pc.sub_rays; ++sy) {
+        for (int sx = 0; sx < pc.sub_rays; ++sx) {
+            vec2 cell = (vec2(dir_texel) + (vec2(sx, sy) + 0.5) / float(pc.sub_rays)) / float(pc.block);
+            float sub_jitter = fract(jitter + 0.618034 * float(sy * pc.sub_rays + sx));
             sum += trace_ray(origin, origin_depth, lumina_oct_decode(cell * 2.0 - 1.0), cone_angle, sub_jitter);
         }
     }
-    imageStore(u_cascade_out, texel, sum / float(kSubRays * kSubRays));
+    imageStore(u_cascade_out, texel, sum / float(pc.sub_rays * pc.sub_rays));
 }

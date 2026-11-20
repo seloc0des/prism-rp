@@ -24,8 +24,9 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefi
     """[radiance mip chain] -> trace every level -> merge top-down -> integrate. Returns irradiance (h, w, 4).
     As in the C++, mip 0 of the chain is the colour buffer plus linear depth and every level traces the
     whole chain, each hit at the mip that matches its cone's footprint (prefilter=False traces the colour
-    buffer alone, so every hit is sampled at full resolution), and the top level runs on to the edge of the
-    screen with twice the steps."""
+    buffer alone, so every hit is sampled at full resolution), level 0 traces one ray per direction (unless it
+    is also the top) and the others 2 x 2, and the top level runs on to the edge of the screen with twice the
+    steps."""
     levels = cascade_layout(cam, spacing, count)
     mips = int(np.log2(max(cam.width, cam.height))) + 1
     images = {
@@ -55,7 +56,8 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefi
             {0: ("depth", "sampled_nearest"), 1: ("normal", "sampled_nearest"), 2: (radiance, "sampled_linear"), 3: (f"c{i}", "storage")},
             pc.trace(cam.width, cam.height, lv["probes"], lv["block"], float(lv["spacing"]),
                      spacing * (scale - 1) / 3.0, spacing * scale if i + 1 < count else -1.0,
-                     steps if i + 1 < count else 2 * steps, thickness, 0, 0.01, cam.proj, cam.depth_params),
+                     steps if i + 1 < count else 2 * steps, thickness, 0, 0.01, cam.proj, cam.depth_params,
+                     sub_rays=1 if i == 0 and i + 1 < count else 2),
             groups_for(*lv["size"])))
     for i in range(count - 2, -1, -1):
         lv, parent = levels[i], levels[i + 1]
@@ -340,9 +342,9 @@ def black_room(extra):
 
 def light_in_black_room(gpu, cam, planes):
     """Lumina's irradiance and the exact one-bounce truth (red channel), and the mask of dark surface
-    pixels, which receive all their light from the bright planes. Shipping defaults: 4 levels, 8 steps."""
+    pixels, which receive all their light from the bright planes. Shipping defaults: 4 levels, 6 steps."""
     g = render(cam, planes)
-    irr = run_cascades(gpu, cam, g, count=4, steps=8, thickness=0.1)[..., 0]
+    irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1)[..., 0]
     dark = (g["linear_z"] > 0) & (g["color"][..., 0] == 0.0)
     return irr, irradiance_truth(cam, planes)[..., 0], dark, g
 
@@ -369,7 +371,7 @@ def test_a_small_bright_spot_lights_the_whole_black_room(gpu):
     # that matches its cone's footprint spreads the patch over every direction it covers. The back wall is
     # only about 32 px wide here, so coarse texels around the patch take in the nearer side walls, floor
     # and ceiling, and the trace steps down to sharper mips to keep from leaking light past silhouettes
-    # (see the card test above); the 2 x 2 sub-rays per direction need less blur and keep it lit.
+    # (see the card test above); the coarse levels' 2 x 2 sub-rays per direction need less blur and keep it lit.
     cam = Camera(width=128, height=96)
     x0 = 0.3
     irr, truth, dark, g = light_in_black_room(gpu, cam, black_room([

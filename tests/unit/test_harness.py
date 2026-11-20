@@ -20,7 +20,7 @@ def test_tier_pass_budgets_sum_to_pipeline_budget():
     ("aces2_lut", "aces2_optics"),
     ("chronos_taau", "chronos_vpu"),
     ("chronos_fft_bloom_forward_rows", "chronos_vpu"),
-    ("lumina_rc_trace", "lumina_cascades_gi"),
+    ("lumina_rc_trace_l0", "lumina_cascades_gi"),
     ("svgf_atrous", "lumina_cascades_gi"),
     ("meshlet_cull", "gpu_meshlet_cull"),
     ("tile_shade_pbr", "tile_material_shade"),

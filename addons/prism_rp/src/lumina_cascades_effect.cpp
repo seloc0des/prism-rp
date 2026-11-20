@@ -276,9 +276,8 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
             }
         }
 
-        // 1. Trace every level against the radiance mip chain.
+        // 1. Trace every level against the radiance mip chain, each under its own timer.
         {
-            ScopedPassTimer timer("lumina_rc_trace", godot::Color(0.30f, 0.65f, 1.00f, 1.0f));
             for (int32_t level = 0; level < cascade_count; ++level) {
                 const CascadeLevel &cl = vt.cascades[static_cast<size_t>(level)];
                 godot::TypedArray<godot::RDUniform> u;
@@ -312,7 +311,11 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 pc.normal_bias = 0.01f;
                 std::copy(std::begin(proj4), std::end(proj4), pc.proj);
                 std::copy(std::begin(depth_params), std::end(depth_params), pc.depth_params);
+                // Below the top, level 0's interval is only the first probe spacing: 2 x 2 sub-rays there changed
+                // neither the harness scenes nor Gate 2, and cost three times as much as one ray.
+                pc.sub_rays = (level == 0 && !top) ? 1 : 2;
 
+                ScopedPassTimer timer(godot::String("lumina_rc_trace_l") + godot::itos(level), godot::Color(0.30f, 0.65f, 1.00f, 1.0f));
                 dispatch_compute(rd, trace_pipeline, uset, make_push_constant_bytes(pc),
                     groups_for(cl.probe_count.x * cl.block), groups_for(cl.probe_count.y * cl.block));
             }

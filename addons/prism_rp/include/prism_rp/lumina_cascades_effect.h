@@ -125,7 +125,8 @@ private:
         float normal_bias = 0.01f;
         float proj[4] = { 1.0f, 1.0f, 0.0f, 0.0f };
         float depth_params[2] = { 0.05f, 0.0f };
-        float _pad[2] = { 0.0f, 0.0f };
+        int32_t sub_rays = 2;              // per axis
+        float _pad = 0.0f;
     };
     static_assert(sizeof(TracePushConstants) == 80);
 
@@ -264,7 +265,7 @@ private:
     int32_t atrous_iterations = 3;
     int32_t cascade_count = 4;
     int32_t probe_spacing = 8;
-    int32_t steps_per_interval = 8;
+    int32_t steps_per_interval = 6;
     float thickness = 0.1f;
     float intensity = 1.0f;
     float denoise_strength = 4.0f;
