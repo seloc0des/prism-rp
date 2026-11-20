@@ -107,6 +107,6 @@ void main() {
 
     imageStore(u_history_out, pixel, vec4(color, history_len));
     imageStore(u_moments_out, pixel, vec4(moments, 0.0, 0.0));
-    imageStore(u_geometry_out, pixel, vec4(n, z));
+    imageStore(u_geometry_out, pixel, vec4(n, min(z, 60000.0)));   // fp16 overflows to inf past 65504, and the a-trous filter subtracts depths
     imageStore(u_filter_in_out, pixel, vec4(color, variance));
 }

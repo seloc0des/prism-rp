@@ -188,7 +188,7 @@ private:
         float phi_color = 4.0f;
         float phi_normal = 128.0f;
         float phi_depth = 1.0f;
-        float depth_params[2] = { 0.05f, 0.0f };
+        float _pad[2] = { 0.0f, 0.0f };
     };
     static_assert(sizeof(AtrousPushConstants) == 32);
 

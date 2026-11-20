@@ -403,7 +403,7 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 const CascadeLevel &cl = vt.cascades[static_cast<size_t>(level)];
                 const CascadeLevel &parent = vt.cascades[static_cast<size_t>(level + 1)];
                 godot::TypedArray<godot::RDUniform> u;
-                u.push_back(make_sampler_texture_uniform(0, nearest_sampler, parent.texture));
+                u.push_back(make_sampler_texture_uniform(0, linear_sampler, parent.texture));
                 u.push_back(make_image_uniform(1, cl.texture));
                 u.push_back(make_sampler_texture_uniform(2, nearest_sampler, depth_tex));
                 const godot::RID uset = godot::UniformSetCacheRD::get_cache(merge_shader, 0, u);
@@ -487,9 +487,8 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 const uint32_t dst = 1u - src;
                 godot::TypedArray<godot::RDUniform> u;
                 u.push_back(make_sampler_texture_uniform(0, nearest_sampler, vt.filter[src]));
-                u.push_back(make_sampler_texture_uniform(1, nearest_sampler, depth_tex));
-                u.push_back(make_sampler_texture_uniform(2, nearest_sampler, normal_tex));
-                u.push_back(make_image_uniform(3, vt.filter[dst]));
+                u.push_back(make_sampler_texture_uniform(1, nearest_sampler, vt.geometry[vt.history_index]));
+                u.push_back(make_image_uniform(2, vt.filter[dst]));
                 const godot::RID uset = godot::UniformSetCacheRD::get_cache(atrous_shader, 0, u);
                 if (!uset.is_valid()) {
                     break;
@@ -499,7 +498,6 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 pc.internal_res_y = size.y;
                 pc.step_px = 1 << it;
                 pc.phi_color = denoise_strength;
-                std::copy(std::begin(depth_params), std::end(depth_params), pc.depth_params);
                 dispatch_compute(rd, atrous_pipeline, uset, make_push_constant_bytes(pc), gx, gy);
                 filtered = dst;
             }

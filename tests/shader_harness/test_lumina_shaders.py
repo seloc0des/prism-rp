@@ -63,7 +63,7 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefi
         lv, parent = levels[i], levels[i + 1]
         dispatches.append(Dispatch(
             "lumina/lumina_rc_merge.comp.glsl",
-            {0: (f"c{i + 1}", "sampled_nearest"), 1: (f"c{i}", "storage"), 2: ("depth", "sampled_nearest")},
+            {0: (f"c{i + 1}", "sampled_linear"), 1: (f"c{i}", "storage"), 2: ("depth", "sampled_nearest")},
             pc.merge(lv["probes"], parent["probes"], lv["block"], parent["block"], float(lv["spacing"]), float(parent["spacing"]),
                      (cam.width, cam.height), cam.depth_params),
             groups_for(*lv["size"])))
@@ -94,6 +94,50 @@ def test_integrate_uniform_radiance_returns_it(gpu):
                   {0: ("c0", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("normal", "sampled_nearest"), 3: ("irr", "storage")},
                   pc.integrate(32, 32, lv["probes"], lv["block"], 8.0, cam.depth_params, cam.proj), groups_for(32, 32))], ["irr"])["irr"]
     np.testing.assert_allclose(out[8:24, 8:24, :3].mean(axis=(0, 1)), L, rtol=0.01)
+
+
+def test_integrate_blends_each_probes_own_cosine_weighted_average(gpu):
+    # Every probe holds different radiance, on one flat tilted plane (so only the bilinear weights vary).
+    cam = Camera(width=64, height=48)
+    nrm = np.array([0.2, 0.3, 1.0]) / np.linalg.norm([0.2, 0.3, 1.0])
+    g = render(cam, [Plane((0, 0, -4), tuple(nrm), (1, 1, 1))])
+    assert (g["depth"] > 0).all()
+    lv = cascade_layout(cam, 8, 1)[0]
+    block, spacing = lv["block"], 8.0
+    px, py = lv["probes"]
+    rng = np.random.default_rng(5)
+    c0 = rng.uniform(0, 1, (lv["size"][1], lv["size"][0], 4)).astype(np.float16).astype(np.float64)
+    out = gpu.run(
+        {"c0": Img("rgba16f", data=c0), "depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"]),
+         "irr": Img("rgba16f", 64, 48)},
+        [Dispatch("lumina/lumina_rc_integrate.comp.glsl",
+                  {0: ("c0", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("normal", "sampled_nearest"), 3: ("irr", "storage")},
+                  pc.integrate(64, 48, lv["probes"], block, spacing, cam.depth_params, cam.proj), groups_for(64, 48))], ["irr"])["irr"]
+
+    def direction(x, y):
+        e = (np.array([x, y]) + 0.5) / block * 2.0 - 1.0
+        v = np.array([e[0], e[1], 1.0 - abs(e[0]) - abs(e[1])])
+        if v[2] < 0:
+            v[:2] = (1.0 - np.abs(v[1::-1])) * np.where(v[:2] >= 0, 1.0, -1.0)
+        return v / np.linalg.norm(v)
+
+    dirs = np.array([[direction(x, y) for x in range(block)] for y in range(block)])
+    n = g["normal"][..., :3] * 2.0 - 1.0
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    expected = np.zeros((48, 64, 3))
+    for py_ in range(48):
+        for px_ in range(64):
+            cos = np.maximum(dirs @ n[py_, px_], 0.0)
+            coord = (np.array([px_, py_]) + 0.5) / spacing - 0.5
+            p0 = np.floor(coord).astype(int)
+            f = coord - p0
+            for j in range(4):
+                o = np.array([j & 1, j >> 1])
+                pr = np.clip(p0 + o, 0, np.array([px, py]) - 1)
+                w = (f[0] if o[0] else 1 - f[0]) * (f[1] if o[1] else 1 - f[1])
+                tile = c0[pr[1] * block:(pr[1] + 1) * block, pr[0] * block:(pr[0] + 1) * block, :3]
+                expected[py_, px_] += w * (tile * cos[..., None]).sum(axis=(0, 1)) / cos.sum()
+    np.testing.assert_allclose(out[..., :3], expected, atol=2e-3)
 
 
 def test_integrate_lights_a_surface_seen_at_a_grazing_angle(gpu):
@@ -177,6 +221,41 @@ def test_a_small_bright_patch_lights_steadily_as_it_moves(gpu):
     assert flicker[True] < 0.5 * flicker[False] and flicker[True] < 0.08, flicker   # measured: 0.05 vs 0.13
 
 
+def test_merge_averages_each_parent_probes_2x2_directions_and_blends_across_probes(gpu):
+    probes, parent_probes = (7, 5), (4, 3)
+    block, parent_block = 4, 8
+    spacing, parent_spacing = 8.0, 16.0
+    size = (probes[0] * block, probes[1] * block)
+    psize = (parent_probes[0] * parent_block, parent_probes[1] * parent_block)
+    rng = np.random.default_rng(3)
+    parent = rng.uniform(0, 1, (psize[1], psize[0], 4)).astype(np.float16).astype(np.float64)
+    level = np.zeros((size[1], size[0], 4)); level[..., 3] = 1.0
+    cam = Camera(width=56, height=40)
+    flat = render(cam, [Plane((0, 0, -4), (0, 0, 1), (1, 1, 1))])   # one depth everywhere: every depth weight is 1
+    out = gpu.run(
+        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=flat["depth"])},
+        [Dispatch("lumina/lumina_rc_merge.comp.glsl",
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
+                  pc.merge(probes, parent_probes, block, parent_block, spacing, parent_spacing, (cam.width, cam.height), cam.depth_params),
+                  groups_for(*size))], ["lvl"])["lvl"]
+
+    expected = np.zeros_like(out)
+    for ty in range(size[1]):
+        for tx in range(size[0]):
+            probe = np.array([tx // block, ty // block])
+            direction = np.array([tx, ty]) - probe * block
+            coord = (probe + 0.5) * spacing / parent_spacing - 0.5
+            p0 = np.floor(coord).astype(int)
+            f = coord - p0
+            for j in range(4):
+                o = np.array([j & 1, j >> 1])
+                pp = np.clip(p0 + o, 0, np.array(parent_probes) - 1)
+                w = (f[0] if o[0] else 1 - f[0]) * (f[1] if o[1] else 1 - f[1])
+                b = pp * parent_block + direction * 2
+                expected[ty, tx] += w * parent[b[1]:b[1] + 2, b[0]:b[0] + 2].reshape(-1, 4).mean(axis=0)
+    np.testing.assert_allclose(out, expected, atol=1e-3)
+
+
 def test_merge_combines_interval_transmittance_and_parent(gpu):
     probes, parent_probes = (4, 4), (2, 2)
     block, parent_block = 4, 8
@@ -191,7 +270,7 @@ def test_merge_combines_interval_transmittance_and_parent(gpu):
     out = gpu.run(
         {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=flat["depth"])},
         [Dispatch("lumina/lumina_rc_merge.comp.glsl",
-                  {0: ("parent", "sampled_nearest"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
                   pc.merge(probes, parent_probes, block, parent_block, 8.0, 16.0, (cam.width, cam.height), cam.depth_params),
                   groups_for(*size))], ["lvl"])["lvl"]
     np.testing.assert_allclose(out[:, : size[0] // 2], np.broadcast_to((0.2, 0.4, 0.6, 0.5), out[:, : size[0] // 2].shape), atol=2e-3)
@@ -216,7 +295,7 @@ def test_merge_does_not_take_parents_from_another_depth(gpu):
     out = gpu.run(
         {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=g["depth"])},
         [Dispatch("lumina/lumina_rc_merge.comp.glsl",
-                  {0: ("parent", "sampled_nearest"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
                   pc.merge(probes, parent_probes, block, parent_block, 8.0, 16.0, (cam.width, cam.height), cam.depth_params),
                   groups_for(*size))], ["lvl"])["lvl"]
     # Child probe column 1 (centre x = 12 px) is on the far half but between the two parent probes.
@@ -418,6 +497,17 @@ def _temporal(gpu, cam, g, current, prev, velocity=None, flags=0):
         pc.temporal(w, h, cam.depth_params, flags=flags), groups_for(w, h))], ["hist", "mom", "geo", "filt"])
 
 
+def test_svgf_temporal_keeps_stored_depth_inside_fp16_range(gpu):
+    from types import SimpleNamespace
+    h, w = 8, 8
+    far_cam = SimpleNamespace(depth_params=(10.0, 0.0))     # a depth of 1e-5 is 1e6 m away: past fp16's 65504
+    g = {"depth": np.full((h, w), 1e-5), "normal": np.tile(np.array([0.5, 0.5, 1.0, 0.0]), (h, w, 1))}
+    empty = {"hist": np.zeros((h, w, 4)), "mom": np.zeros((h, w, 2)), "geo": np.zeros((h, w, 4))}
+    out = _temporal(gpu, far_cam, g, np.full((h, w, 4), 0.5), empty, flags=1)
+    assert np.isfinite(out["geo"]).all()
+    assert out["geo"][..., 3].max() <= 60000.0
+
+
 def test_svgf_temporal_accumulates_and_resets(gpu):
     cam = Camera(width=32, height=24)
     g = render(cam, [Plane((0, 0, -4), (0, 0, 1), (1, 1, 1))])
@@ -496,15 +586,16 @@ def test_svgf_temporal_rejects_history_across_depth_change(gpu):
 
 def _atrous(gpu, cam, g, data, iterations=3):
     h, w = data.shape[:2]
-    imgs = {"a": Img("rgba16f", data=data), "b": Img("rgba16f", w, h),
-            "depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"])}
+    normal = g["normal"][..., :3] * 2.0 - 1.0
+    geo = np.concatenate([normal / np.linalg.norm(normal, axis=-1, keepdims=True), g["linear_z"][..., None]], axis=-1)
+    imgs = {"a": Img("rgba16f", data=data), "b": Img("rgba16f", w, h), "geo": Img("rgba16f", data=geo)}
     dispatches, src = [], "a"
     for it in range(iterations):
         dst = "b" if src == "a" else "a"
         dispatches.append(Dispatch(
             "lumina/lumina_svgf_atrous.comp.glsl",
-            {0: (src, "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("normal", "sampled_nearest"), 3: (dst, "storage")},
-            pc.atrous(w, h, 1 << it, depth_params=cam.depth_params), groups_for(w, h)))
+            {0: (src, "sampled_nearest"), 1: ("geo", "sampled_nearest"), 2: (dst, "storage")},
+            pc.atrous(w, h, 1 << it), groups_for(w, h)))
         src = dst
     return gpu.run(imgs, dispatches, [src])[src]
 
@@ -528,7 +619,7 @@ def test_atrous_does_not_bleed_across_depth_edges(gpu):
     left = render(cam, [Plane((0, 0, -2), (0, 0, 1), (1, 1, 1))])
     right = render(cam, [Plane((0, 0, -10), (0, 0, 1), (1, 1, 1))])
     g = {k: left[k].copy() for k in left}
-    for k in ("depth", "normal"):
+    for k in ("depth", "normal", "linear_z"):
         g[k][:, 16:] = right[k][:, 16:]
     data = np.zeros((32, 32, 4)); data[:, :16, :3] = 1.0; data[..., 3] = 0.01
     out = _atrous(gpu, cam, g, data)

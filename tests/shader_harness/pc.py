@@ -70,8 +70,8 @@ def temporal(w, h, depth_params, flags=0, alpha_min=0.1, moments_alpha_min=0.2, 
     return pack("ii2fIfff", w, h, *depth_params, flags, alpha_min, moments_alpha_min, max_history)
 
 
-def atrous(w, h, step, phi_color=4.0, phi_normal=128.0, phi_depth=1.0, depth_params=(0.05, 0.0)):
-    return pack("iiifff2f", w, h, step, phi_color, phi_normal, phi_depth, *depth_params)
+def atrous(w, h, step, phi_color=4.0, phi_normal=128.0, phi_depth=1.0):
+    return pack("iiifff2f", w, h, step, phi_color, phi_normal, phi_depth, 0.0, 0.0)
 
 
 def composite_lumina(w, h, intensity=1.0, debug=0, albedo_mode=0, max_history=32.0):
