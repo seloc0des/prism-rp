@@ -177,6 +177,41 @@ def test_a_small_bright_patch_lights_steadily_as_it_moves(gpu):
     assert flicker[True] < 0.5 * flicker[False] and flicker[True] < 0.08, flicker   # measured: 0.05 vs 0.13
 
 
+def test_merge_averages_each_parent_probes_2x2_directions_and_blends_across_probes(gpu):
+    probes, parent_probes = (7, 5), (4, 3)
+    block, parent_block = 4, 8
+    spacing, parent_spacing = 8.0, 16.0
+    size = (probes[0] * block, probes[1] * block)
+    psize = (parent_probes[0] * parent_block, parent_probes[1] * parent_block)
+    rng = np.random.default_rng(3)
+    parent = rng.uniform(0, 1, (psize[1], psize[0], 4)).astype(np.float16).astype(np.float64)
+    level = np.zeros((size[1], size[0], 4)); level[..., 3] = 1.0
+    cam = Camera(width=56, height=40)
+    flat = render(cam, [Plane((0, 0, -4), (0, 0, 1), (1, 1, 1))])   # one depth everywhere: every depth weight is 1
+    out = gpu.run(
+        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=flat["depth"])},
+        [Dispatch("lumina/lumina_rc_merge.comp.glsl",
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
+                  pc.merge(probes, parent_probes, block, parent_block, spacing, parent_spacing, (cam.width, cam.height), cam.depth_params),
+                  groups_for(*size))], ["lvl"])["lvl"]
+
+    expected = np.zeros_like(out)
+    for ty in range(size[1]):
+        for tx in range(size[0]):
+            probe = np.array([tx // block, ty // block])
+            direction = np.array([tx, ty]) - probe * block
+            coord = (probe + 0.5) * spacing / parent_spacing - 0.5
+            p0 = np.floor(coord).astype(int)
+            f = coord - p0
+            for j in range(4):
+                o = np.array([j & 1, j >> 1])
+                pp = np.clip(p0 + o, 0, np.array(parent_probes) - 1)
+                w = (f[0] if o[0] else 1 - f[0]) * (f[1] if o[1] else 1 - f[1])
+                b = pp * parent_block + direction * 2
+                expected[ty, tx] += w * parent[b[1]:b[1] + 2, b[0]:b[0] + 2].reshape(-1, 4).mean(axis=0)
+    np.testing.assert_allclose(out, expected, atol=1e-3)
+
+
 def test_merge_combines_interval_transmittance_and_parent(gpu):
     probes, parent_probes = (4, 4), (2, 2)
     block, parent_block = 4, 8
