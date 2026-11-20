@@ -453,6 +453,17 @@ def _temporal(gpu, cam, g, current, prev, velocity=None, flags=0):
         pc.temporal(w, h, cam.depth_params, flags=flags), groups_for(w, h))], ["hist", "mom", "geo", "filt"])
 
 
+def test_svgf_temporal_keeps_stored_depth_inside_fp16_range(gpu):
+    from types import SimpleNamespace
+    h, w = 8, 8
+    far_cam = SimpleNamespace(depth_params=(10.0, 0.0))     # a depth of 1e-5 is 1e6 m away: past fp16's 65504
+    g = {"depth": np.full((h, w), 1e-5), "normal": np.tile(np.array([0.5, 0.5, 1.0, 0.0]), (h, w, 1))}
+    empty = {"hist": np.zeros((h, w, 4)), "mom": np.zeros((h, w, 2)), "geo": np.zeros((h, w, 4))}
+    out = _temporal(gpu, far_cam, g, np.full((h, w, 4), 0.5), empty, flags=1)
+    assert np.isfinite(out["geo"]).all()
+    assert out["geo"][..., 3].max() <= 60000.0
+
+
 def test_svgf_temporal_accumulates_and_resets(gpu):
     cam = Camera(width=32, height=24)
     g = render(cam, [Plane((0, 0, -4), (0, 0, 1), (1, 1, 1))])
