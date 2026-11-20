@@ -421,7 +421,10 @@ mesh-shader stage and no indirect-count draws (through 4.8). So:
 State on 2026-11-20:
 
 - Engine patches (`engine/patches/`): 0001 indirect-count draws, 0002 mesh and task shader stages, 0003 indirect mesh
-  draws, 0004 the scene-renderer hook and the Track B capability check, 0005 nonuniform sampled-image indexing.
+  draws, 0004 the scene-renderer hook and the Track B capability check, 0005 nonuniform sampled-image indexing,
+  0006 ray queries (VK_KHR_ray_query, TLAS instances without a hit shader binding table range, and a fix for a
+  second build of a TLAS in one frame overwriting the first build's instances). Nothing in Lumina traces with them
+  yet.
 - The module (`engine/modules/prism_rp`) builds the meshlet builder from `addons/prism_rp/src/meshlet` on Godot's own
   meshoptimizer 1.1.1, and embeds the Track B shaders from `addons/prism_rp/shaders` (includes inlined by
   `embed_shaders.py`). Nothing reads either yet; the scene-renderer factory still returns the stock renderer.

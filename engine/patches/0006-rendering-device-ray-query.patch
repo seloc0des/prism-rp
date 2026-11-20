@@ -1,0 +1,124 @@
+diff --git a/doc/classes/RDAccelerationStructureInstance.xml b/doc/classes/RDAccelerationStructureInstance.xml
+index fab3b77..73c4e2a 100644
+--- a/doc/classes/RDAccelerationStructureInstance.xml
++++ b/doc/classes/RDAccelerationStructureInstance.xml
+@@ -16,7 +16,7 @@
+ 			Flags for the instance.
+ 		</member>
+ 		<member name="hit_sbt_range" type="int" setter="set_hit_sbt_range" getter="get_hit_sbt_range" default="0">
+-			Hit shader binding table range used for this instance, allocated using the [method RenderingDevice.hit_sbt_range_alloc] method.
++			Hit shader binding table range used for this instance, allocated using the [method RenderingDevice.hit_sbt_range_alloc] method. Leave it at [code]0[/code] for an instance that is only traced by ray queries, which do not use a shader binding table. A raytracing pipeline that hits such an instance reads its hit groups from the start of the shader binding table.
+ 		</member>
+ 		<member name="id" type="int" setter="set_id" getter="get_id" default="0">
+ 			Custom instance ID that can be accessed in GLSL using [code]gl_InstanceCustomIndexEXT[/code].
+diff --git a/doc/classes/RenderingDevice.xml b/doc/classes/RenderingDevice.xml
+index 94f7fc7..737184c 100644
+--- a/doc/classes/RenderingDevice.xml
++++ b/doc/classes/RenderingDevice.xml
+@@ -2901,7 +2901,7 @@
+ 		<constant name="SUPPORTS_RAY_QUERY" value="11" enum="Features">
+ 			Support for ray query extension.
+ 
+-			[b]Note:[/b] This is currently only supported when using Vulkan. This is not supported on macOS and iOS (even on hardware supporting raytracing) due to MoltenVK limitations.
++			[b]Note:[/b] This is currently only supported when using Vulkan, and requires a Vulkan 1.2 device. This is not supported on macOS and iOS (even on hardware supporting raytracing) due to MoltenVK limitations.
+ 		</constant>
+ 		<constant name="SUPPORTS_RAYTRACING_PIPELINE" value="12" enum="Features">
+ 			Support for raytracing pipeline extension.
+diff --git a/drivers/vulkan/rendering_device_driver_vulkan.cpp b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+index bea88fc..7eea7b3 100644
+--- a/drivers/vulkan/rendering_device_driver_vulkan.cpp
++++ b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+@@ -590,6 +590,7 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
+ 	_register_requested_device_extension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME, false);
+ 	_register_requested_device_extension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME, false);
+ 	_register_requested_device_extension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME, false);
++	_register_requested_device_extension(VK_KHR_RAY_QUERY_EXTENSION_NAME, false);
+ 	_register_requested_device_extension(VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME, false);
+ 	_register_requested_device_extension(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME, false);
+ 	_register_requested_device_extension(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME, false);
+@@ -899,6 +900,7 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
+ 	if (physical_device_properties.apiVersion < VK_API_VERSION_1_2) {
+ 		enabled_device_extension_names.erase(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME);
+ 		enabled_device_extension_names.erase(VK_EXT_MESH_SHADER_EXTENSION_NAME); // Needs SPIR-V 1.4.
++		enabled_device_extension_names.erase(VK_KHR_RAY_QUERY_EXTENSION_NAME); // Needs SPIR-V 1.4.
+ 	}
+ 
+ 	bool use_fdm_offsets = false;
+@@ -928,6 +930,7 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
+ 		VkPhysicalDeviceVulkanMemoryModelFeatures memory_model_features = {};
+ 		VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features = {};
+ 		VkPhysicalDeviceRayTracingPipelineFeaturesKHR raytracing_pipeline_features = {};
++		VkPhysicalDeviceRayQueryFeaturesKHR ray_query_features = {};
+ 		VkPhysicalDeviceSynchronization2FeaturesKHR sync_2_features = {};
+ 		VkPhysicalDeviceRayTracingValidationFeaturesNV raytracing_validation_features = {};
+ 		VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader_features = {};
+@@ -1009,6 +1012,12 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
+ 			next_features = &raytracing_pipeline_features;
+ 		}
+ 
++		if (enabled_device_extension_names.has(VK_KHR_RAY_QUERY_EXTENSION_NAME)) {
++			ray_query_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
++			ray_query_features.pNext = next_features;
++			next_features = &ray_query_features;
++		}
++
+ 		if (enabled_device_extension_names.has(VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME)) {
+ 			raytracing_validation_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_VALIDATION_FEATURES_NV;
+ 			raytracing_validation_features.pNext = next_features;
+@@ -1126,6 +1135,10 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
+ 			raytracing_capabilities.raytracing_pipeline_support = raytracing_pipeline_features.rayTracingPipeline;
+ 			raytracing_capabilities.validation = raytracing_validation_features.rayTracingValidation;
+ 		}
++
++		if (enabled_device_extension_names.has(VK_KHR_RAY_QUERY_EXTENSION_NAME)) {
++			ray_query_support = ray_query_features.rayQuery;
++		}
+ 	}
+ 
+ 	if (functions.GetPhysicalDeviceProperties2 != nullptr) {
+@@ -1489,6 +1502,14 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
+ 		create_info_next = &raytracing_pipeline_features;
+ 	}
+ 
++	VkPhysicalDeviceRayQueryFeaturesKHR ray_query_features = {};
++	if (ray_query_support) {
++		ray_query_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
++		ray_query_features.pNext = create_info_next;
++		ray_query_features.rayQuery = VK_TRUE;
++		create_info_next = &ray_query_features;
++	}
++
+ 	VkPhysicalDeviceRayTracingValidationFeaturesNV raytracing_validation_features = {};
+ 	if (raytracing_capabilities.validation) {
+ 		raytracing_validation_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_VALIDATION_FEATURES_NV;
+diff --git a/servers/rendering/rendering_device.cpp b/servers/rendering/rendering_device.cpp
+index 8035126..4b1880b 100644
+--- a/servers/rendering/rendering_device.cpp
++++ b/servers/rendering/rendering_device.cpp
+@@ -518,7 +518,9 @@ Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance
+ 		AccelerationStructure::InstanceBuffer instance_buffer;
+ 		instance_buffer.driver_id = instance_buffer_driver_id;
+ 		instance_buffer.frame_used = frames_drawn;
+-		instance_buffer.used_size = 0;
++		// This build takes the start of the new buffer. Leaving it at 0 would let a second build of this TLAS in the
++		// same frame write its instances over this one's before the GPU has read them.
++		instance_buffer.used_size = instance_buffer_used_size;
+ 		instance_buffer.data_ptr = data_ptr;
+ 
+ 		instance_buffer_index = tlas->instance_buffers.size();
+@@ -539,12 +541,13 @@ Error RenderingDevice::tlas_build(RID p_tlas, Span<AccelerationStructureInstance
+ 		rdd_instance.transform = rd_instance.transform;
+ 		rdd_instance.id = rd_instance.id;
+ 		rdd_instance.mask = rd_instance.mask;
++		// A range of 0 (the default) means the instance has no hit shaders, which is all a ray query needs: ray queries
++		// ignore the shader binding table. No allocated range is 0; a failed hit_sbt_range_alloc returns 0 and reports
++		// its own error.
+ 		rdd_instance.hit_sbt_offset = _decode_hit_sbt_range_offset(rd_instance.hit_sbt_range);
+ 		rdd_instance.flags = rd_instance.flags;
+ 
+ 		if (rd_instance.blas.is_valid()) {
+-			ERR_FAIL_COND_V_MSG(!rd_instance.hit_sbt_range, ERR_INVALID_PARAMETER, "Instance " + itos(i) + " has an invalid hit shader binding table range.");
+-
+ 			AccelerationStructure *blas = acceleration_structure_owner.get_or_null(rd_instance.blas);
+ 			ERR_FAIL_NULL_V(blas, ERR_INVALID_PARAMETER);
+ 			ERR_FAIL_COND_V(blas->type != RDD::ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL, ERR_INVALID_PARAMETER);
