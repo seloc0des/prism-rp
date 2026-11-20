@@ -1,0 +1,133 @@
+name: Custom Godot release
+
+# Builds the Linux editor and the Linux and Windows export templates, packages them with
+# engine/package_release.py, and attaches them to a GitHub release. A tag like engine-v4.7.2-prism.1
+# creates the release (only a tag that starts with engine-v does); a manual run only uploads the packages as a workflow artifact, to test the
+# packaging. The addon's own release (release.yml) uses v* tags and is separate.
+on:
+  push:
+    tags: ["engine-v*"]
+  workflow_dispatch:
+
+# The build jobs run a patch script and SCons, so they get no write access; only the package job can publish.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: linux-editor
+            scons: platform=linuxbsd target=editor
+            binary: godot.linuxbsd.editor.x86_64.prism
+            cache_limit_gib: "3"
+          - name: linux-release
+            scons: platform=linuxbsd target=template_release production=yes
+            binary: godot.linuxbsd.template_release.x86_64.prism
+            cache_limit_gib: "1"
+          - name: linux-debug
+            scons: platform=linuxbsd target=template_debug
+            binary: godot.linuxbsd.template_debug.x86_64.prism
+            cache_limit_gib: "1"
+          - name: windows-release
+            scons: platform=windows use_mingw=yes d3d12=no target=template_release production=yes
+            binary: godot.windows.template_release.x86_64.prism.exe
+            cache_limit_gib: "1"
+          - name: windows-debug
+            scons: platform=windows use_mingw=yes d3d12=no target=template_debug
+            binary: godot.windows.template_debug.x86_64.prism.exe
+            cache_limit_gib: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install the Linux build dependencies
+        if: startsWith(matrix.name, 'linux')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config \
+            libx11-dev libxcursor-dev libxinerama-dev libxi-dev libxrandr-dev libxrender-dev \
+            libgl1-mesa-dev libglu1-mesa-dev libasound2-dev libpulse-dev libudev-dev \
+            libwayland-dev libxkbcommon-dev libdecor-0-dev libdbus-1-dev libfontconfig-dev libspeechd-dev
+
+      - name: Install MinGW-w64
+        if: startsWith(matrix.name, 'windows')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++-mingw-w64-x86-64-posix
+          # Godot calls the unsuffixed names, and Ubuntu defaults them to the win32 thread model.
+          sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+          sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+
+      - name: Install SCons
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install scons
+
+      - name: Build
+        run: python3 engine/build.py ${{ matrix.scons }}
+
+      - name: Check the binary
+        run: |
+          set -euo pipefail
+          BIN=engine/godot/bin/${{ matrix.binary }}
+          test -f "$BIN"
+          if [[ "${{ matrix.name }}" != windows-* ]]; then
+            "$BIN" --headless --version | grep -q prism
+          fi
+
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.name }}
+          # The Windows templates come with a console wrapper next to them.
+          path: engine/godot/bin/godot.*
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    name: Package and publish
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download the builds
+        uses: actions/download-artifact@v4
+        with:
+          pattern: build-*
+          path: bin
+          merge-multiple: true
+
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          chmod +x bin/godot.linuxbsd.*
+          # Only an engine-v tag names a release; a manual run on any other ref, an addon v* tag included, is a dev build.
+          case "$GITHUB_REF" in
+            refs/tags/engine-v*) RELEASE="${GITHUB_REF_NAME#engine-v}" ;;
+            *) RELEASE="dev-${GITHUB_SHA::8}" ;;
+          esac
+          python3 engine/package_release.py bin dist "$RELEASE"
+          ls -l dist
+
+      - name: Upload the packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: prism-godot-release
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/engine-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --verify-tag

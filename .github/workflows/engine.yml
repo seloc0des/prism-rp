@@ -83,7 +83,7 @@ jobs:
       - name: Check the version and the module log line
         run: |
           set -euo pipefail
-          EDITOR=engine/godot/bin/godot.linuxbsd.editor.x86_64
+          EDITOR=engine/godot/bin/godot.linuxbsd.editor.x86_64.prism
           "$EDITOR" --headless --version | tee version.txt
           grep -q "prism" version.txt
           "$EDITOR" --headless --quit | tee run.txt
@@ -101,7 +101,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: prism-godot-linux-editor
-          path: engine/godot/bin/godot.linuxbsd.editor.x86_64
+          path: engine/godot/bin/godot.linuxbsd.editor.x86_64.prism
           if-no-files-found: error
           retention-days: 7
 
@@ -115,22 +115,22 @@ jobs:
         include:
           - name: linux-release
             scons: platform=linuxbsd target=template_release
-            binary: godot.linuxbsd.template_release.x86_64
+            binary: godot.linuxbsd.template_release.x86_64.prism
             file_pattern: 'ELF 64-bit LSB.*x86-64'
             cache_limit_gib: "1"
           - name: linux-debug
             scons: platform=linuxbsd target=template_debug
-            binary: godot.linuxbsd.template_debug.x86_64
+            binary: godot.linuxbsd.template_debug.x86_64.prism
             file_pattern: 'ELF 64-bit LSB.*x86-64'
             cache_limit_gib: "1"
           - name: windows-release
             scons: platform=windows use_mingw=yes d3d12=no target=template_release
-            binary: godot.windows.template_release.x86_64.exe
+            binary: godot.windows.template_release.x86_64.prism.exe
             file_pattern: 'PE32\+ executable.*x86-64'
             cache_limit_gib: "1"
           - name: windows-debug
             scons: platform=windows use_mingw=yes d3d12=no target=template_debug
-            binary: godot.windows.template_debug.x86_64.exe
+            binary: godot.windows.template_debug.x86_64.prism.exe
             file_pattern: 'PE32\+ executable.*x86-64'
             cache_limit_gib: "1"
     steps:
@@ -227,7 +227,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-validationlayers vulkan-tools xvfb build-essential python3-venv
           python3 -m venv .venv
           .venv/bin/pip install scons
-          chmod +x custom-editor/godot.linuxbsd.editor.x86_64
+          chmod +x custom-editor/godot.linuxbsd.editor.x86_64.prism
 
       - name: Resolve godot-cpp submodule commit
         id: godot_cpp
@@ -251,7 +251,7 @@ jobs:
           rm -rf project/addons/prism_rp
           ln -s "$(pwd)/addons/prism_rp" "$(pwd)/project/addons/prism_rp"
           # The import pass writes .godot/extension_list.cfg; without it the GDExtension is never loaded.
-          custom-editor/godot.linuxbsd.editor.x86_64 --headless --path project --import 2>&1 | tee godot_import.log
+          custom-editor/godot.linuxbsd.editor.x86_64.prism --headless --path project --import 2>&1 | tee godot_import.log
           test -f project/.godot/extension_list.cfg
 
       - name: Locate the lavapipe ICD and check Vulkan works under Xvfb
@@ -262,7 +262,7 @@ jobs:
           VK_DRIVER_FILES="$ICD" xvfb-run -a vulkaninfo --summary
 
       - name: Boot every benchmark scene on Vulkan with validation layers
-        run: tests/run_vulkan_qa.sh ./custom-editor/godot.linuxbsd.editor.x86_64
+        run: tests/run_vulkan_qa.sh ./custom-editor/godot.linuxbsd.editor.x86_64.prism
 
       - name: Check the engine module loaded
         run: grep -qF "[Prism RP] engine module loaded" godot_vulkan_qa.log
@@ -279,7 +279,7 @@ jobs:
         run: |
           mkdir track-b-off
           mv godot_*.log track-b-off/
-          tests/run_vulkan_qa.sh ./custom-editor/godot.linuxbsd.editor.x86_64
+          tests/run_vulkan_qa.sh ./custom-editor/godot.linuxbsd.editor.x86_64.prism
           grep -qF "[Prism RP] Track B: auto (command line) | GPU path:" godot_vulkan_qa.log
           mv track-b-off/godot_vulkan_qa.log godot_track_b_off.log
 
@@ -308,11 +308,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-validationlayers xvfb
-          chmod +x custom-editor/godot.linuxbsd.editor.x86_64
+          chmod +x custom-editor/godot.linuxbsd.editor.x86_64.prism
           echo "VK_DRIVER_FILES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)" >> "$GITHUB_ENV"
 
       - name: Run the test
-        run: tests/engine/run_indirect_count.sh ./custom-editor/godot.linuxbsd.editor.x86_64
+        run: tests/engine/run_indirect_count.sh ./custom-editor/godot.linuxbsd.editor.x86_64.prism
 
   shade-materials:
     name: Track B material shading dispatch (lavapipe)
@@ -332,11 +332,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-validationlayers xvfb
-          chmod +x custom-editor/godot.linuxbsd.editor.x86_64
+          chmod +x custom-editor/godot.linuxbsd.editor.x86_64.prism
           echo "VK_DRIVER_FILES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)" >> "$GITHUB_ENV"
 
       - name: Run the test
-        run: tests/engine/run_shade_materials.sh ./custom-editor/godot.linuxbsd.editor.x86_64
+        run: tests/engine/run_shade_materials.sh ./custom-editor/godot.linuxbsd.editor.x86_64.prism
 
   mesh-shader:
     name: Mesh and task shader test (lavapipe)
@@ -356,7 +356,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-validationlayers vulkan-tools xvfb
-          chmod +x custom-editor/godot.linuxbsd.editor.x86_64
+          chmod +x custom-editor/godot.linuxbsd.editor.x86_64.prism
           echo "VK_DRIVER_FILES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)" >> "$GITHUB_ENV"
 
       # Lavapipe gained VK_EXT_mesh_shader in Mesa 25.1; fail with a clear reason on an older runner image.
@@ -367,7 +367,7 @@ jobs:
           vulkaninfo | grep -q VK_EXT_mesh_shader || { echo "::error::This Mesa's lavapipe has no VK_EXT_mesh_shader."; exit 1; }
 
       - name: Run the test
-        run: tests/engine/run_mesh_shader.sh ./custom-editor/godot.linuxbsd.editor.x86_64
+        run: tests/engine/run_mesh_shader.sh ./custom-editor/godot.linuxbsd.editor.x86_64.prism
 
   track-b:
     name: Track B switch (lavapipe)
@@ -387,7 +387,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers vulkan-tools xvfb
-          chmod +x custom-editor/godot.linuxbsd.editor.x86_64
+          chmod +x custom-editor/godot.linuxbsd.editor.x86_64.prism
           echo "VK_DRIVER_FILES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)" >> "$GITHUB_ENV"
 
       # The test expects the mesh GPU path, which needs a lavapipe with VK_EXT_mesh_shader (Mesa 25.1 or newer).
@@ -395,4 +395,4 @@ jobs:
         run: vulkaninfo | grep -q VK_EXT_mesh_shader || { echo "::error::This Mesa's lavapipe has no VK_EXT_mesh_shader."; exit 1; }
 
       - name: Run the test
-        run: tests/engine/run_track_b.sh ./custom-editor/godot.linuxbsd.editor.x86_64
+        run: tests/engine/run_track_b.sh ./custom-editor/godot.linuxbsd.editor.x86_64.prism

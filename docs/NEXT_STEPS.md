@@ -315,6 +315,20 @@ mesh-shader stage and no indirect-count draws (through 4.8). So:
   templates for those two, with Windows cross-compiled using MinGW. No macOS, iOS, Android or web.
 - Every feature checks GPU support at startup and falls back to stock Godot rendering when the GPU lacks it.
 
+State on 2026-11-20:
+
+- Engine patches (`engine/patches/`): 0001 indirect-count draws, 0002 mesh and task shader stages, 0003 indirect mesh
+  draws, 0004 the scene-renderer hook and the Track B capability check, 0005 nonuniform sampled-image indexing.
+- The module (`engine/modules/prism_rp`) builds the meshlet builder from `addons/prism_rp/src/meshlet` on Godot's own
+  meshoptimizer 1.1.1, and embeds the Track B shaders from `addons/prism_rp/shaders` (includes inlined by
+  `embed_shaders.py`). Nothing reads either yet; the scene-renderer factory still returns the stock renderer.
+- CI (`.github/workflows/engine.yml`) builds the Linux editor and four templates, and runs the lavapipe tests for each
+  patch, for the material shading dispatch and for the benchmark scenes.
+- Releases: pushing a tag `engine-v...` runs `.github/workflows/engine-release.yml`, which builds the editor and the
+  templates from scratch (no SCons cache) and attaches `prism-godot-<release>-linux-editor.tar.gz` and
+  `prism-godot-<release>-templates.tpz`. `docs/USING.md` section 4 tells users how to install them. No release has
+  been cut yet, and the workflow has not run on GitHub.
+
 ## Not in this plan, and why
 
 - **Track B host code:** a GDExtension can't replace Godot's opaque pass, and Godot (up to 4.8 beta) has no mesh

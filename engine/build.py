@@ -3,6 +3,8 @@
 
 Usage: engine/build.py [scons args...]   (defaults to platform=linuxbsd target=editor)
 
+The binaries get a .prism suffix (godot.linuxbsd.editor.x86_64.prism).
+
 Other variants use the same entry point:
   engine/build.py platform=linuxbsd target=template_release
   engine/build.py platform=linuxbsd target=template_debug
@@ -22,9 +24,8 @@ def main():
     subprocess.run([sys.executable, str(ENGINE / "apply_patches.py")], check=True)
     args = sys.argv[1:] or ["platform=linuxbsd", "target=editor"]
     cmd = [str(SCONS), f"custom_modules={ENGINE / 'modules'}", "-j", str(os.cpu_count()), *args]
-    # BUILD_NAME makes the version string read 4.7.2.stable.prism.
-    env = {**os.environ, "BUILD_NAME": "prism"}
-    sys.exit(subprocess.run(cmd, cwd=ENGINE / "godot", env=env).returncode)
+    # The module adds "prism" to the version (4.7.2.stable.prism) and to the binary names, see modules/prism_rp/config.py.
+    sys.exit(subprocess.run(cmd, cwd=ENGINE / "godot").returncode)
 
 
 if __name__ == "__main__":
