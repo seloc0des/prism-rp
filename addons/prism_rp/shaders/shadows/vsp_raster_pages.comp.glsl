@@ -60,7 +60,7 @@ layout(set = 0, binding = 10, std430) readonly buffer MaterialBuffer {
     GpuPbrMaterial b_materials[];
 };
 
-layout(set = 0, binding = 11) uniform sampler2D u_textures[];
+layout(set = 0, binding = 11) uniform sampler2D u_textures[PRISM_MAX_MATERIAL_TEXTURES];
 
 // Meshlet vertices in page texel coordinates (xy in [0, 128] inside the page) + light depth (z)
 shared vec3 s_page_verts[PRISM_MESHLET_MAX_VERTICES];

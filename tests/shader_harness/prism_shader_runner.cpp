@@ -14,6 +14,8 @@
 //                     "bindings": [ { "binding": 0, "image": "<name>", "kind": "sampled_nearest" },
 //                                   { "binding": 1, "image": "<name>", "kind": "storage", "mip": 2 },
 //                                   { "binding": 2, "images": ["a", "b"], "kind": "sampled_linear" },
+//                                   { "binding": 3, "images": ["a"], "kind": "sampled_nearest", "array_size": 256 },
+//                                     (array_size pads the list to a declared array size with its first image)
 //                                   { "binding": 3, "buffer": "<name>", "kind": "storage_buffer" } ] } ],
 //   "outputs":    { "<name>": "out.bin" }                                     (images or buffers)
 // }
@@ -475,6 +477,14 @@ int run(const json &job) {
                     names = b.at("images").get<std::vector<std::string>>();
                 } else {
                     names.push_back(b.at("image").get<std::string>());
+                }
+                // An array binding is declared with a fixed size; fill the unused slots with its first image.
+                if (b.contains("array_size")) {
+                    const size_t array_size = b.at("array_size").get<size_t>();
+                    if (names.size() > array_size) {
+                        throw std::runtime_error("binding " + std::to_string(lb.binding) + " has " + std::to_string(names.size()) + " images for an array of " + std::to_string(array_size));
+                    }
+                    names.resize(array_size, names.at(0));
                 }
                 lb.descriptorCount = static_cast<uint32_t>(names.size());
                 for (const std::string &n : names) {

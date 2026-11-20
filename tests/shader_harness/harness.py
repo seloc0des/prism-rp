@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -28,6 +29,9 @@ SHADER_ROOT = REPO / "addons" / "prism_rp" / "shaders"
 INCLUDE_DIR = SHADER_ROOT / "include"
 BUILD_DIR = REPO / "build" / "shader_harness"
 RUNNER = BUILD_DIR / "prism_shader_runner"
+
+# Size of the shaders' u_textures[] array, read from the shared include so the two cannot drift apart.
+TEXTURE_ARRAY_SIZE = int(re.search(r"PRISM_MAX_MATERIAL_TEXTURES\s*=\s*(\d+)u", (INCLUDE_DIR / "vis_shading_common.glsl").read_text()).group(1))
 
 # format -> (channels, numpy storage dtype, normalized unorm). Integer formats (uint32) come back as uint32.
 FORMATS = {
@@ -165,6 +169,7 @@ class Harness:
             job["buffers"][name] = spec
         for d in dispatches:
             binds = []
+            has_texture_array = "u_textures[" in (SHADER_ROOT / d.shader).read_text()
             for b, entry in sorted(d.bindings.items()):
                 target, kind = entry[0], entry[1]
                 spec = {"binding": b, "kind": kind}
@@ -172,6 +177,8 @@ class Harness:
                     spec["buffer"] = target
                 elif isinstance(target, (list, tuple)):
                     spec["images"] = list(target)
+                    if has_texture_array:
+                        spec["array_size"] = TEXTURE_ARRAY_SIZE
                 else:
                     spec["image"] = target
                 if len(entry) > 2:

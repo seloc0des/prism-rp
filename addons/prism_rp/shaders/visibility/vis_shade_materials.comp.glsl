@@ -52,7 +52,7 @@ layout(set = 0, binding = 9, std430) readonly buffer MaterialWorkBuffer {
 };
 
 // Bindless material texture array (albedo / emissive through sRGB views)
-layout(set = 0, binding = 10) uniform sampler2D u_textures[];
+layout(set = 0, binding = 10) uniform sampler2D u_textures[PRISM_MAX_MATERIAL_TEXTURES];
 
 // Outputs: HDR radiance (linear Rec.709), albedo + roughness, world-space octahedral normal +
 // metallic + AO, motion vectors (Godot convention: prev_uv - curr_uv)

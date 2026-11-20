@@ -15,6 +15,7 @@
 const uint PRISM_VIS_TILE_SIZE        = 8u;
 const uint PRISM_MAX_TILE_MATERIALS   = 256u;  // classification bins; higher IDs share the last bin
 const uint PRISM_INVALID_TEX_INDEX    = 0xFFFFFFFFu;
+const uint PRISM_MAX_MATERIAL_TEXTURES = 256u; // size of u_textures[]; the host binds every slot, unused ones to a placeholder
 const uint PRISM_SHADE_DISPATCH_WIDTH = 256u;  // shade workgroups per row of the 2D indirect dispatch
 
 // Material flags

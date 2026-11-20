@@ -2,5 +2,37 @@
 Import("env")
 Import("env_modules")
 
+import sys
+from pathlib import Path
+
+module_dir = Path(Dir(".").srcnode().abspath)
+sys.path.insert(0, str(module_dir))
+from embed_shaders import embed_shaders_builder, entry_points
+
+# The addon is the one copy of the Track B shaders and of the meshlet builder; the GDExtension builds the same files.
+repo_root = module_dir.parents[2]
+shader_root = repo_root / "addons" / "prism_rp" / "shaders"
+addon_include = repo_root / "addons" / "prism_rp" / "include"
+meshlet_builder = repo_root / "addons" / "prism_rp" / "src" / "meshlet" / "meshlet_builder.cpp"
+
 env_prism = env_modules.Clone()
+# Generated files and the objects of sources outside this directory go here, not into the source tree.
+build_dir = "#bin/obj/prism_rp/"
+env_prism.Append(CPPPATH=[str(addon_include), "#thirdparty/meshoptimizer", build_dir])
+env_prism["PRISM_SHADER_ROOT"] = str(shader_root)
+
+# Godot's meshoptimizer module builds everything the meshlet builder needs except meshletutils.cpp
+# (meshopt_computeMeshletBounds, meshopt_optimizeMeshlet). Drop this once that module builds it.
+env_thirdparty = env_prism.Clone()
+env_thirdparty.disable_warnings()
+env_thirdparty.add_source_files(env.modules_sources, ["#thirdparty/meshoptimizer/meshletutils.cpp"])
+
+env.modules_sources += env_prism.Object("meshlet_builder" + env_prism["OBJSUFFIX"], str(meshlet_builder))
+
+shaders_header = env_prism.CommandNoCache(
+    build_dir + "prism_shaders.gen.h",
+    [str(p) for p in entry_points(shader_root)] + [str(p) for p in (shader_root / "include").glob("*.glsl")] + [str(module_dir / "embed_shaders.py")],
+    env_prism.Run(embed_shaders_builder),
+)
+env_prism.Depends(Glob("register_types.cpp"), shaders_header)
 env_prism.add_source_files(env.modules_sources, "*.cpp")

@@ -20,7 +20,7 @@ layout(set = 0, binding = 8, std430) readonly buffer MaterialBuffer {
     GpuPbrMaterial b_materials[];
 };
 
-layout(set = 0, binding = 9) uniform sampler2D u_textures[];
+layout(set = 0, binding = 9) uniform sampler2D u_textures[PRISM_MAX_MATERIAL_TEXTURES];
 #endif
 
 #ifdef PRISM_VIS_MESH_PATH

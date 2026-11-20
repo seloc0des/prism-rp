@@ -7,8 +7,11 @@ on:
     paths:
       - "engine/**"
       - "addons/prism_rp/shaders/**"
+      - "addons/prism_rp/src/meshlet/**"
+      - "addons/prism_rp/include/**"
       - "tests/run_vulkan_qa.sh"
       - "tests/engine/**"
+      - "tests/unit/test_meshlet_builder.py"
       - ".github/workflows/engine.yml"
   workflow_dispatch:
 
@@ -29,6 +32,15 @@ jobs:
 
       - name: Apply the patch set to the pinned Godot
         run: python3 engine/apply_patches.py
+
+      # The meshlet builder links against Godot's meshoptimizer (older than the repo's submodule), which only exists
+      # once the submodule is checked out, so the unit-tests job cannot run this case.
+      - name: Run the meshlet tests against Godot's meshoptimizer
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install pytest
+          .venv/bin/python -m pytest -q -k godot tests/unit/test_meshlet_builder.py | tee meshlet.txt
+          grep -q "1 passed" meshlet.txt
 
   linux-editor:
     name: Linux editor
