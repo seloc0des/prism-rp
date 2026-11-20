@@ -8,19 +8,29 @@
 // One invocation per (world probe, direction) atlas texel. Marches a world-space ray through the
 // depth buffer. Outcomes:
 //   hit on screen           -> blend the hit's radiance into the cache
+//   hit a back face         -> blocked: blend in black
 //   stayed on screen, clear -> blend in "nothing there" (black)
 //   left the screen         -> no information: keep the cached value (this is what makes the cache
 //                              remember light that is no longer visible)
 // rgb = radiance, a = number of samples blended (capped), used for the running-average weight.
+//
+// Each direction stands for a cone of 4pi / WORLD_BLOCK^2 sr. Read at a single pixel, a small bright patch is
+// caught at full strength by whichever direction points at it and missed by the rest, and that direction then
+// holds the patch's peak across its whole cone. A hit samples the radiance mip chain at the cone's width instead,
+// as the screen-space trace does, stepping to finer mips while anything in the texel is well in front of the hit.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D u_depth_tex;
-layout(set = 0, binding = 1) uniform sampler2D u_radiance_tex;
+layout(set = 0, binding = 1) uniform sampler2D u_radiance_tex;     // radiance mip chain: rgb, nearest linear depth
 layout(set = 0, binding = 2) uniform sampler2D u_state_tex;
 layout(rgba16f, set = 0, binding = 3) uniform image2D u_world_probes;
+layout(set = 0, binding = 4) uniform sampler2D u_normal_roughness_tex;
 
 const float MAX_SAMPLES = 32.0;
+// Twice the direction's share of the sphere, as in lumina_rc_trace, so neighbouring directions' footprints overlap.
+const float kConeAngle = sqrt(2.0) * sqrt(4.0 * 3.14159265) / float(WORLD_BLOCK);
+const float kNearerOccluder = 0.9;
 
 void main() {
     int n = wpc.a0.z;
@@ -63,7 +73,18 @@ void main() {
         if (ray_z > scene_z) {
             if (ray_z - scene_z < wpc.cam_right.w * ray_z) {
                 hit = true;
-                radiance = max(textureLod(u_radiance_tex, uv, 0.0).rgb, vec3(0.0));
+                float footprint_px = t * kConeAngle * abs(wpc.proj.y) * 0.5 * float(wpc.a0.y) / ray_z;
+                float lod = log2(max(footprint_px, 1.0));
+                vec4 texel_value = textureLod(u_radiance_tex, uv, lod);
+                while (lod > 0.0 && texel_value.a < kNearerOccluder * scene_z) {
+                    lod = max(lod - 1.0, 0.0);
+                    texel_value = textureLod(u_radiance_tex, uv, lod);
+                }
+                // The depth buffer only holds front faces. A ray meeting a surface that faces away from it has
+                // reached that object's back or passed just behind it: it is blocked, as in lumina_rc_trace, and
+                // the lit front face's colour must not be recorded.
+                vec3 hit_normal = lumina_decode_normal(textureLod(u_normal_roughness_tex, uv, 0.0));
+                radiance = dot(hit_normal, lumina_world_to_view_dir(dir)) < 0.0 ? texel_value.rgb : vec3(0.0);
             } else {
                 known = false;   // passed behind something: what's there is hidden from the camera
             }

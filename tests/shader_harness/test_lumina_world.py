@@ -47,18 +47,32 @@ def world_pc(cam, cam_pos, right, up, base, a1w=0, screen_block=0, misc_z=RAY_LE
 
 
 def classify_and_update(gpu, cam, g, cam_pos, right, up, state=None, probes=None, frame=0):
+    """As in the C++, the update reads the radiance mip chain (colour plus linear depth, then box-filtered mips)."""
     base = base_cell_for(cam_pos)
     state = np.zeros((N, N * N, 4)) if state is None else state
     probes = np.zeros((N * WORLD_BLOCK, N * N * WORLD_BLOCK, 4)) if probes is None else probes
     push = world_pc(cam, cam_pos, right, up, base, a1w=frame)
+    mips = int(np.log2(max(cam.width, cam.height))) + 1
+    dispatches = [Dispatch(
+        "lumina/lumina_radiance_copy.comp.glsl",
+        {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("radiance", "storage", 0)},
+        pc.radiance_copy(cam.width, cam.height, cam.depth_params), groups_for(cam.width, cam.height))]
+    for m in range(1, mips):
+        size = (max(1, cam.width >> m), max(1, cam.height >> m))
+        dispatches.append(Dispatch(
+            "lumina/lumina_radiance_downsample.comp.glsl",
+            {0: ("radiance", "sampled_nearest", m - 1), 1: ("radiance", "storage", m)}, pc.downsample(*size), groups_for(*size)))
+    dispatches += [
+        Dispatch("lumina/lumina_ws_classify.comp.glsl", {0: ("depth", "sampled_nearest"), 1: ("state", "storage")}, push, (1, 1, 1)),
+        Dispatch("lumina/lumina_ws_update.comp.glsl",
+                 {0: ("depth", "sampled_nearest"), 1: ("radiance", "sampled_linear"), 2: ("state", "sampled_nearest"),
+                  3: ("probes", "storage"), 4: ("normal", "sampled_nearest")},
+                 push, groups_for(N * N * WORLD_BLOCK, N * WORLD_BLOCK))]
     out = gpu.run(
         {"depth": Img("r32f", data=g["depth"]), "color": Img("rgba16f", data=g["color"]),
+         "normal": Img("rgba8", data=g["normal"]), "radiance": Img("rgba16f", cam.width, cam.height, mips=mips),
          "state": Img("rgba32f", data=state), "probes": Img("rgba16f", data=probes)},
-        [Dispatch("lumina/lumina_ws_classify.comp.glsl", {0: ("depth", "sampled_nearest"), 1: ("state", "storage")}, push, (1, 1, 1)),
-         Dispatch("lumina/lumina_ws_update.comp.glsl",
-                  {0: ("depth", "sampled_nearest"), 1: ("color", "sampled_linear"), 2: ("state", "sampled_nearest"), 3: ("probes", "storage")},
-                  push, groups_for(N * N * WORLD_BLOCK, N * WORLD_BLOCK))],
-        ["state", "probes"])
+        dispatches, ["state", "probes"])
     return out["state"], out["probes"], base
 
 
@@ -108,6 +122,67 @@ def test_probe_just_behind_a_wall_records_nothing(gpu):
     x0, y0 = atlas_texel(slot, (0, 0))
     block = probes[y0:y0 + WORLD_BLOCK, x0:x0 + WORLD_BLOCK]
     assert block[..., 0].max() < 0.1, f"{(block[..., 0] > 0.1).sum()} of {WORLD_BLOCK ** 2} directions took the wall's red"
+
+
+def test_update_takes_a_small_bright_patch_at_its_cones_average(gpu):
+    # Each direction stands for a 64th of the sphere. Read at one pixel, a small bright patch was caught at full
+    # strength by the direction pointing at it, which then held the patch's peak across its whole cone (the
+    # Cornell box's ceiling, just above its light). Sampled at the cone's width it gives the cone's average.
+    cam = Camera(width=64, height=48)
+    cell = (0, 0, -2)                                       # centre (0.5, 0.5, -1.5)
+    centre = (np.array(cell) + 0.5) * SPACING
+    texel = dir_texel((0.0, 0.0, -1.0))
+    d = oct_decode((np.array(texel) + 0.5) / WORLD_BLOCK * 2.0 - 1.0)
+    aim = centre + d * ((-6.0 - centre[2]) / d[2])          # where that direction meets the wall at z = -6
+    half = 0.2                                              # a 0.4 m patch, about 3 px wide at 6 m
+    patch = Plane((0, 0, -5.99), (0, 0, 1), (10.0, 10.0, 10.0),
+                  ((aim[0] - half, aim[0] + half), (aim[1] - half, aim[1] + half), (-7.0, -5.0)))
+    g = render(cam, [patch, Plane((0, 0, -6), (0, 0, 1), (0.0, 0.0, 0.0))])
+    _, probes, _ = classify_and_update(gpu, cam, g, (0.0, 0.0, 0.0), *FORWARD)
+    got = probes[atlas_texel(tuple(c % N for c in cell), texel)[::-1]]
+    assert got[3] == 1.0                                    # sampled
+    assert 0.02 < got[0] < 2.0, got[0]                      # some of the patch's light, nowhere near its peak of 10
+
+
+def test_update_keeps_a_nearer_objects_light_out_of_a_hit_beside_it(gpu):
+    # At the cone's width, a hit's texel can take in something well in front of it, such as the edge of a bright
+    # object beside the hit on screen. The hit steps to finer mips until nothing in its texel is that near, as in
+    # the screen-space trace; without that the wall beside the object took the object's light.
+    cam = Camera(width=64, height=48)
+    cell = (0, 0, -2)                                       # centre (0.5, 0.5, -1.5)
+    centre = (np.array(cell) + 0.5) * SPACING
+    texel = dir_texel((0.0, 0.0, -1.0))
+    d = oct_decode((np.array(texel) + 0.5) / WORLD_BLOCK * 2.0 - 1.0)
+    aim = centre + d * ((-6.0 - centre[2]) / d[2])          # where that direction meets the wall at z = -6
+    edge = 3.0 * (aim[0] / 6.0 - 0.03)                      # a card at z = -3 ending just left of the hit on screen
+    card = Plane((0, 0, -3.0), (0, 0, 1), (10.0, 10.0, 10.0), ((-3.0, edge), (-3.0, 3.0), (-4.0, -2.0)))
+    g = render(cam, [card, Plane((0, 0, -6), (0, 0, 1), (0.1, 0.1, 0.1))])
+    assert centre[0] + d[0] * ((-3.0 - centre[2]) / d[2]) > edge     # the ray itself passes clear of the card
+    _, probes, _ = classify_and_update(gpu, cam, g, (0.0, 0.0, 0.0), *FORWARD)
+    got = probes[atlas_texel(tuple(c % N for c in cell), texel)[::-1]]
+    assert got[3] == 1.0
+    assert got[0] < 0.5, got[0]                             # the wall's 0.1, not the card's 10 blurred in
+
+
+def test_update_does_not_record_the_lit_front_of_an_object_it_passes_behind(gpu):
+    # A ray that passes just behind an object, heading back toward the camera's side of it, lands within the hit
+    # thickness behind the object's front face, which the depth buffer can't tell from a hit. That face points
+    # away from the ray, so the ray is blocked there. Recording the lit face's colour instead lit the Cornell box's
+    # back wall from directions that see nothing.
+    cam = Camera(width=64, height=48)
+    occluder = Plane((0, 0, -1.3), (0, 0, 1), (4.0, 4.0, 4.0), ((-1.0, 0.3), (-1.0, 1.0), (-2.0, -1.0)))
+    g = render(cam, [occluder, Plane((0, 0, -6), (0, 0, 1), (0.1, 0.1, 0.1))])
+    cell = (0, 0, -2)                                       # centre (0.5, 0.5, -1.5): seen beside the occluder
+    centre = (np.array(cell) + 0.5) * SPACING
+    texel = dir_texel((-0.9, -0.2, 0.35))
+    d = oct_decode((np.array(texel) + 0.5) / WORLD_BLOCK * 2.0 - 1.0)
+    t = (0.3 - centre[0]) / d[0]                            # where the ray passes the occluder's edge
+    behind = -1.3 - (centre[2] + d[2] * t)
+    assert d[2] > 0.0 and 0.0 < behind < 0.25 * 1.3        # toward the camera, within the hit thickness
+    _, probes, _ = classify_and_update(gpu, cam, g, (0.0, 0.0, 0.0), *FORWARD)
+    got = probes[atlas_texel(tuple(c % N for c in cell), texel)[::-1]]
+    assert got[3] == 1.0                                    # sampled: blocked, not unknown
+    assert got[:3].max() < 0.05, got
 
 
 def test_cache_remembers_light_after_turning_away(gpu):
