@@ -20,7 +20,7 @@ layout(push_constant, std430) uniform PushConstants {
     float phi_color;
     float phi_normal;
     float phi_depth;
-    vec2 depth_params;
+    vec2 _pad;
 } pc;
 
 void main() {

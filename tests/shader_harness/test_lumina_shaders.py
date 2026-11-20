@@ -551,7 +551,7 @@ def _atrous(gpu, cam, g, data, iterations=3):
         dispatches.append(Dispatch(
             "lumina/lumina_svgf_atrous.comp.glsl",
             {0: (src, "sampled_nearest"), 1: ("geo", "sampled_nearest"), 2: (dst, "storage")},
-            pc.atrous(w, h, 1 << it, depth_params=cam.depth_params), groups_for(w, h)))
+            pc.atrous(w, h, 1 << it), groups_for(w, h)))
         src = dst
     return gpu.run(imgs, dispatches, [src])[src]
 

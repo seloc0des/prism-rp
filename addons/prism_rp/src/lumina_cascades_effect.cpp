@@ -498,7 +498,6 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 pc.internal_res_y = size.y;
                 pc.step_px = 1 << it;
                 pc.phi_color = denoise_strength;
-                std::copy(std::begin(depth_params), std::end(depth_params), pc.depth_params);
                 dispatch_compute(rd, atrous_pipeline, uset, make_push_constant_bytes(pc), gx, gy);
                 filtered = dst;
             }
