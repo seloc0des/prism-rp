@@ -120,7 +120,7 @@ class Buf:
 @dataclass
 class Dispatch:
     shader: str                                   # path relative to addons/prism_rp/shaders, or absolute
-    # binding -> (image name, kind) | (image name, "storage", mip) | ([image names], sampled kind) |
+    # binding -> (image name, kind) | (image name, kind, mip) | ([image names], sampled kind) |
     #            (buffer name, "storage_buffer" | "uniform_buffer")
     bindings: dict[int, tuple]
     pc: bytes = b""

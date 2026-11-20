@@ -25,39 +25,20 @@ layout(push_constant, std430) uniform PushConstants {
     vec4 proj;   // P00, P11, P20, P21 (see lumina_view_position)
 } pc;
 
-// Firefly clamp: a direction may be at most kFireflyClamp times the mean luminance of the probe's other
-// directions (plus kFireflyFloor). One direction landing on a tiny, very bright spot, such as the
-// hotspot a light makes on a nearby wall, otherwise lights the whole probe and leaves a probe-sized
-// blob. A broad bright area is seen by many directions, raises that mean and passes unclamped.
-const float kFireflyClamp = 8.0;
-const float kFireflyFloor = 1e-3;
-
+// Deliberately no firefly clamp. A small bright spot rarely lands on one direction at full strength,
+// because the trace samples each hit at the mip matching its cone's footprint (lumina_rc_trace.comp.glsl).
+// A clamp would cut real light from any direction much brighter than the probe's mean, bright walls included.
 vec3 probe_irradiance(ivec2 probe, vec3 n) {
     // Normalised cosine-weighted average over the probe's directions: E / pi = sum(L cos) / sum(cos).
     // Exact for uniform radiance, and it doesn't depend on per-texel solid angles (octahedral texels
     // aren't equal-area; assuming 4pi/N each made uniform light integrate ~18% dark at 16 directions).
-    float luma_sum = 0.0;
-    float luma_max = 0.0;
-    for (int y = 0; y < pc.block; ++y) {
-        for (int x = 0; x < pc.block; ++x) {
-            float l = lumina_luminance(texelFetch(u_cascade0_tex, probe * pc.block + ivec2(x, y), 0).rgb);
-            luma_sum += l;
-            luma_max = max(luma_max, l);
-        }
-    }
-    float count = float(pc.block * pc.block);
-    float limit = kFireflyClamp * (luma_sum - luma_max) / max(count - 1.0, 1.0) + kFireflyFloor;
-
     vec3 sum = vec3(0.0);
     float weight = 0.0;
     for (int y = 0; y < pc.block; ++y) {
         for (int x = 0; x < pc.block; ++x) {
             vec3 dir = lumina_block_direction(ivec2(x, y), pc.block);
             float cos_theta = max(dot(dir, n), 0.0);
-            vec3 radiance = texelFetch(u_cascade0_tex, probe * pc.block + ivec2(x, y), 0).rgb;
-            float l = lumina_luminance(radiance);
-            radiance *= l > limit ? limit / l : 1.0;
-            sum += radiance * cos_theta;
+            sum += texelFetch(u_cascade0_tex, probe * pc.block + ivec2(x, y), 0).rgb * cos_theta;
             weight += cos_theta;
         }
     }

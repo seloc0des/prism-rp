@@ -54,6 +54,10 @@ def downsample(dst_w, dst_h):
     return pack("iiii", dst_w, dst_h, 0, 0)
 
 
+def radiance_copy(w, h, depth_params):
+    return pack("ii2f", w, h, *depth_params)
+
+
 def merge(probes, parent_probes, block, parent_block, spacing, parent_spacing, resolution, depth_params):
     return pack("iiiiiiffii2f", *probes, *parent_probes, block, parent_block, spacing, parent_spacing, *resolution, *depth_params)
 

@@ -301,8 +301,8 @@ box, where it adds light evenly to every surface. Coarse directions aren't the c
 resolution made the Cornell box worse. In an analytic open box run through the whole pipeline in the shader harness,
 the cache lands within 8% of the exactly computed answer (0.95x with a bright hotspot on the ceiling, where the
 screen-space path alone gets 0.60x), so the excess comes from something particular to the real scene and is still open.
-The same test answers the firefly-clamp question below: the clamp does throw away real light from a small, bright
-hotspot when the rest of the hemisphere is dark.
+The same test answers the firefly-clamp question: the clamp does throw away real light from a small, bright hotspot
+when the rest of the hemisphere is dark (removed; see **Lumina no longer clamps fireflies** below).
 
 **Gate 2 measured SDFGI in a colourless scene (fixed in #22).** Gate 2 took SDFGI's light from Godot's lighting-only
 debug view, which swaps every material for Godot's grey default (albedo 0.6, roughness 0.8, metallic 0.2), and does so
@@ -329,15 +329,38 @@ measurement), and the ray-query fallback on the custom build is what closes it.
 
 Weighting by albedo lowers the error on dark surfaces, so these numbers sit higher than the old ones. The interim floor
 moves from 20 to 25 dB by the same rule as before: above SDFGI's Cornell score and below Lumina's Sponza score.
+
+**Lumina no longer clamps fireflies, and small bright patches don't flicker or leave blobs.** The clamp in the
+integrate pass cut any direction much brighter than the rest of the probe, so it also cut the real light from a bright
+wall when the rest of the room was dark. In an analytic black room lit by one wall, Lumina got 0.50x of the one-bounce
+light computed by brute force, and a 4 px hotspot 0.03x. The clamp was there because one ray per direction hit a small
+hotspot at full strength or missed it, and the probes that hit it turned into blobs. Every cascade level now traces a
+radiance mip chain and samples each hit at the mip as wide as its ray's blur cone. Each texel of the chain also keeps
+the nearest depth it covers, and a hit steps to finer mips while its texel takes in something well in front of it;
+without that, the floor behind a bright object picked up the object's lit front through the blur. Near silhouettes
+that check falls back to sharp mips, where one ray misses the hotspot again, so each direction is now traced by 2 x 2
+sub-rays. In the harness the wall gets 0.69x and the hotspot 0.64x, spread evenly over the room, light still doesn't
+leak behind objects, and a moving hotspot flickers a little more than before (0.047 relative, from 0.034).
+
+| Lumina, Tier 2 | Cornell box, fitted (centre), level | Sponza, fitted (centre), level |
+| :--- | :--- | :--- |
+| Before | 28.4 dB (26.9), 1.07x | 29.3 dB (29.5), 0.77x |
+| No clamp, mip chain, one ray per direction | 28.1 dB (26.7), 1.02x | 29.2 dB (29.5), 0.80x |
+| The same with 2 x 2 sub-rays | 28.9 dB (27.5), 1.01x | 29.3 dB (29.6), 0.79x |
+
+The last two rows share their references (SDFGI scored 22.5 and 34.9 dB in both); the first row's run had slightly
+different ones (22.6 and 34.9). The Cornell box's blobs are gone: the dark smudge at the foot of the red wall and the
+bright patch under the light. Sponza doesn't change, because its error is light from behind the camera. The price is
+frame time: Lumina takes 2.0 to 3.9 ms across the five benchmark scenes on Tier 2, up from 1.1 to 1.8 ms, over the
+2.40 ms budget in four of them. That is the chosen order: the best image first, then the cost comes back down.
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
 3. Next, in order:
    - the world-space cache's extra light in the Cornell box, then the cache on by default; it also fills Sponza's
      dark, camera-facing surfaces and their colour smears;
-   - the Cornell box's probe blobs, and a firefly clamp that keeps a small, bright hotspot's real light (today's
-     clamp, 8x the mean of the other directions, discards it when the rest of the hemisphere is dark);
-   - keep Lumina under the 2.40 ms Tier 2 budget in the foliage scene;
+   - bring Lumina back under the 2.40 ms Tier 2 budget without losing the sub-ray trace's image: measure the trace
+     pass on its own first, then try sub-rays on the coarse levels only and fewer steps per sub-ray;
    - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
      templates;
    - on the custom build, the ray-query fallback for off-screen and hidden light (Sponza's 5.6 dB gap to SDFGI is

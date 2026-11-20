@@ -5,8 +5,9 @@
 #include "lumina_common.glsl"
 
 // Radiance cascade trace: one texel = one (probe, direction) pair of a single cascade level.
-// Writes the radiance found inside this level's interval (rgb) and its transmittance (a):
-// a = 0 when the interval hit geometry, 1 when it was clear (or left the screen).
+// Writes the radiance found inside this level's interval (rgb) and its transmittance (a), averaged over
+// kSubRays x kSubRays rays spread across the direction's octahedral cell: a is the fraction of them that
+// found nothing in the interval (or left the screen).
 //
 // Intervals are measured in screen pixels along the ray's projection: level i covers
 // [interval_start_px, interval_start_px + interval_length_px) of it, and the top level
@@ -14,12 +15,26 @@
 // placed on the ray with perspective-correct interpolation. (Converting the pixel lengths to world
 // units at the probe's own depth gave each probe a reach of about its own distance from the camera,
 // so walls and floor near the camera never saw the far side of the room.)
+//
+// A hit samples the radiance mip chain at the mip whose texels are as wide as its ray's blur cone is at
+// that distance, on screen. Each direction stands for a cone of about 4pi / block^2 sr; sampled
+// sharper than that, a small bright patch is hit at full strength by one direction or missed by all,
+// and the light it throws flickers and gathers into probe-sized blobs. A blurred texel that takes in
+// something well in front of the hit, such as the edge of an object the ray passed behind, would hand
+// the ray light from a surface it can't see: the floor behind a bright card got the card's lit front.
+// The chain keeps each texel's nearest depth, and the hit steps to finer mips until nothing in its texel
+// is nearer than kNearerOccluder times the hit's depth.
+//
+// Near silhouettes that check falls back to sharp mips, and one ray per direction misses a small bright
+// patch again. Each of the 2 x 2 sub-rays covers a quarter of the cone, so it needs less blur and falls
+// back less. More sub-rays leak: a partly blocked direction's fractional transmittance lets parent probes'
+// light through past objects.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D u_depth_tex;
 layout(set = 0, binding = 1) uniform sampler2D u_normal_roughness_tex;
-layout(set = 0, binding = 2) uniform sampler2D u_radiance_tex;     // current opaque lighting
+layout(set = 0, binding = 2) uniform sampler2D u_radiance_tex;     // current opaque lighting, full mip chain
 layout(rgba16f, set = 0, binding = 3) uniform writeonly image2D u_cascade_out;
 
 layout(push_constant, std430) uniform PushConstants {
@@ -38,30 +53,13 @@ layout(push_constant, std430) uniform PushConstants {
     vec2 _pad;
 } pc;
 
-void main() {
-    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
-    ivec2 probe = texel / pc.block;
-    ivec2 dir_texel = texel - probe * pc.block;
-    if (probe.x >= pc.probe_count.x || probe.y >= pc.probe_count.y) {
-        return;
-    }
+const float kNearerOccluder = 0.9;
+const int kSubRays = 2;   // per axis
 
-    ivec2 center_px = clamp(ivec2((vec2(probe) + 0.5) * pc.probe_spacing_px), ivec2(0), pc.internal_resolution - ivec2(1));
-    float depth = texelFetch(u_depth_tex, center_px, 0).r;
-    if (lumina_is_sky(depth)) {
-        imageStore(u_cascade_out, texel, vec4(0.0, 0.0, 0.0, 1.0));
-        return;
-    }
-
+// One ray of a direction's interval: radiance found (rgb) and transmittance (a, 0 or 1). `cone_angle` is
+// the angular width its hit is blurred over; `jitter` places its steps along the interval.
+vec4 trace_ray(vec3 origin, float origin_depth, vec3 dir, float cone_angle, float jitter) {
     vec2 res_f = vec2(pc.internal_resolution);
-    vec2 uv = (vec2(center_px) + 0.5) / res_f;
-    vec3 origin = lumina_view_position(uv, depth, pc.proj, pc.depth_params);
-    vec3 normal = lumina_decode_normal(texelFetch(u_normal_roughness_tex, center_px, 0));
-    float view_depth = -origin.z;
-    origin += normal * (pc.normal_bias * view_depth);
-    float origin_depth = -origin.z;
-
-    vec3 dir = lumina_block_direction(dir_texel, pc.block);
 
     // The ray's far end: far enough to leave the view, kept in front of the near plane.
     float near_z = pc.depth_params.x / (1.0 + pc.depth_params.y);
@@ -71,8 +69,7 @@ void main() {
         t_end = min(t_end, (origin_depth - 1.01 * near_z) / dir.z);
     }
     if (t_end <= 0.0) {
-        imageStore(u_cascade_out, texel, vec4(0.0, 0.0, 0.0, 1.0));
-        return;
+        return vec4(0.0, 0.0, 0.0, 1.0);
     }
     vec3 ray_end = origin + dir * t_end;
 
@@ -85,8 +82,7 @@ void main() {
     float screen_len = length(delta);
     if (screen_len < 0.5) {
         // Pointing straight along the view: the depth buffer has nothing more to say about it.
-        imageStore(u_cascade_out, texel, vec4(0.0, 0.0, 0.0, 1.0));
-        return;
+        return vec4(0.0, 0.0, 0.0, 1.0);
     }
 
     // Where the segment leaves the screen.
@@ -102,12 +98,8 @@ void main() {
     float u1 = pc.interval_length_px > 0.0 ? (pc.interval_start_px + pc.interval_length_px) / screen_len : 1.0;
     u1 = min(u1, u_exit);
     if (u0 >= u1) {
-        imageStore(u_cascade_out, texel, vec4(0.0, 0.0, 0.0, 1.0));   // left the screen before this interval
-        return;
+        return vec4(0.0, 0.0, 0.0, 1.0);   // left the screen before this interval
     }
-
-    // Per-texel jitter along the ray; SVGF integrates it over frames.
-    float jitter = prism_interleaved_gradient_noise(vec2(texel), pc.frame_index);
 
     // A hit needs the ray to cross from in front of the depth buffer to behind it between two steps.
     // A ray that is already behind a surface when it reaches it on screen passed behind that object;
@@ -162,14 +154,62 @@ void main() {
                 // blocked, and the lit front face's colour must not leak through (bright, saturated
                 // smears behind objects next to coloured lights).
                 vec3 hit_normal = lumina_decode_normal(textureLod(u_normal_roughness_tex, hit_uv, 0.0));
-                vec3 radiance = dot(hit_normal, dir) < 0.0 ? max(textureLod(u_radiance_tex, hit_uv, 0.0).rgb, vec3(0.0)) : vec3(0.0);
-                imageStore(u_cascade_out, texel, vec4(radiance, 0.0));
-                return;
+                // The cone's width at the hit, projected to screen pixels.
+                vec3 hit_pos = mix(origin * k0, ray_end * k1, hi) * hit_ray_z;
+                float footprint_px = length(hit_pos - origin) * cone_angle * abs(pc.proj.y) * 0.5 * res_f.y / hit_ray_z;
+                float lod = log2(max(footprint_px, 1.0));
+                vec4 texel_value = textureLod(u_radiance_tex, hit_uv, lod);
+                while (lod > 0.0 && texel_value.a < kNearerOccluder * hit_scene_z) {
+                    lod = max(lod - 1.0, 0.0);
+                    texel_value = textureLod(u_radiance_tex, hit_uv, lod);
+                }
+                vec3 radiance = dot(hit_normal, dir) < 0.0 ? texel_value.rgb : vec3(0.0);
+                return vec4(radiance, 0.0);
             }
         }
         was_in_front = !behind;
         u_prev = u;
     }
 
-    imageStore(u_cascade_out, texel, vec4(0.0, 0.0, 0.0, 1.0));
+    return vec4(0.0, 0.0, 0.0, 1.0);
+}
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 probe = texel / pc.block;
+    ivec2 dir_texel = texel - probe * pc.block;
+    if (probe.x >= pc.probe_count.x || probe.y >= pc.probe_count.y) {
+        return;
+    }
+
+    ivec2 center_px = clamp(ivec2((vec2(probe) + 0.5) * pc.probe_spacing_px), ivec2(0), pc.internal_resolution - ivec2(1));
+    float depth = texelFetch(u_depth_tex, center_px, 0).r;
+    if (lumina_is_sky(depth)) {
+        imageStore(u_cascade_out, texel, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    vec2 res_f = vec2(pc.internal_resolution);
+    vec2 uv = (vec2(center_px) + 0.5) / res_f;
+    vec3 origin = lumina_view_position(uv, depth, pc.proj, pc.depth_params);
+    vec3 normal = lumina_decode_normal(texelFetch(u_normal_roughness_tex, center_px, 0));
+    float view_depth = -origin.z;
+    origin += normal * (pc.normal_bias * view_depth);
+    float origin_depth = -origin.z;
+
+    // Each sub-ray blurs over twice its own share of the direction's 4pi / block^2 sr, so neighbouring
+    // sub-rays' footprints overlap: with exactly its share a moving hotspot flickers more, and with the
+    // whole cone the hotspot loses light. The jitter along the ray changes per texel and frame (SVGF
+    // integrates it); golden-ratio offsets keep the sub-rays' steps apart.
+    float cone_angle = sqrt(2.0) * sqrt(4.0 * 3.14159265) / float(pc.block * kSubRays);
+    float jitter = prism_interleaved_gradient_noise(vec2(texel), pc.frame_index);
+    vec4 sum = vec4(0.0);
+    for (int sy = 0; sy < kSubRays; ++sy) {
+        for (int sx = 0; sx < kSubRays; ++sx) {
+            vec2 cell = (vec2(dir_texel) + (vec2(sx, sy) + 0.5) / float(kSubRays)) / float(pc.block);
+            float sub_jitter = fract(jitter + 0.618034 * float(sy * kSubRays + sx));
+            sum += trace_ray(origin, origin_depth, lumina_oct_decode(cell * 2.0 - 1.0), cone_angle, sub_jitter);
+        }
+    }
+    imageStore(u_cascade_out, texel, sum / float(kSubRays * kSubRays));
 }
