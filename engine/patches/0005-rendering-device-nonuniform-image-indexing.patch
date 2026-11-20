@@ -1,5 +1,5 @@
 diff --git a/doc/classes/RenderingDevice.xml b/doc/classes/RenderingDevice.xml
-index 8c4d758..2886d42 100644
+index 8c4d758..94f7fc7 100644
 --- a/doc/classes/RenderingDevice.xml
 +++ b/doc/classes/RenderingDevice.xml
 @@ -2926,6 +2926,11 @@
@@ -9,27 +9,27 @@ index 8c4d758..2886d42 100644
 +		<constant name="SUPPORTS_NONUNIFORM_SAMPLED_IMAGE_INDEXING" value="17" enum="Features">
 +			Support for shaders that index an array of sampled images with a value that differs between invocations (GLSL [code]nonuniformEXT[/code]).
 +
-+			[b]Note:[/b] This is currently only supported when using Vulkan.
++			[b]Note:[/b] This is currently only supported when using Vulkan, and requires a Vulkan 1.2 device.
 +		</constant>
  		<constant name="LIMIT_MAX_BOUND_UNIFORM_SETS" value="0" enum="Limit">
  			Maximum number of uniform sets that can be bound at a given time.
  		</constant>
 diff --git a/drivers/vulkan/rendering_device_driver_vulkan.cpp b/drivers/vulkan/rendering_device_driver_vulkan.cpp
-index e634089..ce372fb 100644
+index e634089..bea88fc 100644
 --- a/drivers/vulkan/rendering_device_driver_vulkan.cpp
 +++ b/drivers/vulkan/rendering_device_driver_vulkan.cpp
 @@ -1068,6 +1068,10 @@ Error RenderingDeviceDriverVulkan::_check_device_capabilities() {
  		mesh_shader_support = use_1_2_features && enabled_device_extension_names.has(VK_EXT_MESH_SHADER_EXTENSION_NAME) && mesh_shader_features.meshShader;
  		task_shader_support = mesh_shader_support && mesh_shader_features.taskShader;
  
-+		// Core in Vulkan 1.2. Godot only queried these before, so a SPIR-V module using nonuniformEXT on a sampled-image
-+		// array declared capabilities the device had not enabled.
-+		nonuniform_sampled_image_indexing_support = use_1_2_features && device_features_vk_1_2.runtimeDescriptorArray && device_features_vk_1_2.shaderSampledImageArrayNonUniformIndexing;
++		// Shaders that index sampled-image arrays with nonuniformEXT declare this SPIR-V capability, so the feature must be
++		// enabled on the device, not only queried.
++		nonuniform_sampled_image_indexing_support = use_1_2_features && device_features_vk_1_2.shaderSampledImageArrayNonUniformIndexing;
 +
  		if (enabled_device_extension_names.has(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME)) {
  			fsr_capabilities.pipeline_supported = fsr_features.pipelineFragmentShadingRate;
  			fsr_capabilities.primitive_supported = fsr_features.primitiveFragmentShadingRate;
-@@ -1441,6 +1445,15 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
+@@ -1441,6 +1445,14 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
  		create_info_next = &mesh_shader_features;
  	}
  
@@ -37,7 +37,6 @@ index e634089..ce372fb 100644
 +	if (nonuniform_sampled_image_indexing_support) {
 +		descriptor_indexing_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
 +		descriptor_indexing_features.pNext = create_info_next;
-+		descriptor_indexing_features.runtimeDescriptorArray = VK_TRUE;
 +		descriptor_indexing_features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 +		create_info_next = &descriptor_indexing_features;
 +	}
@@ -45,7 +44,7 @@ index e634089..ce372fb 100644
  	VkPhysicalDeviceFaultFeaturesEXT device_fault_features = {};
  	if (device_fault_support) {
  		device_fault_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT;
-@@ -7511,6 +7524,8 @@ bool RenderingDeviceDriverVulkan::has_feature(Features p_feature) {
+@@ -7511,6 +7523,8 @@ bool RenderingDeviceDriverVulkan::has_feature(Features p_feature) {
  			return mesh_shader_support;
  		case SUPPORTS_TASK_SHADER:
  			return task_shader_support;

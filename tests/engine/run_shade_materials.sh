@@ -13,7 +13,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 SHADERS="$DIR/../../addons/prism_rp/shaders"
 LOG="$(mktemp)"
 trap 'rm -f "$LOG"' EXIT
-export VK_INSTANCE_LAYERS="${VK_INSTANCE_LAYERS-VK_LAYER_KHRONOS_validation}"
+export VK_INSTANCE_LAYERS="${VK_INSTANCE_LAYERS:-VK_LAYER_KHRONOS_validation}"
 
 # CI has Xvfb; a developer machine without it gets a real window.
 WRAP=()
