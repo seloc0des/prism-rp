@@ -24,7 +24,7 @@ namespace prism {
 //  4. SVGF:      temporal accumulation with moments/variance, then variance-guided a-trous.
 //  5. composite: color += albedo_proxy * irradiance (Forward+ has no albedo buffer; see the shader).
 //
-// Optional world-space radiance cache (world_cascades_enabled, off by default): a 16^3 probe grid
+// World-space radiance cache (world_cascades_enabled, on by default): a 16^3 probe grid
 // around the camera, 64 directions per probe, updated by marching world-space rays through the depth
 // buffer. Rays that leave the screen keep their cached value, so light that was visible recently
 // (an emitter now behind the camera) keeps contributing. The top screen level's transmittance
@@ -271,7 +271,7 @@ private:
     float denoise_strength = 4.0f;
     int32_t albedo_mode = ALBEDO_PROXY;
     int32_t debug_view_mode = DEBUG_VIEW_FINAL;
-    bool world_cascades_enabled = false;
+    bool world_cascades_enabled = true;
     float world_probe_spacing = 1.0f;
 
     bool _ensure_world_targets();

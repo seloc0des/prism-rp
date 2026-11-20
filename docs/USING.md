@@ -58,7 +58,9 @@ You can also build the same `Compositor` resource in the Inspector and save it w
 - Lumina is diffuse only: for metals and mirrors, turn on screen-space reflections
   (`Environment.ssr_enabled`) or add ReflectionProbes.
 - It only sees what's on screen, so light from surfaces behind the camera or off the frame edges is
-  missing. `world_cascades_enabled` (off by default) remembers light seen in earlier frames.
+  missing. `world_cascades_enabled` (on by default) fills some of it in from light seen in earlier
+  frames. In a small room open on one side it adds too much light (about 1.4x in the Cornell box
+  test scene), so turn it off if a room like that looks too bright.
 
 The README has the details of each setting; the editor dock (bottom panel, once the plugin is
 enabled) shows per-pass GPU timings and debug views.
