@@ -11,6 +11,7 @@ on:
       - "addons/prism_rp/include/**"
       - "tests/run_vulkan_qa.sh"
       - "tests/engine/**"
+      - "tests/unit/test_meshlet_builder.py"
       - ".github/workflows/engine.yml"
   workflow_dispatch:
 
@@ -36,8 +37,9 @@ jobs:
       # once the submodule is checked out, so the unit-tests job cannot run this case.
       - name: Run the meshlet tests against Godot's meshoptimizer
         run: |
-          python3 -m pip install pytest
-          python3 -m pytest -q -k godot tests/unit/test_meshlet_builder.py | tee meshlet.txt
+          python3 -m venv .venv
+          .venv/bin/pip install pytest
+          .venv/bin/python -m pytest -q -k godot tests/unit/test_meshlet_builder.py | tee meshlet.txt
           grep -q "1 passed" meshlet.txt
 
   linux-editor:
