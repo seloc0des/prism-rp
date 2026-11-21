@@ -36,6 +36,7 @@ SHADER_TO_STRUCT = {
     "lumina_svgf_temporal": (LUMINA_H, "TemporalPushConstants"),
     "lumina_svgf_atrous": (LUMINA_H, "AtrousPushConstants"),
     "lumina_composite": (LUMINA_H, "CompositePushConstants"),
+    "lumina_rt_albedo": (LUMINA_H, "RtAlbedoPushConstants"),
     "prism_copy": (RD_UTILS_H, "PushConstants"),
     "lumina_ws_classify": (LUMINA_H, "WorldPushConstants"),
     "lumina_ws_update": (LUMINA_H, "WorldPushConstants"),

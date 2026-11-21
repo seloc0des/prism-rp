@@ -31,7 +31,7 @@ fail() {
 }
 
 # Not --headless: headless forces the dummy renderer, so there would be no RenderingDevice.
-"${WRAP[@]}" "$GODOT" --rendering-driver vulkan --path project --resolution 640x360 --script "$SCRIPT" -- --prism-mirror-log 2>&1 | tee "$LOG"
+"${WRAP[@]}" "$GODOT" --rendering-driver vulkan --audio-driver Dummy --path project --resolution 640x360 --script "$SCRIPT" -- --prism-mirror-log 2>&1 | tee "$LOG"
 status=${PIPESTATUS[0]}
 [ "$status" -eq 0 ] || fail "the test exited with status $status"
 grep -q "SCENE_MIRROR_TEST: PASS" "$LOG" || fail "the test did not print PASS"
