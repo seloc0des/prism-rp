@@ -5,22 +5,28 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <numbers>
 
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/base_material3d.hpp>
+#include <godot_cpp/classes/directional_light3d.hpp>
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/geometry_instance3d.hpp>
+#include <godot_cpp/classes/light3d.hpp>
 #include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
+#include <godot_cpp/classes/omni_light3d.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/primitive_mesh.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/rd_acceleration_structure_geometry.hpp>
 #include <godot_cpp/classes/rd_sampler_state.hpp>
 #include <godot_cpp/classes/rd_texture_format.hpp>
 #include <godot_cpp/classes/rd_texture_view.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/spot_light3d.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/classes/window.hpp>
@@ -242,6 +248,9 @@ void LuminaSceneMirror::_start_tracking() {
     tree->get_root()->connect("tree_exiting", callable_mp(this, &LuminaSceneMirror::_stop_tracking));
     tracking = true;
     _log("[Prism RP] Lumina scene mirror: following the scene tree.");
+    if (static_cast<bool>(godot::ProjectSettings::get_singleton()->get_setting("rendering/lights_and_shadows/use_physical_light_units"))) {
+        WARN_PRINT_ONCE("[Prism RP] Lumina scene mirror: physical light units aren't read yet; lights off screen will be too bright or too dark.");
+    }
 
     std::vector<godot::Node *> stack = { tree->get_root() };
     while (!stack.empty()) {
@@ -275,6 +284,7 @@ void LuminaSceneMirror::_stop_tracking() {
         }
     }
     tracked_nodes.clear();
+    tracked_lights.clear();
     main_meshes.clear();
     {
         std::lock_guard lock(pending_mutex);
@@ -289,11 +299,14 @@ void LuminaSceneMirror::_stop_tracking() {
 void LuminaSceneMirror::_on_node_added(godot::Node *p_node) {
     if (godot::Object::cast_to<godot::MeshInstance3D>(p_node) != nullptr) {
         tracked_nodes.insert(p_node->get_instance_id());
+    } else if (godot::Object::cast_to<godot::Light3D>(p_node) != nullptr) {
+        tracked_lights.insert(p_node->get_instance_id());
     }
 }
 
 void LuminaSceneMirror::_on_node_removed(godot::Node *p_node) {
     tracked_nodes.erase(p_node->get_instance_id());
+    tracked_lights.erase(p_node->get_instance_id());
 }
 
 void LuminaSceneMirror::_on_mesh_changed(uint64_t p_mesh_object_id) {
@@ -328,6 +341,15 @@ void LuminaSceneMirror::_gather_frame() {
         }
         ++it;
         _gather_instance(instance, world, frame, material_seen);
+    }
+    for (auto it = tracked_lights.begin(); it != tracked_lights.end();) {
+        auto *light = godot::Object::cast_to<godot::Light3D>(godot::ObjectDB::get_instance(*it));
+        if (light == nullptr) {
+            it = tracked_lights.erase(it);
+            continue;
+        }
+        ++it;
+        _gather_light(light, world, frame);
     }
     _drop_unused_meshes();
 
@@ -372,6 +394,61 @@ void LuminaSceneMirror::_gather_instance(godot::MeshInstance3D *p_instance, godo
     // Ray flags cull per instance, so the first surface's cull mode stands for the whole mesh.
     instance.flags = instance_flags_for(cull_mode_of(p_instance->get_active_material(0)), opaque);
     r_frame.instances.push_back(instance);
+}
+
+// The lights Godot's GI uses: not bake mode Disabled, and for a directional light not Sky Only. Colour, energy and
+// falloff as the forward renderer applies them, times indirect energy as Godot's SDFGI and VoxelGI take it.
+void LuminaSceneMirror::_gather_light(godot::Light3D *p_light, godot::World3D *p_world, FrameState &r_frame) {
+    if (p_world == nullptr || !p_light->is_visible_in_tree() || p_light->get_world_3d().ptr() != p_world ||
+            p_light->get_bake_mode() == godot::Light3D::BAKE_DISABLED ||
+            (p_light->is_editor_only() && !godot::Engine::get_singleton()->is_editor_hint())) {
+        return;
+    }
+    LightRecord record;
+    if (const auto *directional = godot::Object::cast_to<godot::DirectionalLight3D>(p_light); directional != nullptr) {
+        if (directional->get_sky_mode() == godot::DirectionalLight3D::SKY_MODE_SKY_ONLY) {
+            return;
+        }
+        record.info[0] = kLightDirectional;
+    } else if (godot::Object::cast_to<godot::OmniLight3D>(p_light) != nullptr) {
+        record.info[0] = kLightOmni;
+    } else if (godot::Object::cast_to<godot::SpotLight3D>(p_light) != nullptr) {
+        record.info[0] = kLightSpot;
+        // Godot takes the cosine as is. Below about 0.014 degrees it rounds to 1 in a float, and the cone falloff
+        // divides by 1 - cos: a NaN the cache's running average would keep.
+        const float angle = std::max(static_cast<float>(p_light->get_param(godot::Light3D::PARAM_SPOT_ANGLE)), 0.05f);
+        record.spot[0] = std::cos(angle * std::numbers::pi_v<float> / 180.0f);
+        // Godot's 1 / attenuation, sign kept (a negative one leaves the cone dark), without dividing by zero.
+        const float attenuation = static_cast<float>(p_light->get_param(godot::Light3D::PARAM_SPOT_ATTENUATION));
+        record.spot[1] = 1.0f / (std::abs(attenuation) < 1e-4f ? std::copysign(1e-4f, attenuation) : attenuation);
+    } else {
+        return;   // AreaLight3D: not mirrored yet
+    }
+    const float energy = static_cast<float>(p_light->get_param(godot::Light3D::PARAM_ENERGY) * p_light->get_param(godot::Light3D::PARAM_INDIRECT_ENERGY)) *
+        (p_light->is_negative() ? -1.0f : 1.0f);
+    if (energy == 0.0f) {
+        return;
+    }
+    if (r_frame.lights.size() >= kMaxLights) {
+        WARN_PRINT_ONCE("[Prism RP] Lumina scene mirror: more GI lights than it holds; the rest light nothing off screen.");
+        return;
+    }
+    const godot::Transform3D xf = p_light->get_global_transform();
+    const godot::Vector3 forward = -xf.basis.get_column(2).normalized();
+    const godot::Color color = p_light->get_color().srgb_to_linear();
+    record.color[0] = color.r * energy;
+    record.color[1] = color.g * energy;
+    record.color[2] = color.b * energy;
+    record.position[0] = static_cast<float>(xf.origin.x);
+    record.position[1] = static_cast<float>(xf.origin.y);
+    record.position[2] = static_cast<float>(xf.origin.z);
+    record.position[3] = 1.0f / std::max(static_cast<float>(p_light->get_param(godot::Light3D::PARAM_RANGE)), 0.001f);   // as Godot
+    record.direction[0] = static_cast<float>(forward.x);
+    record.direction[1] = static_cast<float>(forward.y);
+    record.direction[2] = static_cast<float>(forward.z);
+    record.direction[3] = static_cast<float>(p_light->get_param(godot::Light3D::PARAM_ATTENUATION));
+    record.info[1] = p_light->has_shadow() ? 1u : 0u;
+    r_frame.lights.push_back(record);
 }
 
 const LuminaSceneMirror::MainMesh *LuminaSceneMirror::_main_mesh_for(const godot::Ref<godot::Mesh> &p_mesh) {
@@ -442,6 +519,24 @@ uint32_t LuminaSceneMirror::_material_index(const godot::Ref<godot::Material> &p
     record.uv_transform[3] = offset.y;
     if (const godot::Ref<godot::Texture2D> texture = base->get_texture(godot::BaseMaterial3D::TEXTURE_ALBEDO); texture.is_valid()) {
         material.albedo_texture = texture->get_rid();
+    }
+    // As BaseMaterial3D's shader: (colour + texture) x energy, or (colour x texture) x energy. Emission on UV2 is read
+    // on UV1, the only set mirrored.
+    if (base->get_feature(godot::BaseMaterial3D::FEATURE_EMISSION)) {
+        const godot::Color emission = base->get_emission().srgb_to_linear();
+        record.emission[0] = emission.r;
+        record.emission[1] = emission.g;
+        record.emission[2] = emission.b;
+        record.emission[3] = base->get_emission_energy_multiplier();
+        if (const godot::Ref<godot::Texture2D> texture = base->get_texture(godot::BaseMaterial3D::TEXTURE_EMISSION); texture.is_valid()) {
+            material.emission_texture = texture->get_rid();
+        }
+        if (base->get_emission_operator() == godot::BaseMaterial3D::EMISSION_OP_MULTIPLY) {
+            record.flags |= kMaterialEmissionMultiply;
+        }
+    }
+    if (base->get_cull_mode() == godot::BaseMaterial3D::CULL_DISABLED) {
+        record.flags |= kMaterialDoubleSided;
     }
     switch (base->get_transparency()) {
         case godot::BaseMaterial3D::TRANSPARENCY_ALPHA_SCISSOR:
@@ -648,9 +743,10 @@ void LuminaSceneMirror::_release_on_render_thread() {
     rd_utils::free_rid(rd, instance_buffer);
     rd_utils::free_rid(rd, instance_material_buffer);
     rd_utils::free_rid(rd, material_buffer);
+    rd_utils::free_rid(rd, light_buffer);
     rd_utils::free_rid(rd, sampler);
     rd_utils::free_rid(rd, white_texture);
-    tlas_capacity = instance_capacity = instance_material_capacity = material_capacity = 0;
+    tlas_capacity = instance_capacity = instance_material_capacity = material_capacity = light_capacity = 0;
     texture_slots.clear();
     slot_by_texture.clear();
     free_texture_slots.clear();
@@ -824,6 +920,7 @@ bool LuminaSceneMirror::_write_frame(const FrameState &p_frame) {
     for (const FrameMaterial &material : p_frame.materials) {
         MaterialRecord record = material.record;
         record.albedo_texture = _texture_slot(material.albedo_texture);
+        record.emission_texture = _texture_slot(material.emission_texture);
         records.push_back(record);
     }
     _age_texture_slots();
@@ -838,6 +935,20 @@ bool LuminaSceneMirror::_write_frame(const FrameState &p_frame) {
     }
     rd->buffer_update(material_buffer, 0, static_cast<uint32_t>(records.size() * sizeof(MaterialRecord)), vector_bytes(records));
     rd->buffer_update(instance_material_buffer, 0, static_cast<uint32_t>(instance_materials.size() * sizeof(uint32_t)), vector_bytes(instance_materials));
+    return _write_lights(p_frame);
+}
+
+bool LuminaSceneMirror::_write_lights(const FrameState &p_frame) {
+    constexpr uint32_t kHeaderBytes = 16;
+    const uint32_t count = static_cast<uint32_t>(p_frame.lights.size());
+    // The header takes less than a record, so one record more covers it.
+    if (!_ensure_buffer(light_buffer, light_capacity, count + 1, sizeof(LightRecord))) {
+        return false;
+    }
+    const uint32_t header[4] = { count, 0, 0, 0 };
+    godot::PackedByteArray bytes = to_bytes(header, kHeaderBytes);
+    bytes.append_array(vector_bytes(p_frame.lights));
+    rd->buffer_update(light_buffer, 0, static_cast<uint32_t>(bytes.size()), bytes);
     return true;
 }
 
@@ -865,7 +976,7 @@ uint32_t LuminaSceneMirror::_texture_slot(const godot::RID &p_texture) {
         slot = static_cast<uint32_t>(texture_slots.size());
         texture_slots.emplace_back();
     } else {
-        WARN_PRINT_ONCE("[Prism RP] Lumina scene mirror: more albedo textures than the texture array holds; the rest are white.");
+        WARN_PRINT_ONCE("[Prism RP] Lumina scene mirror: more textures than the texture array holds; the rest read as white albedo and no emission.");
         return 0;
     }
     slot_by_texture[key] = slot;
@@ -976,6 +1087,7 @@ void LuminaSceneMirror::_rebuild_uniforms() {
         textures->add_id(used ? texture_slots[slot].rd_texture : white_texture);
     }
     uniforms.push_back(textures);
+    uniforms.push_back(make_uniform(RenderingDevice::UNIFORM_TYPE_STORAGE_BUFFER, 10, light_buffer));
     _free_uniform_sets();
     uniforms_dirty = false;
 }

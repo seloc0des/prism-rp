@@ -40,6 +40,8 @@ SHADER_TO_STRUCT = {
     "prism_copy": (RD_UTILS_H, "PushConstants"),
     "lumina_ws_classify": (LUMINA_H, "WorldPushConstants"),
     "lumina_ws_update": (LUMINA_H, "WorldPushConstants"),
+    "lumina_ws_update_rt": (LUMINA_H, "WorldPushConstants"),
+    "lumina_ws_irradiance": (LUMINA_H, "WorldPushConstants"),
     "lumina_ws_merge": (LUMINA_H, "WorldPushConstants"),
 }
 

@@ -301,6 +301,10 @@ jobs:
           path: ${{ runner.temp }}/scene-mirror
           if-no-files-found: ignore
 
+      # Lumina's ray-traced world cache update lighting the view from off-screen lights and emission.
+      - name: Check Lumina's ray-traced world cache
+        run: tests/engine/run_world_cache_rt.sh ./custom-editor/godot.linuxbsd.editor.x86_64.prism
+
       - name: Upload Vulkan QA log
         if: always()
         uses: actions/upload-artifact@v4

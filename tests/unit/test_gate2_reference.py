@@ -125,14 +125,24 @@ def test_gate2_captures_share_a_matte_scene_and_measure_sdfgi_in_colour():
     # one GI bounce (SDFGI's default bounce feedback computes several).
     pytest.importorskip("flip_evaluator")
     import run_gate2
-    on = run_gate2.sdfgi_capture_args(Path("x.exr"), True)
-    off = run_gate2.sdfgi_capture_args(Path("x.exr"), False)
-    lumina = run_gate2.lumina_capture_args(Path("e"), Path("x.exr"))
+    on = run_gate2.sdfgi_capture_args(Path("x.exr"), True, 1)
+    off = run_gate2.sdfgi_capture_args(Path("x.exr"), False, 1)
+    lumina = run_gate2.lumina_capture_args(Path("e"), Path("x.exr"), 1)
     albedo = run_gate2.albedo_capture_args(Path("a.exr"))
     for args in (on, off, lumina, albedo):
         assert not any(a.startswith("--prism-debug-draw=lighting") for a in args)
         for flag in ("--prism-chronos=off", "--prism-ambient=off", "--prism-ssr=off", "--prism-emission=off",
-                     "--prism-diffuse-only", "--prism-no-jitter", "--prism-gi-single-bounce"):
+                     "--prism-diffuse-only", "--prism-no-jitter"):
             assert flag in args, (flag, args)
+    for args in (on, off, lumina):   # the albedo capture has no GI to limit
+        assert "--prism-gi-single-bounce" in args, args
     assert "--prism-sdfgi=on" in on and "--prism-sdfgi=off" in off and "--prism-lumina=off" in on
     assert "--prism-debug-draw=unshaded" in albedo and "--prism-sdfgi=off" in albedo
+
+
+def test_gate2_against_a_multi_bounce_reference_lets_gi_bounce_too():
+    # Held to one bounce, SDFGI and Lumina would be scored against light they were told not to compute.
+    pytest.importorskip("flip_evaluator")
+    import run_gate2
+    for args in (run_gate2.sdfgi_capture_args(Path("x.exr"), True, 4), run_gate2.lumina_capture_args(Path("e"), Path("x.exr"), 4)):
+        assert "--prism-gi-single-bounce" not in args, args

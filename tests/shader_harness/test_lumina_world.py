@@ -46,22 +46,33 @@ def world_pc(cam, cam_pos, right, up, base, a1w=0, screen_block=0, misc_z=RAY_LE
                     right, 0.25, up, 0.1, cam.proj, cam.depth_params, misc_z, steps)
 
 
-def classify_and_update(gpu, cam, g, cam_pos, right, up, state=None, probes=None, frame=0):
-    """As in the C++, the update reads the radiance mip chain (colour plus linear depth, then box-filtered mips)."""
-    base = base_cell_for(cam_pos)
-    state = np.zeros((N, N * N, 4)) if state is None else state
-    probes = np.zeros((N * WORLD_BLOCK, N * N * WORLD_BLOCK, 4)) if probes is None else probes
-    push = world_pc(cam, cam_pos, right, up, base, a1w=frame)
-    mips = int(np.log2(max(cam.width, cam.height))) + 1
+def radiance_mip_count(cam):
+    return int(np.log2(max(cam.width, cam.height))) + 1
+
+
+def radiance_mip_dispatches(cam):
+    """As in the C++: the radiance mip chain (colour plus linear depth, then box-filtered mips) from "color" and
+    "depth" into "radiance"."""
     dispatches = [Dispatch(
         "lumina/lumina_radiance_copy.comp.glsl",
         {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("radiance", "storage", 0)},
         pc.radiance_copy(cam.width, cam.height, cam.depth_params), groups_for(cam.width, cam.height))]
-    for m in range(1, mips):
+    for m in range(1, radiance_mip_count(cam)):
         size = (max(1, cam.width >> m), max(1, cam.height >> m))
         dispatches.append(Dispatch(
             "lumina/lumina_radiance_downsample.comp.glsl",
             {0: ("radiance", "sampled_nearest", m - 1), 1: ("radiance", "storage", m)}, pc.downsample(*size), groups_for(*size)))
+    return dispatches
+
+
+def classify_and_update(gpu, cam, g, cam_pos, right, up, state=None, probes=None, frame=0):
+    """As in the C++, the update reads the radiance mip chain."""
+    base = base_cell_for(cam_pos)
+    state = np.zeros((N, N * N, 4)) if state is None else state
+    probes = np.zeros((N * WORLD_BLOCK, N * N * WORLD_BLOCK, 4)) if probes is None else probes
+    push = world_pc(cam, cam_pos, right, up, base, a1w=frame)
+    mips = radiance_mip_count(cam)
+    dispatches = radiance_mip_dispatches(cam)
     dispatches += [
         Dispatch("lumina/lumina_ws_classify.comp.glsl", {0: ("depth", "sampled_nearest"), 1: ("state", "storage")}, push, (1, 1, 1)),
         Dispatch("lumina/lumina_ws_update.comp.glsl",
