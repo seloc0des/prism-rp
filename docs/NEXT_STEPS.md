@@ -423,8 +423,16 @@ State on 2026-11-20:
 - Engine patches (`engine/patches/`): 0001 indirect-count draws, 0002 mesh and task shader stages, 0003 indirect mesh
   draws, 0004 the scene-renderer hook and the Track B capability check, 0005 nonuniform sampled-image indexing,
   0006 ray queries (VK_KHR_ray_query, TLAS instances without a hit shader binding table range, and a fix for a
-  second build of a TLAS in one frame overwriting the first build's instances). Nothing in Lumina traces with them
-  yet.
+  second build of a TLAS in one frame overwriting the first build's instances).
+- Lumina's scene mirror (`LuminaSceneMirror`, in the GDExtension) keeps the main viewport's MeshInstance3D meshes in a
+  TLAS, one BLAS per mesh, with each material's albedo colour and texture, UV transform, vertex colours, alpha
+  scissor and cull mode. The Ray-Traced Albedo debug view sends one camera ray per pixel through it, and
+  `tests/engine/run_scene_mirror.sh` checks that view against Godot's unshaded one, before and after the scene
+  changes and after the mirror releases and starts again. Not mirrored yet: skinned and blend-shape meshes,
+  MultiMesh, CSG, particles, ImmediateMesh and other Mesh types that are neither ArrayMesh nor PrimitiveMesh. Lumina's
+  GI doesn't trace the mirror yet; the ray-query world-cache update is next. The BLASes aren't indexed, because stock
+  4.7.2's `blas_create` checks an index buffer's largest index, which it records only in debug builds and only for a
+  buffer created with its data, so every indexed BLAS fails in a release export.
 - The module (`engine/modules/prism_rp`) builds the meshlet builder from `addons/prism_rp/src/meshlet` on Godot's own
   meshoptimizer 1.1.1, and embeds the Track B shaders from `addons/prism_rp/shaders` (includes inlined by
   `embed_shaders.py`). Nothing reads either yet; the scene-renderer factory still returns the stock renderer.

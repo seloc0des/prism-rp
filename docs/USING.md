@@ -110,6 +110,21 @@ Track B is off by default. Set the project setting `rendering/prism_rp/track_b` 
 start with `-- --prism-trackb=auto`, and the log prints one `[Prism RP] Track B:` line that says which GPU path your
 hardware offers: `mesh`, `vertex-pulling` or `unavailable`. Today the stock renderer runs either way.
 
+Lumina's **Ray-Traced Albedo** debug view (`debug_view_mode` 8) also needs this build, on a GPU with ray queries, and
+a perspective camera. It sends one camera ray per pixel through Lumina's copy of the scene, the one its ray-query GI
+will trace, and shows the albedo each ray hits, so it should look like Godot's unshaded view, with these
+differences:
+
+- Meshes with `gi_mode` disabled, and those the copy doesn't hold yet (skinned and blend-shape meshes, MultiMesh,
+  CSG, particles, ImmediateMesh), aren't in it. Rays pass through them to whatever is behind, and where nothing is,
+  the pixel keeps Godot's lit image.
+- ShaderMaterials show white, Godot's default material.
+- Alpha-blended surfaces are skipped, and alpha hash is cut at 0.5.
+- Visual layers, the camera's cull mask and visibility ranges are ignored.
+- Textures are always filtered linearly with mipmaps and repeat, whatever the material says.
+
+On stock Godot it logs a warning and shows the final output.
+
 To build the engine yourself, run `python3 engine/build.py` (editor) or
 `python3 engine/build.py platform=windows use_mingw=yes d3d12=no target=template_release` (a template). It applies
 `engine/patches/*.patch` to the pinned Godot in `engine/godot` first, and the binaries in `engine/godot/bin` end in

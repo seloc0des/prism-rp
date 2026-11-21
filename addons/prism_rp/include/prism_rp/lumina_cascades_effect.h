@@ -6,6 +6,8 @@
 
 #include <godot_cpp/classes/compositor_effect.hpp>
 #include <godot_cpp/classes/render_data.hpp>
+#include <godot_cpp/classes/render_scene_buffers_rd.hpp>
+#include <godot_cpp/classes/render_scene_data.hpp>
 #include <godot_cpp/classes/rendering_device.hpp>
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
@@ -31,7 +33,8 @@ namespace prism {
 // falls through to this cache.
 //
 // Limits: no ray-query / SDF fallback yet, so light never seen on screen contributes nothing;
-// one bounce; no ReSTIR.
+// one bounce; no ReSTIR. On the custom build, the Ray-Traced Albedo debug view shows the scene mirror
+// (LuminaSceneMirror) the ray-query fallback will trace.
 class LuminaCascadesCompositorEffect : public godot::CompositorEffect {
     GDCLASS(LuminaCascadesCompositorEffect, godot::CompositorEffect)
 
@@ -45,6 +48,7 @@ public:
         DEBUG_VIEW_NORMALS = 5,
         DEBUG_VIEW_ALBEDO_PROXY = 6,
         DEBUG_VIEW_WORLD_CASCADE_ONLY = 7,   // far field from the world cache only (needs world_cascades_enabled)
+        DEBUG_VIEW_RAY_TRACED_ALBEDO = 8,    // albedo where camera rays hit the scene mirror (needs ray queries)
     };
 
     enum AlbedoMode : int32_t {
@@ -203,6 +207,16 @@ private:
     };
     static_assert(sizeof(CompositePushConstants) == 32);
 
+    struct alignas(16) RtAlbedoPushConstants {
+        float cam_x[4] = { 1, 0, 0, 0 };   // world-space camera basis column, eye coordinate
+        float cam_y[4] = { 0, 1, 0, 0 };
+        float cam_z[4] = { 0, 0, 1, 0 };
+        float proj[4] = { 1, 1, 0, 0 };
+        int32_t size[2] = { 0, 0 };
+        float depth_params[2] = { 0.05f, 0.0f };
+    };
+    static_assert(sizeof(RtAlbedoPushConstants) == 80);
+
     struct CascadeLevel {
         godot::RID texture;     // RGBA16F: rgb radiance, a transmittance
         godot::Vector2i probe_count;
@@ -230,6 +244,8 @@ private:
     void _release_render_resources();
     bool _ensure_view_targets(const godot::Vector2i &p_internal_size, uint32_t p_view_count);
     void _release_view_targets();
+    bool _render_ray_traced_albedo(godot::RenderSceneBuffersRD *p_buffers, godot::RenderSceneData *p_scene_data,
+            const godot::Vector2i &p_size, uint32_t p_view_count);
 
     godot::RenderingDevice *rd = nullptr;
     godot::RID nearest_sampler;
@@ -246,6 +262,8 @@ private:
     godot::RID ws_classify_shader, ws_classify_pipeline;
     godot::RID ws_update_shader, ws_update_pipeline;
     godot::RID ws_merge_shader, ws_merge_pipeline;
+    godot::RID rt_albedo_shader, rt_albedo_pipeline;   // built on first use, only where ray queries work
+    bool rt_albedo_failed = false;
 
     // World cache (view-independent; updated from view 0 once per frame).
     godot::RID world_probes;   // RGBA16F (N*N*block) x (N*block)

@@ -1,4 +1,5 @@
 #include "prism_rp/lumina_cascades_effect.h"
+#include "prism_rp/lumina_scene_mirror.h"
 #include "prism_rp/prism_rd_utils.h"
 #include "prism_rp/prism_telemetry.h"
 
@@ -102,7 +103,8 @@ void LuminaCascadesCompositorEffect::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_debug_view_mode"), &LuminaCascadesCompositorEffect::get_debug_view_mode);
     ADD_PROPERTY(
         PropertyInfo(Variant::INT, "debug_view_mode", godot::PROPERTY_HINT_ENUM,
-            "Final Output:0,Raw Irradiance:1,Denoised Irradiance:2,History Length:3,Variance:4,Normals:5,Albedo Proxy:6,World Cascade Only:7"),
+            "Final Output:0,Raw Irradiance:1,Denoised Irradiance:2,History Length:3,Variance:4,Normals:5,Albedo Proxy:6,World Cascade Only:7,"
+            "Ray-Traced Albedo (custom build):8"),
         "set_debug_view_mode", "get_debug_view_mode");
 
     ClassDB::bind_method(D_METHOD("set_world_cascades_enabled", "enabled"), &LuminaCascadesCompositorEffect::set_world_cascades_enabled);
@@ -214,6 +216,10 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
     }
     if (!scene_buffers->has_texture("forward_clustered", "normal_roughness")) {
         return;  // only Forward+ provides normal_roughness
+    }
+    if (debug_view_mode == DEBUG_VIEW_RAY_TRACED_ALBEDO && _render_ray_traced_albedo(scene_buffers, scene_data, size, view_count)) {
+        ++frame_counter;
+        return;
     }
     if (!_ensure_view_targets(size, view_count)) {
         return;
@@ -574,8 +580,75 @@ void LuminaCascadesCompositorEffect::_release_render_resources() {
     rd_utils::free_compute_stage(rd, ws_classify_pipeline, ws_classify_shader);
     rd_utils::free_compute_stage(rd, ws_update_pipeline, ws_update_shader);
     rd_utils::free_compute_stage(rd, ws_merge_pipeline, ws_merge_shader);
+    rd_utils::free_compute_stage(rd, rt_albedo_pipeline, rt_albedo_shader);
+    rt_albedo_failed = false;
     rd_utils::free_rid(rd, nearest_sampler);
     rd_utils::free_rid(rd, linear_sampler);
+}
+
+// Returns false where ray queries aren't available, so the caller renders as usual.
+bool LuminaCascadesCompositorEffect::_render_ray_traced_albedo(godot::RenderSceneBuffersRD *p_buffers, godot::RenderSceneData *p_scene_data,
+        const godot::Vector2i &p_size, uint32_t p_view_count) {
+    LuminaSceneMirror *mirror = LuminaSceneMirror::get_singleton();
+    if (mirror == nullptr || !rd->has_feature(godot::RenderingDevice::SUPPORTS_RAY_QUERY)) {
+        WARN_PRINT_ONCE("[Prism RP] Lumina: the Ray-Traced Albedo view needs ray queries (the custom Godot build, on a GPU that has them). Showing the final output.");
+        return false;
+    }
+    if (!rt_albedo_pipeline.is_valid()) {
+        if (rt_albedo_failed) {
+            return false;
+        }
+        rt_albedo_failed = !rd_utils::build_compute_stage(rd, godot::String(kShaderDir) + "lumina_rt_albedo.comp.glsl", "lumina_rt_albedo",
+            rt_albedo_shader, rt_albedo_pipeline);
+        if (rt_albedo_failed) {
+            return false;
+        }
+    }
+    if (p_scene_data->get_view_projection(0).is_orthogonal()) {
+        WARN_PRINT_ONCE("[Prism RP] Lumina: the Ray-Traced Albedo view needs a perspective camera. Showing the final output.");
+        return false;
+    }
+    const godot::RID scene_set = mirror->scene_uniform_set(rt_albedo_shader);
+    if (!scene_set.is_valid()) {
+        return true;   // the mirror starts on the next frame
+    }
+
+    ScopedPassTimer timer("lumina_rt_albedo", godot::Color(0.40f, 0.80f, 0.50f, 1.0f));
+    const godot::Transform3D cam_xf = p_scene_data->get_cam_transform();
+    for (uint32_t view = 0; view < p_view_count; ++view) {
+        const godot::RID color_tex = p_buffers->get_color_layer(view);
+        if (!color_tex.is_valid()) {
+            continue;
+        }
+        godot::TypedArray<godot::RDUniform> u;
+        u.push_back(make_image_uniform(0, color_tex));
+        const godot::RID color_set = godot::UniformSetCacheRD::get_cache(rt_albedo_shader, 0, u);
+        if (!color_set.is_valid()) {
+            continue;
+        }
+
+        const godot::Projection proj = p_scene_data->get_view_projection(view);
+        const godot::Vector3 eye = cam_xf.origin + cam_xf.basis.xform(p_scene_data->get_view_eye_offset(view));
+        RtAlbedoPushConstants pc;
+        float *columns[3] = { pc.cam_x, pc.cam_y, pc.cam_z };
+        for (int32_t axis = 0; axis < 3; ++axis) {
+            const godot::Vector3 c = cam_xf.basis.get_column(axis).normalized();
+            columns[axis][0] = static_cast<float>(c.x);
+            columns[axis][1] = static_cast<float>(c.y);
+            columns[axis][2] = static_cast<float>(c.z);
+            columns[axis][3] = static_cast<float>(eye[axis]);
+        }
+        pc.proj[0] = static_cast<float>(proj.columns[0].x);
+        pc.proj[1] = static_cast<float>(proj.columns[1].y);
+        pc.proj[2] = static_cast<float>(proj.columns[2].x);
+        pc.proj[3] = static_cast<float>(proj.columns[2].y);
+        pc.size[0] = p_size.x;
+        pc.size[1] = p_size.y;
+        pc.depth_params[0] = static_cast<float>(proj.columns[3].z);
+        pc.depth_params[1] = static_cast<float>(proj.columns[2].z);
+        dispatch_compute(rd, rt_albedo_pipeline, color_set, scene_set, make_push_constant_bytes(pc), groups_for(p_size.x), groups_for(p_size.y));
+    }
+    return true;
 }
 
 bool LuminaCascadesCompositorEffect::_ensure_view_targets(const godot::Vector2i &p_size, uint32_t p_view_count) {

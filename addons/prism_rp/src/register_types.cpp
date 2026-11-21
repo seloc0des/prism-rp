@@ -2,6 +2,7 @@
 #include "prism_rp/chronos_opaque_capture_effect.h"
 #include "prism_rp/chronos_vpu_effect.h"
 #include "prism_rp/lumina_cascades_effect.h"
+#include "prism_rp/lumina_scene_mirror.h"
 #include "prism_rp/meshlet/prism_meshlet_data.h"
 #include "prism_rp/prism_telemetry.h"
 
@@ -17,6 +18,7 @@
 namespace prism {
 
 static PrismTelemetry *g_telemetry_singleton = nullptr;
+static LuminaSceneMirror *g_scene_mirror = nullptr;
 
 void initialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
     if (p_level != godot::MODULE_INITIALIZATION_LEVEL_SCENE) {
@@ -29,6 +31,8 @@ void initialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
     GDREGISTER_CLASS(ChronosVPUCompositorEffect);
     GDREGISTER_CLASS(ChronosOpaqueCaptureEffect);
     GDREGISTER_CLASS(LuminaCascadesCompositorEffect);
+    // Abstract for the same reason: the mirror is a singleton.
+    GDREGISTER_ABSTRACT_CLASS(LuminaSceneMirror);
     GDREGISTER_CLASS(PrismMeshletData);
     GDREGISTER_CLASS(PrismMeshletBuilder);
 
@@ -38,12 +42,23 @@ void initialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
     // RenderingServer isn't an Engine singleton yet at SCENE init; connect once the main loop runs.
     callable_mp(g_telemetry_singleton, &PrismTelemetry::connect_frame_hook).call_deferred();
 
+    g_scene_mirror = memnew(LuminaSceneMirror);
+    LuminaSceneMirror::set_singleton(g_scene_mirror);
+    callable_mp(g_scene_mirror, &LuminaSceneMirror::connect_frame_hook).call_deferred();
+
     godot::UtilityFunctions::print("[Prism RP] Registered PrismTelemetry, ChronosVPUCompositorEffect, ChronosOpaqueCaptureEffect & LuminaCascadesCompositorEffect.");
 }
 
 void uninitialize_prism_rp_module(godot::ModuleInitializationLevel p_level) {
     if (p_level != godot::MODULE_INITIALIZATION_LEVEL_SCENE) {
         return;
+    }
+
+    if (g_scene_mirror != nullptr) {
+        g_scene_mirror->disconnect_frame_hook();
+        LuminaSceneMirror::set_singleton(nullptr);
+        memdelete(g_scene_mirror);
+        g_scene_mirror = nullptr;
     }
 
     if (g_telemetry_singleton != nullptr) {

@@ -47,7 +47,7 @@ git pull && git submodule update --init --recursive
 python3 tests/gpu_session.py --tier tier2
 ```
 
-Pick the tier that matches the GPU (`ROADMAP.md`; RTX 3060 / RX 6700 class is `tier2`). When it finishes, the script
+Pick the tier that matches the GPU (`ROADMAP.md`; RTX 4060 Ti / RX 6700 class is `tier2`). When it finishes, the script
 prints a summary and the path of the zip holding the results: `tests/artifacts/gpu_session/gpu_session_<timestamp>.zip`,
 with screenshots as JPEG. The HDR stage asks two questions, so stay at the screen for the end of the run.
 

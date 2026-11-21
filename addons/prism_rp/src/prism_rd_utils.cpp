@@ -176,6 +176,17 @@ void dispatch_compute(godot::RenderingDevice *p_rd, const godot::RID &p_pipeline
     p_rd->compute_list_end();
 }
 
+void dispatch_compute(godot::RenderingDevice *p_rd, const godot::RID &p_pipeline, const godot::RID &p_set0, const godot::RID &p_set1,
+        const godot::PackedByteArray &p_push_constants, uint32_t p_groups_x, uint32_t p_groups_y, uint32_t p_groups_z) {
+    const int64_t cl = p_rd->compute_list_begin();
+    p_rd->compute_list_bind_compute_pipeline(cl, p_pipeline);
+    p_rd->compute_list_bind_uniform_set(cl, p_set0, 0);
+    p_rd->compute_list_bind_uniform_set(cl, p_set1, 1);
+    p_rd->compute_list_set_push_constant(cl, p_push_constants, static_cast<uint32_t>(p_push_constants.size()));
+    p_rd->compute_list_dispatch(cl, p_groups_x, p_groups_y, p_groups_z);
+    p_rd->compute_list_end();
+}
+
 bool ComputeCopy::init(godot::RenderingDevice *p_rd) {
     if (is_valid()) {
         return true;

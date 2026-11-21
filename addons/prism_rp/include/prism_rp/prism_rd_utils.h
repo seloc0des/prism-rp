@@ -52,6 +52,10 @@ void free_compute_stage(godot::RenderingDevice *p_rd, godot::RID &r_pipeline, go
 void dispatch_compute(godot::RenderingDevice *p_rd, const godot::RID &p_pipeline, const godot::RID &p_uniform_set,
         const godot::PackedByteArray &p_push_constants, uint32_t p_groups_x, uint32_t p_groups_y, uint32_t p_groups_z = 1);
 
+// The same with sets 0 and 1.
+void dispatch_compute(godot::RenderingDevice *p_rd, const godot::RID &p_pipeline, const godot::RID &p_set0, const godot::RID &p_set1,
+        const godot::PackedByteArray &p_push_constants, uint32_t p_groups_x, uint32_t p_groups_y, uint32_t p_groups_z = 1);
+
 // Compute-shader copy (shaders/util/prism_copy.comp.glsl) for sources that can be sampled but
 // not copied from, such as Godot 4.4's scene color buffer. Destination must be RGBA16F storage.
 class ComputeCopy {
