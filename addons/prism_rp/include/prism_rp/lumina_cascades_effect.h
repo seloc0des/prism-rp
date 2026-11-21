@@ -27,14 +27,17 @@ namespace prism {
 //  5. composite: color += albedo_proxy * irradiance (Forward+ has no albedo buffer; see the shader).
 //
 // World-space radiance cache (world_cascades_enabled, on by default): a 16^3 probe grid
-// around the camera, 64 directions per probe, updated by marching world-space rays through the depth
-// buffer. Rays that leave the screen keep their cached value, so light that was visible recently
-// (an emitter now behind the camera) keeps contributing. The top screen level's transmittance
-// falls through to this cache.
+// around the camera, 64 directions per probe. The top screen level's transmittance falls through to it.
+// Where ray queries work (the custom build on a GPU that has them), each direction traces a ray through
+// Lumina's scene mirror (LuminaSceneMirror) every frame: hits the camera sees take their screen radiance,
+// others are lit from the scene's lights with shadow rays, plus emission, and with world_multi_bounce_enabled
+// every hit adds the cache's own irradiance there, so light keeps bouncing (lumina_ws_update_rt,
+// lumina_ws_irradiance). Elsewhere it marches world-space rays through the depth buffer, and rays that
+// leave the screen keep their cached value, so light that was visible recently (an emitter now behind the
+// camera) keeps contributing.
 //
-// Limits: no ray-query / SDF fallback yet, so light never seen on screen contributes nothing;
-// one bounce; no ReSTIR. On the custom build, the Ray-Traced Albedo debug view shows the scene mirror
-// (LuminaSceneMirror) the ray-query fallback will trace.
+// Limits: without ray queries, light never seen on screen contributes nothing; the screen-space levels
+// see one bounce; no sky light; no ReSTIR.
 class LuminaCascadesCompositorEffect : public godot::CompositorEffect {
     GDCLASS(LuminaCascadesCompositorEffect, godot::CompositorEffect)
 
@@ -87,6 +90,8 @@ public:
     [[nodiscard]] bool is_world_cascades_enabled() const;
     void set_world_probe_spacing(float p_spacing);
     [[nodiscard]] float get_world_probe_spacing() const;
+    void set_world_multi_bounce_enabled(bool p_enabled);
+    [[nodiscard]] bool is_world_multi_bounce_enabled() const;
 
     void reset_history();
     void reload_shaders();
@@ -264,9 +269,13 @@ private:
     godot::RID ws_merge_shader, ws_merge_pipeline;
     godot::RID rt_albedo_shader, rt_albedo_pipeline;   // built on first use, only where ray queries work
     bool rt_albedo_failed = false;
+    godot::RID ws_update_rt_shader, ws_update_rt_pipeline;     // the same, for the ray-traced cache update
+    godot::RID ws_irradiance_shader, ws_irradiance_pipeline;
+    bool world_rt_failed = false;
 
     // World cache (view-independent; updated from view 0 once per frame).
     godot::RID world_probes;   // RGBA16F (N*N*block) x (N*block)
+    godot::RID world_irradiance;   // same layout: per cell, irradiance / pi by surface normal (read by the traced update)
     godot::RID world_state;    // RGBA32F (N*N) x N: cell id, changed, buried, written
     float cached_world_spacing = 0.0f;
 
@@ -291,8 +300,10 @@ private:
     int32_t debug_view_mode = DEBUG_VIEW_FINAL;
     bool world_cascades_enabled = true;
     float world_probe_spacing = 1.0f;
+    bool world_multi_bounce_enabled = true;   // the ray-traced update bounces the cache's own irradiance
 
     bool _ensure_world_targets();
+    [[nodiscard]] godot::RID _world_scene_set();
     void _release_world_targets();
 };
 

@@ -19,52 +19,6 @@ layout(set = 0, binding = 2) uniform sampler2D u_state_tex;
 layout(rgba16f, set = 0, binding = 3) uniform image2D u_cascade_io;
 layout(set = 0, binding = 4) uniform sampler2D u_normal_roughness_tex;
 
-vec3 sample_world(vec3 p, vec3 world_normal, vec3 world_dir, out float coverage) {
-    int n = wpc.a0.z;
-    float spacing = wpc.cam_pos.w;
-    vec3 coord = p / spacing - 0.5;
-    ivec3 c0 = ivec3(floor(coord));
-    vec3 f = coord - vec3(c0);
-    ivec2 dir_texel = lumina_direction_texel(world_dir, WORLD_BLOCK);
-
-    vec3 sum = vec3(0.0);
-    float weight = 0.0;
-    float behind = 0.0;   // trilinear weight of cells behind the surface: not missing, just not applicable
-    for (int i = 0; i < 8; ++i) {
-        ivec3 o = ivec3(i & 1, (i >> 1) & 1, i >> 2);
-        ivec3 cell = c0 + o;
-        vec3 w3 = mix(vec3(1.0) - f, f, vec3(o));
-        float w = w3.x * w3.y * w3.z;
-        // Behind the probe's surface, it sees another space (outside the room, inside a pillar). The tolerance
-        // keeps cells lying on the surface's plane, where normal quantisation alone would decide the sign.
-        if (dot(lumina_cell_center(cell, spacing) - p, world_normal) < -0.01 * spacing) {
-            behind += w;
-            continue;
-        }
-        if (any(lessThan(cell, wpc.a1.xyz)) || any(greaterThanEqual(cell, wpc.a1.xyz + n))) {
-            continue;   // outside the live grid
-        }
-        ivec3 slot = lumina_positive_mod(cell, n);
-        vec4 state = texelFetch(u_state_tex, lumina_state_texel(slot, n), 0);
-        if (state.b > 0.5) {
-            continue;   // buried probe: its rays start inside geometry
-        }
-        vec4 probe = texelFetch(u_world_probes_tex, lumina_world_atlas_texel(slot, dir_texel, n), 0);
-        if (probe.a <= 0.0) {
-            continue;   // never sampled
-        }
-        sum += probe.rgb * w;
-        weight += w;
-    }
-    float applicable = 1.0 - behind;
-    if (weight <= 0.0 || weight <= 1e-4 * applicable) {
-        coverage = 0.0;
-        return vec3(0.0);
-    }
-    coverage = weight / applicable;
-    return sum / weight;
-}
-
 void main() {
     ivec2 res = wpc.a0.xy;
     int block = wpc.a0.w;
@@ -96,6 +50,7 @@ void main() {
     vec3 world_dir = lumina_view_to_world_dir(lumina_block_direction(dir_texel, block));
 
     float coverage;
-    vec3 far_field = sample_world(world_pos, world_normal, world_dir, coverage);
+    vec3 far_field = lumina_world_sample(u_world_probes_tex, u_state_tex, world_pos, world_normal,
+        lumina_direction_texel(world_dir, WORLD_BLOCK), coverage);
     imageStore(u_cascade_io, texel, vec4(interval.rgb + interval.a * far_field, interval.a * (1.0 - min(coverage, 1.0))));
 }

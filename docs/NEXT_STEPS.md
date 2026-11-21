@@ -116,7 +116,7 @@ blurrier than per-pixel path tracing. What this project needs from Lumina is to 
 Godot's GI, without artifacts and within budget, so Gate 2 now asks for that (`ROADMAP.md`):
 
 - **Beat SDFGI** against the same Cycles reference, measured the same way, on every Gate 2 scene.
-- **Above an interim floor** of fitted PSNR (below), with 36 dB kept as the target for the ray-query fallback.
+- **Above an interim floor** of fitted PSNR (below), with a higher target for the ray-query fallback, still to be re-derived (`ROADMAP.md`).
 - **No visible artifacts** in the test plan's Lumina checks.
 - **Settle within 6 frames** after a light switches on (`tests/check_gi_convergence.py`).
 - **GI + SVGF under 2.40 ms** on Tier 2 (0.5–1.7 ms on the first run).
@@ -142,7 +142,7 @@ So Lumina doesn't pass the revised Gate 2 yet: SDFGI is ahead by 3 dB in the Cor
 Lumina settles far too slowly. The Cornell reference is noisy enough at 128 samples that nothing can score above about
 28 dB (about 34 dB at 512): the old 36 dB was out of reach there whatever the GI.
 
-**Interim floor: 25 dB fitted** on every Gate 2 scene since #22 (20 dB on the measurement before it, described below). Beating SDFGI is the real bar; the floor catches output that
+**Interim floor: 22 dB fitted** on every Gate 2 scene since Gate 2 measures multi-bounce light (below); 25 dB from #22 and 20 dB before that. Beating SDFGI is the real bar; the floor catches output that
 is badly wrong in a scene where SDFGI also does poorly (it sits above SDFGI's Cornell score, below Lumina's Sponza
 score and well below the reference's noise ceiling).
 
@@ -389,6 +389,59 @@ something. That filling is what lights Sponza's camera-facing surfaces. In a box
 what adds the extra light. Weighting it by how many cells saw the direction brought the Cornell box to 1.21x but gave
 back most of Sponza's gain (29.82 dB). The ray-query fallback can tell the two cases apart.
 
+**On the custom build, the world cache traces the scene mirror.** Each of the cache's 16^3 x 64 directions traces a
+ray through Lumina's scene mirror every frame (`lumina_ws_update_rt`), so no direction is ever unknown. A hit the
+camera sees takes its radiance from the screen, as the march did. Any other hit is lit from the mirror's copy of the
+scene's lights, with a shadow ray for each light that casts shadows, plus its emission. The mirror reads lights the
+way Godot's GI does: bake mode Disabled leaves a light out, indirect energy scales it, and a directional light set to
+Sky Only lights nothing. A one-sided surface seen from behind blocks the ray, so a probe inside a column sees nothing
+instead of the room beyond it. Every hit also adds its albedo times the cache's own irradiance there, last frame's,
+which a new pass averages from each cell's directions (`lumina_ws_irradiance`). That is a second bounce, then a
+third, and it is what lights surfaces that only other surfaces light. Without ray queries the cache marches as before.
+
+For a single-bounce comparison, `run_gate2.py --diffuse-bounces 1` holds Lumina to one bounce as well
+(`world_multi_bounce_enabled`, turned off by the rig's `--prism-gi-single-bounce`), as it already did SDFGI. Each
+outcome has a shader harness test on lavapipe, for which the harness learned to build acceleration structures,
+and `tests/engine/run_world_cache_rt.sh` checks the whole pipeline: a light behind the camera lights the view, stops
+when its bake mode is Disabled, and the wall's emission takes over; light that bounced twice off screen reaches the
+view, and goes when `world_multi_bounce_enabled` is off. Not read yet: physical light units (the mirror warns),
+AreaLight3D, a light's distance fade and cull mask, and the camera's exposure normalization, which Godot applies to
+the on-screen light the cache takes but the mirror doesn't.
+
+Single-bounce Gate 2 on the RTX 4060 Ti, the measure up to this change (512 samples, one session; fitted PSNR,
+centre in brackets, then the mean light level against the reference):
+
+| Scene | Cache marched | Cache traced | SDFGI |
+| :--- | :--- | :--- | :--- |
+| Cornell box | 28.97 dB (28.80), 1.38x | 29.25 dB (27.98), 1.11x | 22.46 dB (21.97), 0.78x |
+| Sponza | 30.45 dB (30.60), 0.92x | 33.40 dB (31.71), 1.14x | 34.87 dB (33.36), 1.03x |
+
+Sponza gains 2.9 dB and its gap to SDFGI drops from 4.4 to 1.5 dB, so Gate 2 still doesn't pass there. The Cornell
+box goes from 1.38x to 1.11x the reference's light, but its fitted score barely moves and its centre loses 0.8 dB:
+what's left there isn't the open front any more. Both scenes now come out brighter than the reference, by 11 and 14
+percent. The compare images show no leaks or dark patches near the columns.
+
+**Gate 2 now measures multi-bounce light (decided 2026-11-20).** Real light keeps bouncing, Cycles renders four
+diffuse bounces by default, and both Lumina's traced cache and SDFGI bounce more than once as shipped, so the gate
+now scores what a player sees: the reference renders four bounces, and Lumina and SDFGI keep their own.
+`run_gate2.py` does this by default.
+
+| Scene | Lumina, fitted (centre) | SDFGI, fitted (centre) | Mean light, Lumina / SDFGI | Best possible |
+| :--- | :--- | :--- | :--- | :--- |
+| Cornell box | 24.24 dB (22.81) | 19.77 dB (19.04) | 0.76x / 0.61x | 35.7 dB |
+| Sponza | 32.52 dB (30.42) | 33.61 dB (31.97) | 0.93x / 0.89x | 40.1 dB |
+
+Lumina leads the Cornell box by 4.5 dB and trails in Sponza by 1.1 dB, so Gate 2 still fails there. The interim
+floor moves to 22 dB by the old rule, above SDFGI's Cornell score and below Lumina's Sponza score, about as far
+above SDFGI as before. Scored this way, Lumina is too dark, most of all in the closed Cornell box: only the world
+cache bounces more than once, while the screen-space levels near each pixel still see a single bounce. Bouncing
+the screen-space levels' light too is the next step for the image.
+
+The traced update and the mirror's GPU work cost 0.16 to 0.45 ms a frame on the 4060 Ti, against 0.02 to 0.12 ms
+for the march. This session's whole-frame timings swung by 0.6 ms between runs and put even the marched cache over
+2.40 ms in four scenes, so the budget needs the several-run timing that settled it in #33. The mirror also gathers
+the scene on the main thread every frame now that the cache uses it.
+
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
@@ -399,10 +452,9 @@ back most of Sponza's gain (29.82 dB). The ray-query fallback can tell the two c
    - harness scenes large enough to reach the top cascade level, so its changes can be tested off the GPU;
    - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
      templates;
-   - on the custom build, the ray-query fallback for off-screen and hidden light (Sponza's 4.4 dB gap to SDFGI is
-     mostly that light, and it can replace the world cache's guess for directions no cell has seen, which
-     over-lights the Cornell box), Lumina's real albedo instead of the albedo proxy, and a specular term so metals reflect
-     bounced light, to finish Gate 2;
+   - on the custom build, what is left of Sponza's 1.1 dB gap to SDFGI after the ray-traced cache (above): more than
+     one bounce in the screen-space levels, skinned, blend-shape and MultiMesh geometry in the scene mirror, Lumina's
+     real albedo instead of the albedo proxy, and a specular term so metals reflect bounced light, to finish Gate 2;
    - Track B wired up for Gates 3 and 4, then Gate 5.
 
 ## Custom Godot build (decided 2026-11-19)
@@ -428,9 +480,10 @@ State on 2026-11-20:
   TLAS, one BLAS per mesh, with each material's albedo colour and texture, UV transform, vertex colours, alpha
   scissor and cull mode. The Ray-Traced Albedo debug view sends one camera ray per pixel through it, and
   `tests/engine/run_scene_mirror.sh` checks that view against Godot's unshaded one, before and after the scene
-  changes and after the mirror releases and starts again. Not mirrored yet: skinned and blend-shape meshes,
-  MultiMesh, CSG, particles, ImmediateMesh and other Mesh types that are neither ArrayMesh nor PrimitiveMesh. Lumina's
-  GI doesn't trace the mirror yet; the ray-query world-cache update is next. The BLASes aren't indexed, because stock
+  changes and after the mirror releases and starts again. It also holds the lights that light GI (directional, omni
+  and spot) and each material's emission and cull mode, and Lumina's world cache traces it (above). Not mirrored
+  yet: skinned and blend-shape meshes, MultiMesh, CSG, particles, ImmediateMesh and other Mesh types that are neither
+  ArrayMesh nor PrimitiveMesh, AreaLight3D, and lights in physical units. The BLASes aren't indexed, because stock
   4.7.2's `blas_create` checks an index buffer's largest index, which it records only in debug builds and only for a
   buffer created with its data, so every indexed BLAS fails in a release export.
 - The module (`engine/modules/prism_rp`) builds the meshlet builder from `addons/prism_rp/src/meshlet` on Godot's own

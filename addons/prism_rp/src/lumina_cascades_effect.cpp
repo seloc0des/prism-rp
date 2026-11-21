@@ -115,6 +115,10 @@ void LuminaCascadesCompositorEffect::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_world_probe_spacing"), &LuminaCascadesCompositorEffect::get_world_probe_spacing);
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "world_probe_spacing", godot::PROPERTY_HINT_RANGE, "0.25,8.0,0.25,suffix:m"), "set_world_probe_spacing", "get_world_probe_spacing");
 
+    ClassDB::bind_method(D_METHOD("set_world_multi_bounce_enabled", "enabled"), &LuminaCascadesCompositorEffect::set_world_multi_bounce_enabled);
+    ClassDB::bind_method(D_METHOD("is_world_multi_bounce_enabled"), &LuminaCascadesCompositorEffect::is_world_multi_bounce_enabled);
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "world_multi_bounce_enabled"), "set_world_multi_bounce_enabled", "is_world_multi_bounce_enabled");
+
     ClassDB::bind_method(D_METHOD("reset_history"), &LuminaCascadesCompositorEffect::reset_history);
     ClassDB::bind_method(D_METHOD("reload_shaders"), &LuminaCascadesCompositorEffect::reload_shaders);
     ClassDB::bind_method(D_METHOD("get_irradiance_rid", "view"), &LuminaCascadesCompositorEffect::get_irradiance_rid, DEFVAL(0));
@@ -164,6 +168,8 @@ void LuminaCascadesCompositorEffect::set_world_cascades_enabled(bool p_enabled) 
 bool LuminaCascadesCompositorEffect::is_world_cascades_enabled() const { return world_cascades_enabled; }
 void LuminaCascadesCompositorEffect::set_world_probe_spacing(float p_spacing) { world_probe_spacing = std::clamp(p_spacing, 0.25f, 8.0f); }
 float LuminaCascadesCompositorEffect::get_world_probe_spacing() const { return world_probe_spacing; }
+void LuminaCascadesCompositorEffect::set_world_multi_bounce_enabled(bool p_enabled) { world_multi_bounce_enabled = p_enabled; }
+bool LuminaCascadesCompositorEffect::is_world_multi_bounce_enabled() const { return world_multi_bounce_enabled; }
 
 void LuminaCascadesCompositorEffect::reset_history() { history_reset_requested = true; }
 
@@ -358,26 +364,51 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 WorldPushConstants upc = wpc;
                 upc.a0[3] = kWorldBlock;
                 upc.a1[3] = static_cast<int32_t>(frame_counter);
-                upc.misc[2] = 8.0f * spacing;    // ray length
-                upc.misc[3] = 32.0f;             // steps
+                // Traced where the mirror is ready, else marched.
+                const godot::RID scene_set = _world_scene_set();
+                const bool traced = scene_set.is_valid();
+                const bool bounce = traced && world_multi_bounce_enabled;
+                upc.misc[2] = 8.0f * spacing;    // ray length (the march; the traced update reaches the far plane)
+                upc.misc[3] = traced ? (bounce ? 1.0f : 0.0f) : 32.0f;   // the traced update's bounce, or the march's steps
                 const auto bytes = make_push_constant_bytes(upc);
+                const uint32_t ax = groups_for(kWorldGridN * kWorldGridN * kWorldBlock);
+                const uint32_t ay = groups_for(kWorldGridN * kWorldBlock);
 
                 godot::TypedArray<godot::RDUniform> uc;
                 uc.push_back(make_sampler_texture_uniform(0, nearest_sampler, depth_tex));
                 uc.push_back(make_image_uniform(1, world_state));
                 const godot::RID cset = godot::UniformSetCacheRD::get_cache(ws_classify_shader, 0, uc);
+                // Classify and update run together or not at all: the update is what clears the slots classify marks
+                // as changed.
+                godot::RID iset;
                 godot::TypedArray<godot::RDUniform> uu;
                 uu.push_back(make_sampler_texture_uniform(0, nearest_sampler, depth_tex));
                 uu.push_back(make_sampler_texture_uniform(1, linear_sampler, vt.radiance_mips));
                 uu.push_back(make_sampler_texture_uniform(2, nearest_sampler, world_state));
                 uu.push_back(make_image_uniform(3, world_probes));
-                uu.push_back(make_sampler_texture_uniform(4, nearest_sampler, normal_tex));
-                const godot::RID uset = godot::UniformSetCacheRD::get_cache(ws_update_shader, 0, uu);
-                if (cset.is_valid() && uset.is_valid()) {
+                if (traced) {
+                    uu.push_back(make_sampler_texture_uniform(4, nearest_sampler, world_irradiance));
+                    godot::TypedArray<godot::RDUniform> ui;
+                    ui.push_back(make_sampler_texture_uniform(0, nearest_sampler, world_probes));
+                    ui.push_back(make_sampler_texture_uniform(1, nearest_sampler, world_state));
+                    ui.push_back(make_image_uniform(2, world_irradiance));
+                    iset = godot::UniformSetCacheRD::get_cache(ws_irradiance_shader, 0, ui);
+                } else {
+                    uu.push_back(make_sampler_texture_uniform(4, nearest_sampler, normal_tex));
+                }
+                const godot::RID uset = godot::UniformSetCacheRD::get_cache(traced ? ws_update_rt_shader : ws_update_shader, 0, uu);
+                if (cset.is_valid() && uset.is_valid() && (!traced || iset.is_valid())) {
                     const uint32_t g3 = static_cast<uint32_t>((kWorldGridN + 3) / 4);
                     dispatch_compute(rd, ws_classify_pipeline, cset, bytes, g3, g3, g3);
-                    dispatch_compute(rd, ws_update_pipeline, uset, bytes,
-                        groups_for(kWorldGridN * kWorldGridN * kWorldBlock), groups_for(kWorldGridN * kWorldBlock));
+                    if (traced) {
+                        if (bounce) {
+                            // Irradiance from last frame's radiance first: the update bounces it off its hits.
+                            dispatch_compute(rd, ws_irradiance_pipeline, iset, bytes, ax, ay);
+                        }
+                        dispatch_compute(rd, ws_update_rt_pipeline, uset, scene_set, bytes, ax, ay);
+                    } else {
+                        dispatch_compute(rd, ws_update_pipeline, uset, bytes, ax, ay);
+                    }
                 }
             }
 
@@ -582,8 +613,35 @@ void LuminaCascadesCompositorEffect::_release_render_resources() {
     rd_utils::free_compute_stage(rd, ws_merge_pipeline, ws_merge_shader);
     rd_utils::free_compute_stage(rd, rt_albedo_pipeline, rt_albedo_shader);
     rt_albedo_failed = false;
+    rd_utils::free_compute_stage(rd, ws_update_rt_pipeline, ws_update_rt_shader);
+    rd_utils::free_compute_stage(rd, ws_irradiance_pipeline, ws_irradiance_shader);
+    world_rt_failed = false;
     rd_utils::free_rid(rd, nearest_sampler);
     rd_utils::free_rid(rd, linear_sampler);
+}
+
+// The scene mirror's uniform set for the ray-traced cache update, building its passes on first use. Invalid where ray
+// queries aren't available, the passes don't build, or the mirror's scene isn't on the GPU yet; the update then
+// marches the depth buffer.
+godot::RID LuminaCascadesCompositorEffect::_world_scene_set() {
+    LuminaSceneMirror *mirror = LuminaSceneMirror::get_singleton();
+    if (mirror == nullptr || world_rt_failed || !rd->has_feature(godot::RenderingDevice::SUPPORTS_RAY_QUERY)) {
+        return godot::RID();
+    }
+    if (!ws_update_rt_pipeline.is_valid()) {
+        world_rt_failed =
+            !rd_utils::build_compute_stage(rd, godot::String(kShaderDir) + "lumina_ws_update_rt.comp.glsl", "lumina_ws_update_rt",
+                ws_update_rt_shader, ws_update_rt_pipeline) ||
+            !rd_utils::build_compute_stage(rd, godot::String(kShaderDir) + "lumina_ws_irradiance.comp.glsl", "lumina_ws_irradiance",
+                ws_irradiance_shader, ws_irradiance_pipeline);
+        if (world_rt_failed) {
+            rd_utils::free_compute_stage(rd, ws_update_rt_pipeline, ws_update_rt_shader);
+            rd_utils::free_compute_stage(rd, ws_irradiance_pipeline, ws_irradiance_shader);
+            WARN_PRINT_ONCE("[Prism RP] Lumina: the ray-traced world cache update failed to build; marching the depth buffer instead.");
+            return godot::RID();
+        }
+    }
+    return mirror->scene_uniform_set(ws_update_rt_shader);
 }
 
 // Returns false where ray queries aren't available, so the caller renders as usual.
@@ -717,7 +775,7 @@ bool LuminaCascadesCompositorEffect::_ensure_view_targets(const godot::Vector2i 
 }
 
 bool LuminaCascadesCompositorEffect::_ensure_world_targets() {
-    if (world_probes.is_valid() && world_state.is_valid() && cached_world_spacing == world_probe_spacing) {
+    if (world_probes.is_valid() && world_state.is_valid() && world_irradiance.is_valid() && cached_world_spacing == world_probe_spacing) {
         return true;
     }
     _release_world_targets();
@@ -727,7 +785,9 @@ bool LuminaCascadesCompositorEffect::_ensure_world_targets() {
     world_probes = rd_utils::create_2d_texture(rd, kWorldGridN * kWorldGridN * kWorldBlock, kWorldGridN * kWorldBlock,
         RD::DATA_FORMAT_R16G16B16A16_SFLOAT, rw);
     world_state = rd_utils::create_2d_texture(rd, kWorldGridN * kWorldGridN, kWorldGridN, RD::DATA_FORMAT_R32G32B32A32_SFLOAT, rw);
-    if (!world_probes.is_valid() || !world_state.is_valid()) {
+    world_irradiance = rd_utils::create_2d_texture(rd, kWorldGridN * kWorldGridN * kWorldBlock, kWorldGridN * kWorldBlock,
+        RD::DATA_FORMAT_R16G16B16A16_SFLOAT, rw);
+    if (!world_probes.is_valid() || !world_state.is_valid() || !world_irradiance.is_valid()) {
         godot::UtilityFunctions::push_error("[Prism RP] Failed to allocate the Lumina world cache.");
         _release_world_targets();
         return false;
@@ -735,6 +795,7 @@ bool LuminaCascadesCompositorEffect::_ensure_world_targets() {
     // Fresh textures are undefined; clear so every slot reads as never written.
     rd->texture_clear(world_probes, godot::Color(0, 0, 0, 0), 0, 1, 0, 1);
     rd->texture_clear(world_state, godot::Color(0, 0, 0, 0), 0, 1, 0, 1);
+    rd->texture_clear(world_irradiance, godot::Color(0, 0, 0, 0), 0, 1, 0, 1);
     cached_world_spacing = world_probe_spacing;
     return true;
 }
@@ -742,6 +803,7 @@ bool LuminaCascadesCompositorEffect::_ensure_world_targets() {
 void LuminaCascadesCompositorEffect::_release_world_targets() {
     rd_utils::free_rid(rd, world_probes);
     rd_utils::free_rid(rd, world_state);
+    rd_utils::free_rid(rd, world_irradiance);
     cached_world_spacing = 0.0f;
 }
 

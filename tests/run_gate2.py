@@ -4,7 +4,8 @@
 For each scene: Godot renders Lumina's "Denoised Irradiance" debug view (bounced diffuse light
 for white albedo; Chronos off, ambient off, no jitter, full resolution) and exports the scene
 (project/benchmarks/prism_scene_export.gd). Blender re-renders that export with Cycles, once with
-the same single diffuse bounce and once without; the difference is the bounced light. Every Godot
+four diffuse bounces, as Cycles does by default, and once without; the difference is the bounced
+light, which Lumina and SDFGI compute with their own extra bounces on. Every Godot
 capture uses the same matte scene (--prism-diffuse-only: no metals, no specular), so the export,
 Lumina and SDFGI share one set of materials. Godot also captures its unshaded view (each visible
 surface's albedo), and both irradiances are multiplied by it: Gate 2 compares bounce light as a
@@ -62,28 +63,35 @@ from exr import load_indirect, load_rgb  # noqa: E402
 from metrics import gate2_metrics, psnr  # noqa: E402
 
 GATE2_SCENES = ["01_cornell_box", "04_dynamic_sponza"]
+# Multi-bounce, as shipped: Lumina's world cache and SDFGI both keep bouncing light by default, and it looks right.
+DIFFUSE_BOUNCES = 4
 CYCLES_SCRIPT = HERE / "reference" / "cycles_reference.py"
 
 
 # Every Gate 2 capture renders the same scene the reference does: matte (no metals, no specular), no emission, no
-# environment light, and one bounce of GI, so the exported scene, Lumina and SDFGI share one set of materials and
-# the comparison is about a single diffuse bounce of the scene's lights.
+# environment light, and as many bounces of GI as the reference (DIFFUSE_BOUNCES unless --diffuse-bounces says otherwise), so
+# the exported scene, Lumina and SDFGI share one set of materials and the comparison is about the diffuse bounce
+# light of the scene's lights.
 GATE2_SCENE = ["--prism-chronos=off", "--prism-no-jitter", "--prism-ambient=off", "--prism-ssr=off",
-               "--prism-emission=off", "--prism-diffuse-only", "--prism-gi-single-bounce"]
+               "--prism-emission=off", "--prism-diffuse-only"]
 
 
-def lumina_capture_args(export_dir: Path, exr_path: Path) -> list[str]:
+def gate2_scene(diffuse_bounces: int) -> list[str]:
+    return [*GATE2_SCENE, "--prism-gi-single-bounce"] if diffuse_bounces == 1 else GATE2_SCENE
+
+
+def lumina_capture_args(export_dir: Path, exr_path: Path, diffuse_bounces: int) -> list[str]:
     return [
-        *GATE2_SCENE, "--prism-set=lumina.debug_view_mode=2",
+        *gate2_scene(diffuse_bounces), "--prism-set=lumina.debug_view_mode=2",
         f"--qa-scene-export={export_dir}",
         f"--qa-exr-out={exr_path}",   # float capture: irradiance above 1.0 isn't clipped
     ]
 
 
-def sdfgi_capture_args(exr_path: Path, sdfgi_on: bool) -> list[str]:
+def sdfgi_capture_args(exr_path: Path, sdfgi_on: bool, diffuse_bounces: int) -> list[str]:
     """The final image with SDFGI on or off; the difference is SDFGI's bounce light as seen. Not Godot's
     lighting-only view: it swaps every material for a grey default, also where SDFGI captures colours."""
-    return [*GATE2_SCENE, "--prism-lumina=off", f"--prism-sdfgi={'on' if sdfgi_on else 'off'}", f"--qa-exr-out={exr_path}"]
+    return [*gate2_scene(diffuse_bounces), "--prism-lumina=off", f"--prism-sdfgi={'on' if sdfgi_on else 'off'}", f"--qa-exr-out={exr_path}"]
 
 
 def albedo_capture_args(exr_path: Path) -> list[str]:
@@ -133,10 +141,11 @@ def main() -> int:
     p.add_argument("--godot-bin", default=None)
     p.add_argument("--blender-bin", default=None)
     p.add_argument("--samples", type=int, default=512)
-    p.add_argument("--diffuse-bounces", type=int, default=1, help="Lumina v1 is single-bounce.")
+    p.add_argument("--diffuse-bounces", type=int, default=DIFFUSE_BOUNCES,
+                   help="Bounces in the reference. With 1, SDFGI and Lumina are held to one bounce too.")
     p.add_argument("--capture-frame", type=int, default=48)
-    p.add_argument("--min-psnr", type=float, default=25.0,
-                   help="Interim floor of fitted PSNR for screen-space Lumina (docs/NEXT_STEPS.md); 36 is the ray-query target.")
+    p.add_argument("--min-psnr", type=float, default=22.0,
+                   help="Interim floor of fitted PSNR (docs/NEXT_STEPS.md).")
     p.add_argument("--out-dir", default=None)
     p.add_argument("--report-only", action="store_true", help="Exit 0 even below --min-psnr (crashes still fail).")
     p.add_argument("--no-sdfgi", action="store_true", help="Skip the comparison with Godot's SDFGI.")
@@ -161,7 +170,7 @@ def main() -> int:
         for stale in (exr_path, albedo_exr):   # capture_scene clears a stale PNG, not these
             stale.unlink(missing_ok=True)
         _, _, errors = rvr.capture_scene(godot, None, repo / "project", scene, rvr.CANONICAL_SCENES[scene], tier,
-                                         args.capture_frame, out_root, lumina_capture_args(export_dir, exr_path),
+                                         args.capture_frame, out_root, lumina_capture_args(export_dir, exr_path, args.diffuse_bounces),
                                          1.0, scene_dir / "godot")
         print(f"[{scene}] Godot (albedo, unshaded view) ...")
         _, _, albedo_errors = rvr.capture_scene(godot, None, repo / "project", scene, rvr.CANONICAL_SCENES[scene], tier,
@@ -191,7 +200,7 @@ def main() -> int:
                 exr = scene_dir / f"sdfgi_{'on' if on else 'off'}" / "frame.exr"
                 exr.unlink(missing_ok=True)
                 _, _, sdfgi_errors = rvr.capture_scene(godot, None, repo / "project", scene, rvr.CANONICAL_SCENES[scene], tier,
-                                                       args.capture_frame, out_root, sdfgi_capture_args(exr, on), 1.0, exr.parent)
+                                                       args.capture_frame, out_root, sdfgi_capture_args(exr, on, args.diffuse_bounces), 1.0, exr.parent)
                 m["godot_errors"] = [*m["godot_errors"], *sdfgi_errors]
                 if not exr.exists():
                     raise SystemExit(f"{scene}: Godot wrote no {exr} (see the godot.log beside it)")

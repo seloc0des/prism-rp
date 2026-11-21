@@ -32,6 +32,8 @@ RUNNER = BUILD_DIR / "prism_shader_runner"
 
 # Size of the shaders' u_textures[] array, read from the shared include so the two cannot drift apart.
 TEXTURE_ARRAY_SIZE = int(re.search(r"PRISM_MAX_MATERIAL_TEXTURES\s*=\s*(\d+)u", (INCLUDE_DIR / "vis_shading_common.glsl").read_text()).group(1))
+# Size of Lumina's scene-mirror texture array (u_scene_textures[]), which "texture" bindings are padded to.
+SCENE_TEXTURE_ARRAY_SIZE = int(re.search(r"#define LUMINA_SCENE_MAX_TEXTURES\s+(\d+)", (INCLUDE_DIR / "lumina_scene_common.glsl").read_text()).group(1))
 
 # format -> (channels, numpy storage dtype, normalized unorm). Integer formats (uint32) come back as uint32.
 FORMATS = {
@@ -122,11 +124,24 @@ class Buf:
 
 
 @dataclass
+class AsInstance:
+    """One TLAS instance over its own BLAS, built as LuminaSceneMirror builds them: one geometry per surface, each
+    float xyz per triangle corner (not indexed, not opaque). transform is a row-major 3x4."""
+    geometries: list[np.ndarray]
+    custom_index: int = 0
+    mask: int = 0xFF
+    flags: int = 0                                # VkGeometryInstanceFlagBitsKHR (Godot's instance flags match)
+    transform: tuple = (1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0)
+
+
+@dataclass
 class Dispatch:
     shader: str                                   # path relative to addons/prism_rp/shaders, or absolute
-    # binding -> (image name, kind) | (image name, kind, mip) | ([image names], sampled kind) |
-    #            (buffer name, "storage_buffer" | "uniform_buffer")
-    bindings: dict[int, tuple]
+    # binding, or (set, binding) ->
+    #   (image name, kind) | (image name, kind, mip) | ([image names], sampled kind) |
+    #   (buffer name, "storage_buffer" | "uniform_buffer") | ([image names], "texture") (padded to the scene-mirror
+    #   texture array) | (None, "sampler") | (acceleration structure name, "acceleration_structure")
+    bindings: dict[int | tuple[int, int], tuple]
     pc: bytes = b""
     groups: tuple[int, int, int] = (1, 1, 1)
     indirect: tuple[str, int] | None = None       # (buffer name, byte offset): vkCmdDispatchIndirect
@@ -146,12 +161,25 @@ class Harness:
         self._runner = build_runner()
 
     def run(self, images: dict[str, Img], dispatches: list[Dispatch], outputs: list[str],
-            buffers: dict[str, Buf] | None = None) -> dict:
+            buffers: dict[str, Buf] | None = None, acceleration_structures: dict[str, list[AsInstance]] | None = None) -> dict:
         """Returns images as float32 arrays (uint32 for integer formats) shaped (h, w, c), with a leading layer
         axis when layers > 1 and as a list per mip when mips > 1; buffers come back as bytes."""
         buffers = buffers or {}
         work = Path(tempfile.mkdtemp(prefix="prism_harness_", dir=self.keep_dir))
         job = {"images": {}, "buffers": {}, "dispatches": [], "outputs": {}}
+        if acceleration_structures:
+            job["acceleration_structures"] = {}
+            for name, instances in acceleration_structures.items():
+                specs = []
+                for i, inst in enumerate(instances):
+                    paths = []
+                    for g, corners in enumerate(inst.geometries):
+                        path = work / f"{name}_{i}_{g}.corners"
+                        path.write_bytes(np.ascontiguousarray(corners, dtype=np.float32).tobytes())
+                        paths.append(str(path))
+                    specs.append({"geometries": paths, "custom_index": inst.custom_index, "mask": inst.mask,
+                                  "flags": inst.flags, "transform": list(inst.transform)})
+                job["acceleration_structures"][name] = {"instances": specs}
         for name, img in images.items():
             spec = {"format": img.format, "width": img.width, "height": img.height, "mips": img.mips,
                     "layers": img.layers, "array": img.layers > 1 if img.array is None else img.array, "data": None}
@@ -170,11 +198,19 @@ class Harness:
         for d in dispatches:
             binds = []
             has_texture_array = "u_textures[" in (SHADER_ROOT / d.shader).read_text()
-            for b, entry in sorted(d.bindings.items()):
+            for key, entry in sorted(d.bindings.items(), key=lambda kv: kv[0] if isinstance(kv[0], tuple) else (0, kv[0])):
+                set_index, b = key if isinstance(key, tuple) else (0, key)
                 target, kind = entry[0], entry[1]
-                spec = {"binding": b, "kind": kind}
+                spec = {"set": set_index, "binding": b, "kind": kind}
                 if kind in ("storage_buffer", "uniform_buffer"):
                     spec["buffer"] = target
+                elif kind == "acceleration_structure":
+                    spec["tlas"] = target
+                elif kind == "sampler":
+                    pass
+                elif kind == "texture":
+                    spec["images"] = list(target)
+                    spec["array_size"] = SCENE_TEXTURE_ARRAY_SIZE
                 elif isinstance(target, (list, tuple)):
                     spec["images"] = list(target)
                     if has_texture_array:

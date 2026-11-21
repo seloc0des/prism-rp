@@ -16,6 +16,7 @@
 #include <godot_cpp/variant/typed_array.hpp>
 
 namespace godot {
+class Light3D;
 class Material;
 class Mesh;
 class MeshInstance3D;
@@ -27,30 +28,40 @@ namespace prism {
 
 // Lumina's copy of the scene for ray queries. Needs SUPPORTS_RAY_QUERY, so the custom Godot build.
 //
-// Main thread, at frame_pre_draw: follows the scene tree's MeshInstance3D nodes, reads each new mesh's triangles
-// once, and gathers every instance's transform, mask and materials. Render thread, queued ahead of that frame's
-// draw: uploads new meshes into pooled buffers, builds one BLAS per mesh (one geometry per surface), rebuilds the
-// TLAS and rewrites the instance and material tables. Lumina's passes bind the result as one uniform set, laid out
-// as lumina_scene_common.glsl declares it.
+// Main thread, at frame_pre_draw: follows the scene tree's MeshInstance3D and light nodes, reads each new mesh's
+// triangles once, and gathers every instance's transform, mask and materials and every light that lights GI.
+// Render thread, queued ahead of that frame's draw: uploads new meshes into pooled buffers, builds one BLAS per mesh
+// (one geometry per surface), rebuilds the TLAS and rewrites the instance, material and light tables. Lumina's
+// passes bind the result as one uniform set, laid out as lumina_scene_common.glsl declares it.
 //
 // The mirror idles until a pass asks for the scene (scene_uniform_set()) and releases everything once nothing has
 // asked for kIdleFramesBeforeRelease frames, so stock Godot and scenes without ray-query passes pay nothing.
 //
 // Not mirrored yet: skinned and blend-shape meshes, MultiMesh, CSG, particles, ImmediateMesh and other Mesh types
 // that are neither ArrayMesh nor PrimitiveMesh, and surfaces with alpha-blended materials (in the TLAS, but never
-// hit). Only the main viewport's World3D (the edited scene's in the editor).
+// hit); AreaLight3D, and lights past kMaxLights. Only the main viewport's World3D (the edited scene's in the editor).
+// Lights and emission are read as Godot's non-physical light units define them, without a light's distance fade,
+// its cull mask, or the camera's exposure normalization. A mesh's first surface decides which side of every surface
+// faces the front, so a later surface with another cull mode is seen from the wrong side (and Lumina's world cache
+// counts its drawn side as blocked).
 class LuminaSceneMirror : public godot::Object {
     GDCLASS(LuminaSceneMirror, godot::Object)
 
 public:
     // Shared with lumina_scene_common.glsl.
     static constexpr uint32_t kMaxTextures = 1024;
+    static constexpr uint32_t kMaxLights = 64;
     static constexpr uint32_t kMaskCamera = 0x01;   // seen by the camera
     static constexpr uint32_t kMaskShadow = 0x02;   // casts shadows
     static constexpr uint32_t kMaterialAlphaTest = 1u;
     static constexpr uint32_t kMaterialSkip = 2u;    // alpha-blended: rays pass through
     static constexpr uint32_t kMaterialVertexColor = 4u;
     static constexpr uint32_t kMaterialVertexColorSrgb = 8u;
+    static constexpr uint32_t kMaterialEmissionMultiply = 16u;   // Godot's Multiply emission operator; else Add
+    static constexpr uint32_t kMaterialDoubleSided = 32u;        // cull disabled: both sides are surfaces
+    static constexpr uint32_t kLightDirectional = 0;
+    static constexpr uint32_t kLightOmni = 1;
+    static constexpr uint32_t kLightSpot = 2;
 
     static LuminaSceneMirror *get_singleton();
     static void set_singleton(LuminaSceneMirror *p_mirror);
@@ -75,12 +86,23 @@ private:
     struct MaterialRecord {
         float albedo[4] = { 1.0f, 1.0f, 1.0f, 1.0f };        // linear rgb, alpha
         float uv_transform[4] = { 1.0f, 1.0f, 0.0f, 0.0f };  // uv1 scale.xy, offset.xy
+        float emission[4] = { 0.0f, 0.0f, 0.0f, 0.0f };      // linear rgb, energy (0: emission off)
         uint32_t albedo_texture = 0;                         // slot in the texture array, 0 = none
         uint32_t flags = 0;
         float alpha_scissor = 0.5f;
-        uint32_t pad = 0;
+        uint32_t emission_texture = 0;                       // slot in the texture array, 0 = none
     };
-    static_assert(sizeof(MaterialRecord) == 48);
+    static_assert(sizeof(MaterialRecord) == 64);
+
+    // Matches LuminaLight.
+    struct LightRecord {
+        float position[4] = { 0.0f, 0.0f, 0.0f, 1.0f };    // world xyz, 1 / range
+        float direction[4] = { 0.0f, -1.0f, 0.0f, 1.0f };  // unit direction it shines in, distance attenuation exponent
+        float color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };       // linear rgb x energy x indirect energy
+        float spot[4] = { 0.0f, 1.0f, 0.0f, 0.0f };        // cos(spot angle), 1 / spot angle attenuation
+        uint32_t info[4] = { 0, 0, 0, 0 };                 // kLight*, casts shadows
+    };
+    static_assert(sizeof(LightRecord) == 80);
 
     // Matches LuminaSurface.
     struct SurfaceRecord {
@@ -114,7 +136,8 @@ private:
 
     struct FrameMaterial {
         MaterialRecord record;
-        godot::RID albedo_texture;   // RenderingServer texture; its RD texture is looked up on the render thread
+        godot::RID albedo_texture;     // RenderingServer textures; their RD textures are looked up on the render thread
+        godot::RID emission_texture;
     };
 
     struct FrameInstance {
@@ -129,6 +152,7 @@ private:
         std::vector<FrameInstance> instances;
         std::vector<uint32_t> instance_materials;   // per instance, one per mesh surface
         std::vector<FrameMaterial> materials;
+        std::vector<LightRecord> lights;
     };
 
     // Main thread -> render thread, under pending_mutex. Uploads and removals accumulate until the render thread
@@ -191,6 +215,7 @@ private:
     void _gather_frame();
     void _gather_instance(godot::MeshInstance3D *p_instance, godot::World3D *p_world, FrameState &r_frame,
             std::unordered_map<uint64_t, uint32_t> &r_material_seen);
+    static void _gather_light(godot::Light3D *p_light, godot::World3D *p_world, FrameState &r_frame);
     [[nodiscard]] godot::World3D *_mirrored_world() const;
     const MainMesh *_main_mesh_for(const godot::Ref<godot::Mesh> &p_mesh);
     void _drop_unused_meshes();
@@ -208,6 +233,7 @@ private:
     bool _build_blas(RenderMesh &r_mesh);
     void _write_surface_records(const RenderMesh &p_mesh);
     bool _write_frame(const FrameState &p_frame);
+    bool _write_lights(const FrameState &p_frame);
     uint32_t _texture_slot(const godot::RID &p_texture);
     void _age_texture_slots();
     bool _ensure_buffer(godot::RID &r_buffer, uint32_t &r_capacity, uint32_t p_needed, uint32_t p_element_size);
@@ -226,6 +252,7 @@ private:
     uint32_t last_seen_request = 0;
     uint32_t next_mesh_id = 1;
     std::unordered_set<uint64_t> tracked_nodes;                // MeshInstance3D object ids
+    std::unordered_set<uint64_t> tracked_lights;               // Light3D object ids
     std::unordered_map<uint64_t, MainMesh> main_meshes;        // by Mesh object id
     std::vector<MeshUpload> gathered_uploads;                  // this frame's, handed over at the end of _gather_frame
     std::vector<uint32_t> gathered_removals;
@@ -252,6 +279,8 @@ private:
     uint32_t instance_material_capacity = 0;
     godot::RID material_buffer;
     uint32_t material_capacity = 0;
+    godot::RID light_buffer;      // a 16-byte header (the count), then LightRecords
+    uint32_t light_capacity = 0;  // in LightRecords, header included
     // Slots stay put while their texture is in use, so the set of textures, and with it the uniform set, changes
     // only when textures come and go. Slot 0 is white and never reused.
     std::vector<TextureSlot> texture_slots;
