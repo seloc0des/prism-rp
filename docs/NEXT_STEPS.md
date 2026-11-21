@@ -116,7 +116,7 @@ blurrier than per-pixel path tracing. What this project needs from Lumina is to 
 Godot's GI, without artifacts and within budget, so Gate 2 now asks for that (`ROADMAP.md`):
 
 - **Beat SDFGI** against the same Cycles reference, measured the same way, on every Gate 2 scene.
-- **Above an interim floor** of fitted PSNR (below), with 36 dB kept as the target for the ray-query fallback.
+- **Above an interim floor** of fitted PSNR (below), with a higher target for the ray-query fallback, still to be re-derived (`ROADMAP.md`).
 - **No visible artifacts** in the test plan's Lumina checks.
 - **Settle within 6 frames** after a light switches on (`tests/check_gi_convergence.py`).
 - **GI + SVGF under 2.40 ms** on Tier 2 (0.5–1.7 ms on the first run).
@@ -142,7 +142,7 @@ So Lumina doesn't pass the revised Gate 2 yet: SDFGI is ahead by 3 dB in the Cor
 Lumina settles far too slowly. The Cornell reference is noisy enough at 128 samples that nothing can score above about
 28 dB (about 34 dB at 512): the old 36 dB was out of reach there whatever the GI.
 
-**Interim floor: 25 dB fitted** on every Gate 2 scene since #22 (20 dB on the measurement before it, described below). Beating SDFGI is the real bar; the floor catches output that
+**Interim floor: 22 dB fitted** on every Gate 2 scene since Gate 2 measures multi-bounce light (below); 25 dB from #22 and 20 dB before that. Beating SDFGI is the real bar; the floor catches output that
 is badly wrong in a scene where SDFGI also does poorly (it sits above SDFGI's Cornell score, below Lumina's Sponza
 score and well below the reference's noise ceiling).
 
@@ -399,17 +399,17 @@ instead of the room beyond it. Every hit also adds its albedo times the cache's 
 which a new pass averages from each cell's directions (`lumina_ws_irradiance`). That is a second bounce, then a
 third, and it is what lights surfaces that only other surfaces light. Without ray queries the cache marches as before.
 
-Gate 2's reference has one bounce, so its captures now hold Lumina to one as well (`world_multi_bounce_enabled`,
-turned off by the rig's `--prism-gi-single-bounce`), and `run_gate2.py --diffuse-bounces 4` lets all three bounce.
-Each outcome has a shader harness test on lavapipe, for which the harness learned to build acceleration structures,
+For a single-bounce comparison, `run_gate2.py --diffuse-bounces 1` holds Lumina to one bounce as well
+(`world_multi_bounce_enabled`, turned off by the rig's `--prism-gi-single-bounce`), as it already did SDFGI. Each
+outcome has a shader harness test on lavapipe, for which the harness learned to build acceleration structures,
 and `tests/engine/run_world_cache_rt.sh` checks the whole pipeline: a light behind the camera lights the view, stops
 when its bake mode is Disabled, and the wall's emission takes over; light that bounced twice off screen reaches the
 view, and goes when `world_multi_bounce_enabled` is off. Not read yet: physical light units (the mirror warns),
 AreaLight3D, a light's distance fade and cull mask, and the camera's exposure normalization, which Godot applies to
 the on-screen light the cache takes but the mirror doesn't.
 
-Gate 2 on the RTX 4060 Ti (512 samples, one session; fitted PSNR, centre in brackets, then the mean light level
-against the reference):
+Single-bounce Gate 2 on the RTX 4060 Ti, the measure up to this change (512 samples, one session; fitted PSNR,
+centre in brackets, then the mean light level against the reference):
 
 | Scene | Cache marched | Cache traced | SDFGI |
 | :--- | :--- | :--- | :--- |
@@ -419,9 +419,23 @@ against the reference):
 Sponza gains 2.9 dB and its gap to SDFGI drops from 4.4 to 1.5 dB, so Gate 2 still doesn't pass there. The Cornell
 box goes from 1.38x to 1.11x the reference's light, but its fitted score barely moves and its centre loses 0.8 dB:
 what's left there isn't the open front any more. Both scenes now come out brighter than the reference, by 11 and 14
-percent. Against a reference with four bounces, with Lumina's and SDFGI's extra bounces on, the traced cache scores
-24.24 dB against SDFGI's 19.77 dB in the Cornell box (0.76x of the reference's light, SDFGI 0.61x) and 32.52 dB
-against 33.61 dB in Sponza (0.93x, SDFGI 0.88x). The compare images show no leaks or dark patches near the columns.
+percent. The compare images show no leaks or dark patches near the columns.
+
+**Gate 2 now measures multi-bounce light (decided 2026-11-20).** Real light keeps bouncing, Cycles renders four
+diffuse bounces by default, and both Lumina's traced cache and SDFGI bounce more than once as shipped, so the gate
+now scores what a player sees: the reference renders four bounces, and Lumina and SDFGI keep their own.
+`run_gate2.py` does this by default.
+
+| Scene | Lumina, fitted (centre) | SDFGI, fitted (centre) | Mean light, Lumina / SDFGI | Best possible |
+| :--- | :--- | :--- | :--- | :--- |
+| Cornell box | 24.24 dB (22.81) | 19.77 dB (19.04) | 0.76x / 0.61x | 35.7 dB |
+| Sponza | 32.52 dB (30.42) | 33.61 dB (31.97) | 0.93x / 0.89x | 40.1 dB |
+
+Lumina leads the Cornell box by 4.5 dB and trails in Sponza by 1.1 dB, so Gate 2 still fails there. The interim
+floor moves to 22 dB by the old rule, above SDFGI's Cornell score and below Lumina's Sponza score, about as far
+above SDFGI as before. Scored this way, Lumina is too dark, most of all in the closed Cornell box: only the world
+cache bounces more than once, while the screen-space levels near each pixel still see a single bounce. Bouncing
+the screen-space levels' light too is the next step for the image.
 
 The traced update and the mirror's GPU work cost 0.16 to 0.45 ms a frame on the 4060 Ti, against 0.02 to 0.12 ms
 for the march. This session's whole-frame timings swung by 0.6 ms between runs and put even the marched cache over
@@ -438,7 +452,8 @@ the scene on the main thread every frame now that the cache uses it.
    - harness scenes large enough to reach the top cascade level, so its changes can be tested off the GPU;
    - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
      templates;
-   - on the custom build, what is left of Sponza's 1.5 dB gap to SDFGI after the ray-traced cache (above), Lumina's
+   - on the custom build, what is left of Sponza's 1.1 dB gap to SDFGI after the ray-traced cache (above): more than
+     one bounce in the screen-space levels, skinned, blend-shape and MultiMesh geometry in the scene mirror, Lumina's
      real albedo instead of the albedo proxy, and a specular term so metals reflect bounced light, to finish Gate 2;
    - Track B wired up for Gates 3 and 4, then Gate 5.
 
