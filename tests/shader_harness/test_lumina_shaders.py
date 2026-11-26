@@ -346,6 +346,35 @@ def test_light_does_not_leak_through_the_back_of_objects(gpu):
     assert red_behind < 0.25 * red_front, (red_front, red_behind)
 
 
+@pytest.mark.parametrize("size", [(128, 96), (256, 192)])
+def test_floor_behind_a_card_gets_no_light_from_its_front_at_any_resolution(gpu, size):
+    # The card scene above passes at 96 x 64 by luck of where the probes fall. At 128 x 96 the level-1
+    # probes on the floor sit 0.1 m in front of the card and see its lit face, the level-0 probes behind it
+    # match none of their parents' depths, and the merge normalised the least bad parent to full weight:
+    # 7.3x the exact light behind the card (3.5x at 256 x 192). Measured against the exact answer, not
+    # zero: the grey floor behind the card has light of its own from the back wall. Shipping settings.
+    cam = Camera(width=size[0], height=size[1])
+    floor = (0.05, 0.05, 0.05)
+    planes = [
+        Plane((0, -1, 0), (0, 1, 0), floor),
+        Plane((0, 0, -7), (0, 0, 1), floor),
+        Plane((0, 0, -3.5), (0, 0, 1), (4.0, 0.0, 0.0), bounds=((-0.6, 0.6), (-1.0, 0.6), (-4.0, -3.0))),
+    ]
+    g = render(cam, planes)
+    irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1)[..., 0]
+    truth = irradiance_truth(cam, planes)[..., 0]
+    pos = cam.ray_dirs() * g["linear_z"][..., None]
+    on_floor = (g["normal"][..., 1] > 0.9) & (g["linear_z"] > 0)
+    beside = (np.abs(pos[..., 0]) > 0.7) & (np.abs(pos[..., 0]) < 1.6)
+    front = on_floor & beside & (pos[..., 2] > -3.0) & (pos[..., 2] < -2.0)
+    behind = on_floor & beside & (pos[..., 2] > -5.5) & (pos[..., 2] < -4.2)
+    assert front.sum() > 20 and behind.sum() > 20
+    ratio_behind = float(irr[behind].mean() / truth[behind].mean())
+    ratio_front = float(irr[front].mean() / truth[front].mean())
+    assert 0.5 < ratio_behind < 1.5, ratio_behind   # no card light, and not darker than the floor's own
+    assert 0.5 < ratio_front < 1.5, ratio_front     # the lit face still bounces onto the floor in front
+
+
 def rect_irradiance(point, normal, a, b, c, n=64):
     """E / pi at `point` (surface normal `normal`) from a Lambertian rectangle of radiance 1 spanned by
     a->b and a->c, all mutually visible: sum of cos * cos' / r^2 dA over the rectangle, divided by pi."""

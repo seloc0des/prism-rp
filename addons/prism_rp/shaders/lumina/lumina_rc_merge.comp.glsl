@@ -10,7 +10,8 @@
 // direction owns and interpolated over the 4 nearest parent probes: bilinearly, weighted by how close
 // each parent probe's depth is to this probe's. Plain screen-space bilinear weights let a probe behind
 // an object inherit light gathered by parent probes in front of it (light leaking past silhouettes);
-// if every parent is rejected, the plain bilinear blend is used.
+// if every parent is rejected, the plain bilinear blend is used. A probe whose parents all match poorly has
+// already traced on by itself with transmittance 0 (lumina_rc_trace.comp.glsl), so it takes none of this.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -28,8 +29,6 @@ layout(push_constant, std430) uniform PushConstants {
     ivec2 internal_resolution;
     vec2 depth_params;
 } pc;
-
-const float kParentDepthTolerance = 0.1;   // relative linear-depth difference, as an exponential falloff
 
 float probe_linear_depth(vec2 center_px) {
     ivec2 px = clamp(ivec2(center_px), ivec2(0), pc.internal_resolution - ivec2(1));
@@ -73,7 +72,7 @@ void main() {
         float parent_z = probe_linear_depth((vec2(pp) + 0.5) * pc.parent_spacing_px);
         float depth_w;
         if (child_z > 0.0 && parent_z > 0.0) {
-            depth_w = exp(-abs(parent_z - child_z) / (kParentDepthTolerance * child_z));
+            depth_w = lumina_parent_depth_weight(child_z, parent_z);
         } else {
             depth_w = (child_z > 0.0) == (parent_z > 0.0) ? 1.0 : 0.0;   // sky matches only sky
         }
