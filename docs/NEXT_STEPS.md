@@ -371,7 +371,8 @@ wire mesh sparkle. Cutting the top level to 8 steps instead of 12 saves another 
 Sponza, which already reads too dark. The harness's 128 x 96 scenes can't judge any of the top-level changes: its
 interval starts 168 px from the probe, past their edge. Run at 512 x 384, the shipping trace gives a 4 px hotspot
 0.55x of its light and lets 0.57x of the card's light through behind it at thickness 0.2, both outside the limits the
-small scenes pass.
+small scenes pass. (Those were the settings of the time. The harness now runs these scenes at 512 x 384 too; what it
+found is under **The harness reaches the top level** below.)
 
 **The world cache is on by default, and it still adds too much light to a small open room.** Turned on after the
 trace changes above, it brought the Cornell box to 1.52x the reference's light level (27.18 dB) and Sponza to 0.97x
@@ -442,6 +443,31 @@ for the march. This session's whole-frame timings swung by 0.6 ms between runs a
 2.40 ms in four scenes, so the budget needs the several-run timing that settled it in #33. The mirror also gathers
 the scene on the main thread every frame now that the cache uses it.
 
+**The harness reaches the top level.** With 8 px spacing and four levels, the top level's interval starts 168 px from
+its probe, past the edge of the 128 x 96 scenes the harness had used, so none of its tests ever ran it. The bright
+wall and small hotspot tests now also run at 512 x 384, and a shipping-settings card test checks the leak behind the
+card against the exact answer instead of against zero, since the grey floor behind it gets real light of its own.
+The exact answer is now computed in batches of pixels: at 512 x 384 it peaked at 4.1 GB, now 0.37 GB. At that size,
+shipping settings:
+
+| Test | Result | Limit |
+| :--- | :--- | :--- |
+| Bright wall, black room | 0.80x of the exact answer | 0.6x to 1.2x |
+| 4 px hotspot (16 px here), black room | 0.68x, every surface 0.58x to 0.75x | 0.6x to 1.2x |
+| Card, leak behind it | 0.10 of the light in front | under 0.25 |
+
+All of these pass. What they show is that the top level loses light. With three levels, where level 2 is the top and
+runs to the screen's edge, the wall room gets 0.87x and the hotspot room 0.77x; adding the fourth level drops them to
+0.80x and 0.68x, on every surface. A level that only reaches further shouldn't darken anything, so
+`test_the_top_level_adds_light_instead_of_losing_it` holds the fourth level to at least 97% of three levels' light.
+It is marked as an expected failure (strict, so it reports when a fix makes it pass). Fixing this probably helps
+Sponza too, which reads too dark.
+
+The large scenes don't settle everything. Tracing the top level with one ray instead of 2 x 2, or with 8 steps
+instead of 12, moves every ratio above by under 0.02, while on the GPU the first made thin wires sparkle and the
+second darkened Sponza. Sparkle is a frame-to-frame effect, so judging those two needs a moving test at this size,
+not a mean. The four large scenes add about 60 s to the lavapipe job.
+
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
@@ -449,7 +475,8 @@ the scene on the main thread every frame now that the cache uses it.
    - bring Sponza and volumetrics under the 2.40 ms Tier 2 budget without losing the image: the a-trous denoiser
      (0.35 to 0.75 ms) and the top cascade level (about 0.5 ms) are the biggest passes left; time several runs per
      change;
-   - harness scenes large enough to reach the top cascade level, so its changes can be tested off the GPU;
+   - find why the top cascade level loses light (above) and fix it, until the expected failure passes; then a moving
+     hotspot or wire test at 512 x 384, so the top level's sub-rays and steps can be judged off the GPU;
    - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
      templates;
    - on the custom build, what is left of Sponza's 1.1 dB gap to SDFGI after the ray-traced cache (above): more than
