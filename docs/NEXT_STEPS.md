@@ -467,7 +467,9 @@ no parent light at all. The floor behind the card gets 0.7–1.2x the exact ligh
    - bring Sponza and volumetrics under the 2.40 ms Tier 2 budget without losing the image: the a-trous denoiser
      (0.35 to 0.75 ms) and the top cascade level (about 0.5 ms) are the biggest passes left; time several runs per
      change;
-   - harness scenes large enough to reach the top cascade level, so its changes can be tested off the GPU;
+   - harness scenes large enough to reach the top cascade level, so its changes can be tested off the GPU: one
+     so far (a black room at 512 x 384 whose left wall gets its light mostly through level 3; it fails if the top
+     level stops halfway to the screen edge, which every 128 x 96 test misses), and more as the top level changes;
    - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
      templates;
    - on the custom build, what is left of Sponza's 1.1 dB gap to SDFGI after the ray-traced cache (above): more than

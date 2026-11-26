@@ -472,6 +472,25 @@ def test_a_bright_wall_lights_a_black_room_as_much_as_it_should(gpu):
     assert 0.6 < ratio < 1.2, ratio
 
 
+def test_the_top_level_carries_light_across_the_room(gpu):
+    # The test above at a size where the top level traces something. Level 3's interval starts 168 px
+    # along the ray on screen (8 x (4^3 - 1) / 3), off the edge of a 128 x 96 frame, so no smaller test
+    # reaches it. Here the left wall sees the bright right wall from 3 m away, mostly through level 3:
+    # 0.99x of the exact light, against 0.39x with level 3's trace skipped.
+    cam = Camera(width=512, height=384)
+    big = 50.0
+    irr, truth, dark, g = light_in_black_room(gpu, cam, black_room([
+        Plane((1.5, 0, 0), (-1, 0, 0), (1.0, 1.0, 1.0), bounds=((-big, big), (-big, big), (-6.5, -3.0))),
+        Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0), bounds=((-big, big), (-big, big), (-3.0, big))),
+    ]))
+    left = dark & (g["normal"][..., 0] > 0.9)
+    assert left.sum() > 1000, left.sum()
+    ratio = float(irr[dark].mean() / truth[dark].mean())
+    ratio_left = float(irr[left].mean() / truth[left].mean())
+    assert 0.6 < ratio < 1.2, ratio
+    assert 0.7 < ratio_left < 1.3, ratio_left
+
+
 def test_a_small_bright_spot_lights_the_whole_black_room(gpu):
     # A 0.3 m patch, about 4 px on screen, is the only light. Sampled at full resolution, the coarse
     # levels' fixed directions hit it at full strength or miss it, so a few surfaces get it all and the

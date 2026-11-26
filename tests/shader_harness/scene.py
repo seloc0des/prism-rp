@@ -101,6 +101,17 @@ def irradiance_truth(cam: Camera, planes: list[Plane], n_dirs: int = 256) -> np.
     r = np.sqrt(k / n_dirs)
     phi = k * np.pi * (3.0 - np.sqrt(5.0))
     local = np.stack([r * np.cos(phi), r * np.sin(phi), np.sqrt(1.0 - r * r)], axis=-1)     # (D, 3), cosine-weighted
+    radiance = np.zeros((len(pos), 3))
+    chunk = max(1, (1 << 22) // n_dirs)   # pixels per pass: keeps the (P, D, 3) arrays near 100 MB
+    for i in range(0, len(pos), chunk):
+        radiance[i:i + chunk] = _mean_radiance(pos[i:i + chunk], nrm[i:i + chunk], local, planes)
+    out = np.zeros(z.shape + (3,))
+    out[surf] = radiance
+    return out
+
+
+def _mean_radiance(pos, nrm, local, planes):
+    """irradiance_truth for points `pos` with normals `nrm` (P, 3): mean plane colour over `local` (D, 3)."""
     helper = np.where(np.abs(nrm[:, 1:2]) < 0.9, [[0.0, 1.0, 0.0]], [[1.0, 0.0, 0.0]])
     t = np.cross(nrm, helper)
     t /= np.linalg.norm(t, axis=-1, keepdims=True)
@@ -122,6 +133,4 @@ def irradiance_truth(cam: Camera, planes: list[Plane], n_dirs: int = 256) -> np.
                 hit &= (hp[..., axis] >= lo) & (hp[..., axis] <= hi)
         best[hit] = tt[hit]
         col[hit] = pl.color
-    out = np.zeros(z.shape + (3,))
-    out[surf] = col.mean(axis=1)
-    return out
+    return col.mean(axis=1)
