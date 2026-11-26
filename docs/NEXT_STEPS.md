@@ -468,6 +468,39 @@ instead of 12, moves every ratio above by under 0.02, while on the GPU the first
 second darkened Sponza. Sparkle is a frame-to-frame effect, so judging those two needs a moving test at this size,
 not a mean. The four large scenes add about 60 s to the lavapipe job.
 
+**Where the top level's light went.** Three causes, measured in the 512 x 384 wall room:
+
+- **Hits lost at every level boundary (fixed).** A level's steps sat at (i + jitter) / steps of its interval, so the
+  last one fell short of the end. A ray crossing a surface after it was missed by its own level, and the next level
+  started behind the surface, saw no crossing and called the direction empty. Each boundary lost hits, and a fourth
+  level adds one. The steps now spread over (steps - 1 + jitter), so the last lands on the interval's end, at no
+  extra cost. A trace test places each direction's crossing on screen exactly: before the fix, 17 of 59 crossings in
+  the last quarter of an interval were missed.
+- **Parents facing away (fixed).** The merge blends the four nearest parent probes, 64 px apart on the top level and
+  often on another surface. A wall probe's ray into the wall starts behind it and finds nothing, so floor probes
+  inherited "empty and black" for every direction into the wall. The merge now leaves out a parent whose surface
+  faces away from the direction, as long as the parents left carry at least a tenth of the bilinear weight; without
+  that floor, a parent the depth test had nearly rejected became the whole answer and the card test leaked. It reads
+  the normal buffer, which the C++ now binds.
+- **Parallax (open).** A parent's interval starts 168 px from the parent, not from the child. When a bright surface
+  is closer to the parent than that, the parent misses it while the child found its own interval clear. Tracing the
+  top level at level 2's own probe positions recovers most of the rest (0.865x against 0.830x), so this is the bulk
+  of what's left. The usual fix traces each parent interval from the child's position, about four times the merge's
+  reads, or overlaps the intervals.
+
+Shipping settings, fraction of the exact answer:
+
+| Scene | Before, 3 / 4 levels | After, 3 / 4 levels |
+| :--- | :--- | :--- |
+| Wall room, 128 x 96 | 0.69 / 0.69 | 0.75 / 0.74 |
+| Wall room, 512 x 384 | 0.87 / 0.80 | 0.89 / 0.83 |
+| Hotspot room, 128 x 96 | 0.64 / 0.64 | 0.67 / 0.67 |
+| Hotspot room, 512 x 384 | 0.77 / 0.68 | 0.77 / 0.72 |
+
+The card's leak at 512 x 384 fell from 0.10 to 0.07 of the light in front. The top level still loses light, so
+its test stays an expected failure. None of this is measured on the GPU yet: Gate 2 should rise in both scenes,
+most in the closed Cornell box, and the trace costs the same, while the merge reads four normals per texel.
+
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
@@ -475,8 +508,9 @@ not a mean. The four large scenes add about 60 s to the lavapipe job.
    - bring Sponza and volumetrics under the 2.40 ms Tier 2 budget without losing the image: the a-trous denoiser
      (0.35 to 0.75 ms) and the top cascade level (about 0.5 ms) are the biggest passes left; time several runs per
      change;
-   - find why the top cascade level loses light (above) and fix it, until the expected failure passes; then a moving
-     hotspot or wire test at 512 x 384, so the top level's sub-rays and steps can be judged off the GPU;
+   - measure the interval-end and facing-parent fixes (above) on the GPU: Gate 2 and Lumina's timings;
+   - the parallax that is left of the top level's light loss (above), until its expected failure passes; then a
+     moving hotspot or wire test at 512 x 384, so the top level's sub-rays and steps can be judged off the GPU;
    - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
      templates;
    - on the custom build, what is left of Sponza's 1.1 dB gap to SDFGI after the ray-traced cache (above): more than

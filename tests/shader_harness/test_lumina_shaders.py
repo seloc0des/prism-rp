@@ -63,7 +63,8 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefi
         lv, parent = levels[i], levels[i + 1]
         dispatches.append(Dispatch(
             "lumina/lumina_rc_merge.comp.glsl",
-            {0: (f"c{i + 1}", "sampled_linear"), 1: (f"c{i}", "storage"), 2: ("depth", "sampled_nearest")},
+            {0: (f"c{i + 1}", "sampled_linear"), 1: (f"c{i}", "storage"), 2: ("depth", "sampled_nearest"),
+             3: ("normal", "sampled_nearest")},
             pc.merge(lv["probes"], parent["probes"], lv["block"], parent["block"], float(lv["spacing"]), float(parent["spacing"]),
                      (cam.width, cam.height), cam.depth_params),
             groups_for(*lv["size"])))
@@ -233,9 +234,10 @@ def test_merge_averages_each_parent_probes_2x2_directions_and_blends_across_prob
     cam = Camera(width=56, height=40)
     flat = render(cam, [Plane((0, 0, -4), (0, 0, 1), (1, 1, 1))])   # one depth everywhere: every depth weight is 1
     out = gpu.run(
-        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=flat["depth"])},
+        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=flat["depth"]), "normal": Img("rgba8", data=flat["normal"])},
         [Dispatch("lumina/lumina_rc_merge.comp.glsl",
-                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest"),
+                   3: ("normal", "sampled_nearest")},
                   pc.merge(probes, parent_probes, block, parent_block, spacing, parent_spacing, (cam.width, cam.height), cam.depth_params),
                   groups_for(*size))], ["lvl"])["lvl"]
 
@@ -268,9 +270,10 @@ def test_merge_combines_interval_transmittance_and_parent(gpu):
     cam = Camera(width=32, height=32)
     flat = render(cam, [Plane((0, 0, -4), (0, 0, 1), (1, 1, 1))])   # one depth everywhere: plain bilinear
     out = gpu.run(
-        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=flat["depth"])},
+        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=flat["depth"]), "normal": Img("rgba8", data=flat["normal"])},
         [Dispatch("lumina/lumina_rc_merge.comp.glsl",
-                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest"),
+                   3: ("normal", "sampled_nearest")},
                   pc.merge(probes, parent_probes, block, parent_block, 8.0, 16.0, (cam.width, cam.height), cam.depth_params),
                   groups_for(*size))], ["lvl"])["lvl"]
     np.testing.assert_allclose(out[:, : size[0] // 2], np.broadcast_to((0.2, 0.4, 0.6, 0.5), out[:, : size[0] // 2].shape), atol=2e-3)
@@ -293,15 +296,119 @@ def test_merge_does_not_take_parents_from_another_depth(gpu):
     parent[:, psize[0] // 2:] = (5.0, 0.0, 0.0, 1.0)      # parent probe on the near half: bright red
     level = np.zeros((size[1], size[0], 4)); level[..., 3] = 1.0   # every interval clear: all parent
     out = gpu.run(
-        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=g["depth"])},
+        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"])},
         [Dispatch("lumina/lumina_rc_merge.comp.glsl",
-                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest"),
+                   3: ("normal", "sampled_nearest")},
                   pc.merge(probes, parent_probes, block, parent_block, 8.0, 16.0, (cam.width, cam.height), cam.depth_params),
                   groups_for(*size))], ["lvl"])["lvl"]
     # Child probe column 1 (centre x = 12 px) is on the far half but between the two parent probes.
     far_child = out[:, 1 * block:(1 + 1) * block, 0]
     assert far_child.max() < 0.2, far_child.max()
 
+
+
+def oct_decode(e):
+    """lumina_oct_decode: [-1, 1]^2 -> unit direction."""
+    v = np.array([e[0], e[1], 1.0 - abs(e[0]) - abs(e[1])])
+    if v[2] < 0.0:
+        v[:2] = (1.0 - np.abs(v[[1, 0]])) * np.where(v[:2] >= 0.0, 1.0, -1.0)
+    return v / np.linalg.norm(v)
+
+
+def test_merge_ignores_parents_whose_surface_faces_away_from_the_direction(gpu):
+    # A parent probe on a wall traces a direction pointing into the wall from behind its own surface and
+    # finds nothing, so a floor probe beside it inherited "empty and black" for every direction into the
+    # wall. With one depth everywhere, the left half of the screen faces +z and the right half +x; the
+    # right parent's answer only counts for directions on its own side.
+    probes, parent_probes = (4, 4), (2, 2)
+    block, parent_block = 4, 8
+    size = (probes[0] * block, probes[1] * block)
+    psize = (parent_probes[0] * parent_block, parent_probes[1] * parent_block)
+    cam = Camera(width=32, height=32)
+    flat = render(cam, [Plane((0, 0, -4), (0, 0, 1), (1, 1, 1))])
+    normal = flat["normal"].copy()
+    normal[:, 16:, :3] = (1.0, 0.5, 0.5)                   # +x, encoded
+    parent = np.zeros((psize[1], psize[0], 4))
+    parent[:, : psize[0] // 2] = (0.1, 0.1, 0.1, 1.0)     # parent probe facing +z
+    parent[:, psize[0] // 2:] = (5.0, 0.0, 0.0, 1.0)      # parent probe facing +x: bright red
+    level = np.zeros((size[1], size[0], 4)); level[..., 3] = 1.0   # every interval clear: all parent
+    out = gpu.run(
+        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level),
+         "depth": Img("r32f", data=flat["depth"]), "normal": Img("rgba8", data=normal)},
+        [Dispatch("lumina/lumina_rc_merge.comp.glsl",
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest"),
+                   3: ("normal", "sampled_nearest")},
+                  pc.merge(probes, parent_probes, block, parent_block, 8.0, 16.0, (cam.width, cam.height), cam.depth_params),
+                  groups_for(*size))], ["lvl"])["lvl"]
+    # Child probe column 1 (centre x = 12 px) faces +z, a quarter of the way to the +x parent.
+    away, toward = [], []
+    for dy in range(block):
+        for dx in range(block):
+            d = oct_decode((np.array([dx, dy]) + 0.5) / block * 2.0 - 1.0)
+            if d[2] <= 0.0:
+                continue        # into this probe's own surface: both parents face away, the depth blend is used
+            red = out[1 * block + dy, 1 * block + dx, 0]
+            (away if d[0] < 0.0 else toward).append(red)
+    assert away and toward
+    np.testing.assert_allclose(away, 0.1, atol=2e-3)                    # the +x parent left out
+    np.testing.assert_allclose(toward, 0.75 * 0.1 + 0.25 * 5.0, rtol=2e-3)   # plain bilinear blend
+
+
+def test_a_level_finds_every_surface_its_ray_crosses_before_the_interval_ends(gpu):
+    # Steps sit at (i + jitter) / steps of the interval, so the last one falls short of its end. A ray that
+    # crossed a surface after it was missed by its own level, and the next level started behind the
+    # surface, saw no crossing and called the direction clear and black: every level boundary lost hits.
+    # Floor probes look at a back wall; each direction's crossing is placed on screen exactly, and the
+    # level must hit whatever it reaches before the interval's end, and nothing after.
+    cam = Camera(width=128, height=96)
+    planes = [Plane((0, -1, 0), (0, 1, 0), (1.0, 1.0, 1.0)), Plane((0, 0, -6), (0, 0, 1), (1.0, 1.0, 1.0))]
+    g = render(cam, planes)
+    spacing, block, start, length = 8, 8, 8.0, 40.0
+    probes = (cam.width // spacing, cam.height // spacing)
+    size = (probes[0] * block, probes[1] * block)
+    out = gpu.run(
+        {"depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"]),
+         "color": Img("rgba16f", data=g["color"]), "c": Img("rgba16f", *size)},
+        [Dispatch("lumina/lumina_rc_trace.comp.glsl",
+                  {0: ("depth", "sampled_nearest"), 1: ("normal", "sampled_nearest"), 2: ("color", "sampled_linear"), 3: ("c", "storage")},
+                  pc.trace(cam.width, cam.height, probes, block, float(spacing), start, length, 6, 0.2, 0, 0.01, cam.proj,
+                           cam.depth_params, sub_rays=1),
+                  groups_for(*size))], ["c"])["c"]
+
+    p00, p11, _, _ = cam.proj
+    def to_px(q):
+        return np.array([(p00 * q[0] / -q[2] * 0.5 + 0.5) * cam.width, (p11 * q[1] / -q[2] * 0.5 + 0.5) * cam.height])
+
+    reached, beyond = [], []
+    for py in range(probes[1]):
+        for px in range(probes[0]):
+            cx, cy = int((px + 0.5) * spacing), int((py + 0.5) * spacing)
+            z = g["linear_z"][cy, cx]
+            if z <= 0 or g["normal"][cy, cx, 1] < 0.9:
+                continue                                   # floor probes only
+            origin = cam.ray_dirs()[cy, cx] * z
+            origin = origin + np.array([0.0, 1.0, 0.0]) * (0.01 * z)
+            s0 = to_px(origin)
+            for dy in range(block):
+                for dx in range(block):
+                    d = oct_decode((np.array([dx, dy]) + 0.5) / block * 2.0 - 1.0)
+                    if d[1] <= 0.05 or d[2] >= -0.05:
+                        continue                           # up off the floor and away from the camera
+                    t = (-6.0 - origin[2]) / d[2]
+                    hit = origin + d * t
+                    sh = to_px(hit)
+                    if not (0 <= sh[0] < cam.width and 0 <= sh[1] < cam.height):
+                        continue
+                    dist = float(np.linalg.norm(sh - s0))
+                    a = out[py * block + dy, px * block + dx, 3]
+                    if start + 0.75 * length < dist < start + 0.97 * length:
+                        reached.append(a)
+                    elif start + 1.05 * length < dist < start + 2.0 * length:
+                        beyond.append(a)
+    assert len(reached) > 40 and len(beyond) > 40, (len(reached), len(beyond))
+    assert max(reached) < 0.5, f"{sum(a > 0.5 for a in reached)} of {len(reached)} crossings before the end missed"
+    assert min(beyond) > 0.5, f"{sum(a < 0.5 for a in beyond)} of {len(beyond)} crossings after the end counted"
 
 def test_red_wall_bleeds_onto_nearby_floor(gpu):
     cam = Camera()
@@ -480,7 +587,7 @@ def test_a_small_bright_spot_lights_the_whole_black_room(gpu, size):
     assert all(0.5 * ratio < r < 2.0 * ratio for r in per_surface.values()), per_surface
 
 
-@pytest.mark.xfail(strict=True, reason="the top level loses light: 0.80x of the truth with 4 levels, 0.87x with 3 (docs/NEXT_STEPS.md)")
+@pytest.mark.xfail(strict=True, reason="the top level loses light: 0.83x of the truth with 4 levels, 0.89x with 3 (docs/NEXT_STEPS.md)")
 def test_the_top_level_adds_light_instead_of_losing_it(gpu):
     # A fourth level only reaches further, so the room can't get darker than with three, where level 2
     # is the top and runs to the screen's edge itself. At 512 x 384 it does, on every surface.

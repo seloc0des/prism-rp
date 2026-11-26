@@ -443,6 +443,7 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 u.push_back(make_sampler_texture_uniform(0, linear_sampler, parent.texture));
                 u.push_back(make_image_uniform(1, cl.texture));
                 u.push_back(make_sampler_texture_uniform(2, nearest_sampler, depth_tex));
+                u.push_back(make_sampler_texture_uniform(3, nearest_sampler, normal_tex));
                 const godot::RID uset = godot::UniformSetCacheRD::get_cache(merge_shader, 0, u);
                 if (!uset.is_valid()) {
                     continue;
