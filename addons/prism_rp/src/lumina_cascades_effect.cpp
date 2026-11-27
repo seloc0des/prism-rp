@@ -242,6 +242,14 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
     const uint32_t gx = groups_for(size.x);
     const uint32_t gy = groups_for(size.y);
 
+    // On the custom build the screen bounce takes each pixel's albedo from the scene mirror, not the proxy.
+    godot::RID albedo_scene_set;
+    LuminaSceneMirror *mirror = LuminaSceneMirror::get_singleton();
+    if (screen_multi_bounce_enabled && mirror != nullptr && rd->has_feature(godot::RenderingDevice::SUPPORTS_RAY_QUERY) &&
+            !scene_data->get_view_projection(0).is_orthogonal() && _ensure_rt_albedo_pipeline()) {
+        albedo_scene_set = mirror->scene_uniform_set(rt_albedo_shader);
+    }
+
     for (uint32_t view = 0; view < view_count; ++view) {
         PerViewTargets &vt = view_targets[view];
         const godot::RID color_tex = scene_buffers->get_color_layer(view);
@@ -265,6 +273,12 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
         // bounces last frame's denoised GI off every pixel, reprojected onto last frame's geometry, so light
         // gains a bounce each frame.
         const bool screen_bounce = screen_multi_bounce_enabled && vt.has_last_gi && vt.has_history && !reset_requested;
+        const bool scene_albedo = screen_bounce && albedo_scene_set.is_valid();
+        if (scene_albedo) {
+            ScopedPassTimer timer("lumina_rt_albedo", godot::Color(0.40f, 0.80f, 0.50f, 1.0f));
+            rd->texture_clear(vt.scene_albedo, godot::Color(0, 0, 0, 0), 0, 1, 0, 1);   // a = 0: the ray missed
+            _trace_scene_albedo(scene_data, view, vt.scene_albedo, size, albedo_scene_set);
+        }
         {
             ScopedPassTimer timer("lumina_radiance_downsample", godot::Color(0.35f, 0.60f, 0.95f, 1.0f));
             godot::TypedArray<godot::RDUniform> cu;
@@ -275,6 +289,7 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
             cu.push_back(make_sampler_texture_uniform(4, nearest_sampler, velocity_tex));
             cu.push_back(make_sampler_texture_uniform(5, nearest_sampler, vt.geometry[vt.history_index]));
             cu.push_back(make_sampler_texture_uniform(6, nearest_sampler, normal_tex));
+            cu.push_back(make_sampler_texture_uniform(7, nearest_sampler, vt.scene_albedo));
             const godot::RID cset = godot::UniformSetCacheRD::get_cache(radiance_copy_shader, 0, cu);
             if (!cset.is_valid()) {
                 continue;
@@ -284,6 +299,7 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
             cpc.height = size.y;
             std::copy(std::begin(depth_params), std::end(depth_params), cpc.depth_params);
             cpc.bounce_gain = screen_bounce ? intensity : 0.0f;   // as the composite scales what the viewer sees
+            cpc.scene_albedo = scene_albedo ? 1.0f : 0.0f;
             dispatch_compute(rd, radiance_copy_pipeline, cset, make_push_constant_bytes(cpc), gx, gy);
 
             for (uint32_t mip = 1; mip < vt.radiance_mip_count; ++mip) {
@@ -694,15 +710,8 @@ bool LuminaCascadesCompositorEffect::_render_ray_traced_albedo(godot::RenderScen
         WARN_PRINT_ONCE("[Prism RP] Lumina: the Ray-Traced Albedo view needs ray queries (the custom Godot build, on a GPU that has them). Showing the final output.");
         return false;
     }
-    if (!rt_albedo_pipeline.is_valid()) {
-        if (rt_albedo_failed) {
-            return false;
-        }
-        rt_albedo_failed = !rd_utils::build_compute_stage(rd, godot::String(kShaderDir) + "lumina_rt_albedo.comp.glsl", "lumina_rt_albedo",
-            rt_albedo_shader, rt_albedo_pipeline);
-        if (rt_albedo_failed) {
-            return false;
-        }
+    if (!_ensure_rt_albedo_pipeline()) {
+        return false;
     }
     if (p_scene_data->get_view_projection(0).is_orthogonal()) {
         WARN_PRINT_ONCE("[Prism RP] Lumina: the Ray-Traced Albedo view needs a perspective camera. Showing the final output.");
@@ -714,41 +723,54 @@ bool LuminaCascadesCompositorEffect::_render_ray_traced_albedo(godot::RenderScen
     }
 
     ScopedPassTimer timer("lumina_rt_albedo", godot::Color(0.40f, 0.80f, 0.50f, 1.0f));
-    const godot::Transform3D cam_xf = p_scene_data->get_cam_transform();
     for (uint32_t view = 0; view < p_view_count; ++view) {
         const godot::RID color_tex = p_buffers->get_color_layer(view);
-        if (!color_tex.is_valid()) {
-            continue;
+        if (color_tex.is_valid()) {
+            _trace_scene_albedo(p_scene_data, view, color_tex, p_size, scene_set);
         }
-        godot::TypedArray<godot::RDUniform> u;
-        u.push_back(make_image_uniform(0, color_tex));
-        const godot::RID color_set = godot::UniformSetCacheRD::get_cache(rt_albedo_shader, 0, u);
-        if (!color_set.is_valid()) {
-            continue;
-        }
-
-        const godot::Projection proj = p_scene_data->get_view_projection(view);
-        const godot::Vector3 eye = cam_xf.origin + cam_xf.basis.xform(p_scene_data->get_view_eye_offset(view));
-        RtAlbedoPushConstants pc;
-        float *columns[3] = { pc.cam_x, pc.cam_y, pc.cam_z };
-        for (int32_t axis = 0; axis < 3; ++axis) {
-            const godot::Vector3 c = cam_xf.basis.get_column(axis).normalized();
-            columns[axis][0] = static_cast<float>(c.x);
-            columns[axis][1] = static_cast<float>(c.y);
-            columns[axis][2] = static_cast<float>(c.z);
-            columns[axis][3] = static_cast<float>(eye[axis]);
-        }
-        pc.proj[0] = static_cast<float>(proj.columns[0].x);
-        pc.proj[1] = static_cast<float>(proj.columns[1].y);
-        pc.proj[2] = static_cast<float>(proj.columns[2].x);
-        pc.proj[3] = static_cast<float>(proj.columns[2].y);
-        pc.size[0] = p_size.x;
-        pc.size[1] = p_size.y;
-        pc.depth_params[0] = static_cast<float>(proj.columns[3].z);
-        pc.depth_params[1] = static_cast<float>(proj.columns[2].z);
-        dispatch_compute(rd, rt_albedo_pipeline, color_set, scene_set, make_push_constant_bytes(pc), groups_for(p_size.x), groups_for(p_size.y));
     }
     return true;
+}
+
+bool LuminaCascadesCompositorEffect::_ensure_rt_albedo_pipeline() {
+    if (!rt_albedo_pipeline.is_valid() && !rt_albedo_failed) {
+        rt_albedo_failed = !rd_utils::build_compute_stage(rd, godot::String(kShaderDir) + "lumina_rt_albedo.comp.glsl", "lumina_rt_albedo",
+            rt_albedo_shader, rt_albedo_pipeline);
+    }
+    return rt_albedo_pipeline.is_valid();
+}
+
+// One camera ray per pixel of view p_view through the scene mirror, writing the albedo it hits into p_target
+// (RGBA16F, a = 1). Pixels whose ray misses keep what p_target held.
+void LuminaCascadesCompositorEffect::_trace_scene_albedo(godot::RenderSceneData *p_scene_data, uint32_t p_view,
+        const godot::RID &p_target, const godot::Vector2i &p_size, const godot::RID &p_scene_set) {
+    godot::TypedArray<godot::RDUniform> u;
+    u.push_back(make_image_uniform(0, p_target));
+    const godot::RID target_set = godot::UniformSetCacheRD::get_cache(rt_albedo_shader, 0, u);
+    if (!target_set.is_valid()) {
+        return;
+    }
+    const godot::Transform3D cam_xf = p_scene_data->get_cam_transform();
+    const godot::Projection proj = p_scene_data->get_view_projection(p_view);
+    const godot::Vector3 eye = cam_xf.origin + cam_xf.basis.xform(p_scene_data->get_view_eye_offset(p_view));
+    RtAlbedoPushConstants pc;
+    float *columns[3] = { pc.cam_x, pc.cam_y, pc.cam_z };
+    for (int32_t axis = 0; axis < 3; ++axis) {
+        const godot::Vector3 c = cam_xf.basis.get_column(axis).normalized();
+        columns[axis][0] = static_cast<float>(c.x);
+        columns[axis][1] = static_cast<float>(c.y);
+        columns[axis][2] = static_cast<float>(c.z);
+        columns[axis][3] = static_cast<float>(eye[axis]);
+    }
+    pc.proj[0] = static_cast<float>(proj.columns[0].x);
+    pc.proj[1] = static_cast<float>(proj.columns[1].y);
+    pc.proj[2] = static_cast<float>(proj.columns[2].x);
+    pc.proj[3] = static_cast<float>(proj.columns[2].y);
+    pc.size[0] = p_size.x;
+    pc.size[1] = p_size.y;
+    pc.depth_params[0] = static_cast<float>(proj.columns[3].z);
+    pc.depth_params[1] = static_cast<float>(proj.columns[2].z);
+    dispatch_compute(rd, rt_albedo_pipeline, target_set, p_scene_set, make_push_constant_bytes(pc), groups_for(p_size.x), groups_for(p_size.y));
 }
 
 bool LuminaCascadesCompositorEffect::_ensure_view_targets(const godot::Vector2i &p_size, uint32_t p_view_count) {
@@ -793,6 +815,10 @@ bool LuminaCascadesCompositorEffect::_ensure_view_targets(const godot::Vector2i 
         }
         vt.irradiance_raw = rd_utils::create_2d_texture(rd, w, h, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, rw);
         ok = ok && vt.irradiance_raw.is_valid();
+        // CAN_COPY_TO: cleared every frame before the albedo trace (texture_clear requires it).
+        vt.scene_albedo = rd_utils::create_2d_texture(rd, w, h, RD::DATA_FORMAT_R16G16B16A16_SFLOAT,
+            rw | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT);
+        ok = ok && vt.scene_albedo.is_valid();
         for (size_t i = 0; i < 2; ++i) {
             vt.history[i] = rd_utils::create_2d_texture(rd, w, h, RD::DATA_FORMAT_R16G16B16A16_SFLOAT, rw);
             vt.moments[i] = rd_utils::create_2d_texture(rd, w, h, RD::DATA_FORMAT_R16G16_SFLOAT, rw);
@@ -862,6 +888,7 @@ void LuminaCascadesCompositorEffect::_release_view_targets() {
         rd_utils::free_rid(rd, vt.radiance_mips);
         vt.radiance_mip_count = 0;
         rd_utils::free_rid(rd, vt.irradiance_raw);
+        rd_utils::free_rid(rd, vt.scene_albedo);
         for (size_t i = 0; i < 2; ++i) {
             rd_utils::free_rid(rd, vt.history[i]);
             rd_utils::free_rid(rd, vt.moments[i]);

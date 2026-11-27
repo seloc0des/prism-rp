@@ -578,12 +578,45 @@ Two fixes to it since, both with harness tests that failed before them:
 
 - **The ray-traced cache counted that light twice.** Its hits on screen read the radiance mips, which now hold last
   frame's GI bounced off each pixel, and then added albedo x the cache's irradiance as well. They add the cache's
-  light only while the screen-space bounce is off. Gate 2 hasn't run with both bounces on yet; its light levels on
-  the custom build are the check.
+  light only while the screen-space bounce is off. Gate 2 with both bounces on is below.
 - **It could run away above an intensity of 1.25.** The bounce scales by the effect's intensity, up to 4, and with
   only the albedo capped at 0.8 a closed room gains light every frame once 0.8 x intensity passes 1: 0.5 to 44,000
-  in 20 frames at intensity 4. The cap
-  now applies to albedo x intensity, and the saturated box settles at 1.77x at intensity 4, as at 1.
+  in 20 frames at intensity 4. The cap now applies to albedo x intensity, and the saturated box settles at 1.77x at
+  intensity 4, as at 1.
+
+**Measured on the 4060 Ti after #37 (2026-11-27).** Gate 2 with the custom editor, four diffuse bounces and 512
+samples, the same command as before #37:
+
+| Scene | Lumina, fitted | Before #37 | SDFGI | Lumina's light against the reference |
+| :--- | :--- | :--- | :--- | :--- |
+| Cornell box | 26.00 dB | 24.24 | 19.77 | 1.02x (0.76x before) |
+| Sponza | 31.47 dB | 32.52 | 33.61 | 1.17x (0.93x before) |
+
+The Cornell box passes and Sponza falls further behind SDFGI. Sponza alone at each of #37's commits, where the first
+and last points reproduce the full runs exactly:
+
+| Commit | Sponza | Light |
+| :--- | :--- | :--- |
+| Before #37 | 32.52 dB | 0.93x |
+| Interval-end and facing-parent fixes | 32.42 | 0.93x |
+| Lone probes | 32.04 | 0.91x |
+| One ray and fewer steps at the top | 31.85 | 0.89x |
+| Screen-space bounce | 31.25 | 1.15x |
+| The fixes after combining | 31.47 | 1.17x |
+
+The screen bounce costs Sponza most and gains the Cornell box most. With it off they score 32.11 and 24.27 dB; at half
+strength 31.90 and 25.16, with Sponza's light exactly right (1.01x). So in Sponza it puts light in the wrong places,
+not just too much. The albedo proxy was the first suspect, so the bounce now takes each pixel's albedo from the scene
+mirror where a camera ray through the pixel hits it (`lumina_rt_albedo`, the Ray-Traced Albedo view's pass), and the
+proxy elsewhere. The Cornell box then scores 25.48 dB at 1.00x the reference's light, and Sponza 31.76 dB at 1.05x
+(31.45 dB raw, up from 29.81). Sponza is still below the bounce off, so the rest of the bounce's error is screen
+space's own, repeated every bounce: it bounces light only off what is on screen and drops it where pixels come into
+view. The cost of the albedo rays, one per pixel per frame, isn't measured yet.
+
+Lumina's frame time, median of three runs, before and after #37: Cornell box 2.12 and 2.21 ms, foliage 2.39 and 2.50,
+thin geometry 1.98 and 2.66, Sponza 2.85 and 3.27, volumetrics 2.79 and 3.08. That puts four scenes over the 2.40 ms
+budget, where two were. The validation script records one frame per run and a scene's runs swung by up to 1.7 ms, so
+these differences sit inside the noise; the budget needs the several-run timing that settled it in #33.
 
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
@@ -605,15 +638,16 @@ Two fixes to it since, both with harness tests that failed before them:
      a colonnade gets 1.5x its exact light (a thickness of 0.3 instead of 0.1 brings it to 1.0x, at the cost of
      blocking light everywhere else). Screen space can't see them; the ray-traced world cache can, so it may
      explain part of what's left of the smears on Sponza's columns;
-   - measure the interval-end and facing-parent fixes (above) on the GPU: Gate 2 and Lumina's timings;
+   - time #37's changes over several runs (Gate 2 for each is above), and the albedo rays the screen bounce now traces;
    - the parallax that is left of the top level's light loss (above): its test passes with 1.2% to spare, and the
      hotspot room still gets 0.73x from four levels against 0.78x from three; then a moving wire test at 512 x 384,
      so the top level's sub-rays and steps can be judged off the GPU;
    - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
      templates;
-   - on the custom build, what is left of Sponza's 1.1 dB gap to SDFGI after the ray-traced cache (above), once the
-     screen levels' new bounces are measured: skinned, blend-shape and MultiMesh geometry in the scene mirror, Lumina's
-     real albedo instead of the albedo proxy, and a specular term so metals reflect bounced light, to finish Gate 2;
+   - on the custom build, Sponza's 1.85 dB gap to SDFGI (above): the screen bounce's own error, which still leaves it
+     0.35 dB below the bounce off; the 0.4 dB the lone probes and the cheaper top level cost it; skinned, blend-shape
+     and MultiMesh geometry in the scene mirror; the mirror's albedo in the composite too, where the proxy still
+     shades the final image; and a specular term so metals reflect bounced light, to finish Gate 2;
    - Track B wired up for Gates 3 and 4, then Gate 5.
 
 ## Custom Godot build (decided 2026-11-19)
