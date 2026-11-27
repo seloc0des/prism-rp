@@ -5,7 +5,7 @@ import pytest
 
 import pc
 from harness import Dispatch, Img, groups_for
-from scene import Camera, Plane, cornell, irradiance_truth, render
+from scene import LONE_SUPPORT, Camera, Plane, cornell, irradiance_truth, parent_support, render
 
 BASE_BLOCK = 4
 
@@ -20,13 +20,16 @@ def cascade_layout(cam, spacing, count):
     return levels
 
 
-def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefilter=True):
+def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefilter=True, top_sub_rays=1, previous=None,
+                 bounce_gain=1.0):
     """[radiance mip chain] -> trace every level -> merge top-down -> integrate. Returns irradiance (h, w, 4).
     As in the C++, mip 0 of the chain is the colour buffer plus linear depth and every level traces the
     whole chain, each hit at the mip that matches its cone's footprint (prefilter=False traces the colour
-    buffer alone, so every hit is sampled at full resolution), level 0 traces one ray per direction (unless it
-    is also the top) and the others 2 x 2, and the top level runs on to the edge of the screen with twice the
-    steps."""
+    buffer alone, so every hit is sampled at full resolution). Level 0 below the top traces one ray per
+    direction, and so does the top when it is level 3 (top_sub_rays per axis there); every other level traces
+    2 x 2, a lone level 0 and a lower top included. The top level runs on to the edge of the screen. `previous` is last frame's GI for a camera that stood still: the
+    radiance copy bounces it once more off every pixel (multi-bounce), as the C++ does with the denoised GI, scaled
+    by bounce_gain (the C++ passes the effect's intensity)."""
     levels = cascade_layout(cam, spacing, count)
     mips = int(np.log2(max(cam.width, cam.height))) + 1
     images = {
@@ -38,10 +41,21 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefi
     dispatches = []
     if prefilter:
         images["radiance"] = Img("rgba16f", cam.width, cam.height, mips=mips)
+        bindings = {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("radiance", "storage", 0)}
+        if previous is None:   # bounce_gain 0 never reads these
+            bindings |= {3: ("color", "sampled_linear"), 4: ("color", "sampled_nearest"), 5: ("color", "sampled_linear"),
+                         6: ("color", "sampled_nearest")}
+        else:
+            n = g["normal"][..., :3] * 2.0 - 1.0
+            images["prev_gi"] = Img("rgba16f", data=np.concatenate([previous[..., :3], np.ones(previous.shape[:2] + (1,))], axis=-1))
+            images["velocity"] = Img("rg16f", data=np.zeros((cam.height, cam.width, 2)))
+            images["prev_geo"] = Img("rgba16f", data=np.concatenate([n, g["linear_z"][..., None]], axis=-1))
+            bindings |= {3: ("prev_gi", "sampled_linear"), 4: ("velocity", "sampled_nearest"), 5: ("prev_geo", "sampled_nearest"),
+                         6: ("normal", "sampled_nearest")}
         dispatches.append(Dispatch(
-            "lumina/lumina_radiance_copy.comp.glsl",
-            {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("radiance", "storage", 0)},
-            pc.radiance_copy(cam.width, cam.height, cam.depth_params), groups_for(cam.width, cam.height)))
+            "lumina/lumina_radiance_copy.comp.glsl", bindings,
+            pc.radiance_copy(cam.width, cam.height, cam.depth_params, 0.0 if previous is None else bounce_gain),
+            groups_for(cam.width, cam.height)))
         for m in range(1, mips):
             size = (max(1, cam.width >> m), max(1, cam.height >> m))
             dispatches.append(Dispatch(
@@ -56,14 +70,15 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefi
             {0: ("depth", "sampled_nearest"), 1: ("normal", "sampled_nearest"), 2: (radiance, "sampled_linear"), 3: (f"c{i}", "storage")},
             pc.trace(cam.width, cam.height, lv["probes"], lv["block"], float(lv["spacing"]),
                      spacing * (scale - 1) / 3.0, spacing * scale if i + 1 < count else -1.0,
-                     steps if i + 1 < count else 2 * steps, thickness, 0, 0.01, cam.proj, cam.depth_params,
-                     sub_rays=1 if i == 0 and i + 1 < count else 2),
+                     steps, thickness, 0, 0.01, cam.proj, cam.depth_params,
+                     sub_rays=(top_sub_rays if i >= 3 else 2) if i + 1 == count else (1 if i == 0 else 2)),
             groups_for(*lv["size"])))
     for i in range(count - 2, -1, -1):
         lv, parent = levels[i], levels[i + 1]
         dispatches.append(Dispatch(
             "lumina/lumina_rc_merge.comp.glsl",
-            {0: (f"c{i + 1}", "sampled_linear"), 1: (f"c{i}", "storage"), 2: ("depth", "sampled_nearest")},
+            {0: (f"c{i + 1}", "sampled_linear"), 1: (f"c{i}", "storage"), 2: ("depth", "sampled_nearest"),
+             3: ("normal", "sampled_nearest")},
             pc.merge(lv["probes"], parent["probes"], lv["block"], parent["block"], float(lv["spacing"]), float(parent["spacing"]),
                      (cam.width, cam.height), cam.depth_params),
             groups_for(*lv["size"])))
@@ -168,7 +183,7 @@ def test_radiance_copy_stores_colour_and_linear_depth(gpu):
     color[~floor, :3] = (0.3, 0.6, 1.0)               # a background colour on the sky
     out = gpu.run({"color": Img("rgba16f", data=color), "depth": Img("r32f", data=g["depth"]), "dst": Img("rgba16f", 32, 24)},
                   [Dispatch("lumina/lumina_radiance_copy.comp.glsl",
-                            {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("dst", "storage")},
+                            {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("dst", "storage"), 3: ("color", "sampled_linear"), 4: ("color", "sampled_nearest"), 5: ("color", "sampled_linear"), 6: ("color", "sampled_nearest")},
                             pc.radiance_copy(32, 24, cam.depth_params), groups_for(32, 24))],
                   ["dst"])["dst"]
     assert floor.sum() > 50 and (~floor).sum() > 50
@@ -233,9 +248,10 @@ def test_merge_averages_each_parent_probes_2x2_directions_and_blends_across_prob
     cam = Camera(width=56, height=40)
     flat = render(cam, [Plane((0, 0, -4), (0, 0, 1), (1, 1, 1))])   # one depth everywhere: every depth weight is 1
     out = gpu.run(
-        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=flat["depth"])},
+        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=flat["depth"]), "normal": Img("rgba8", data=flat["normal"])},
         [Dispatch("lumina/lumina_rc_merge.comp.glsl",
-                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest"),
+                   3: ("normal", "sampled_nearest")},
                   pc.merge(probes, parent_probes, block, parent_block, spacing, parent_spacing, (cam.width, cam.height), cam.depth_params),
                   groups_for(*size))], ["lvl"])["lvl"]
 
@@ -268,13 +284,45 @@ def test_merge_combines_interval_transmittance_and_parent(gpu):
     cam = Camera(width=32, height=32)
     flat = render(cam, [Plane((0, 0, -4), (0, 0, 1), (1, 1, 1))])   # one depth everywhere: plain bilinear
     out = gpu.run(
-        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=flat["depth"])},
+        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=flat["depth"]), "normal": Img("rgba8", data=flat["normal"])},
         [Dispatch("lumina/lumina_rc_merge.comp.glsl",
-                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest"),
+                   3: ("normal", "sampled_nearest")},
                   pc.merge(probes, parent_probes, block, parent_block, 8.0, 16.0, (cam.width, cam.height), cam.depth_params),
                   groups_for(*size))], ["lvl"])["lvl"]
     np.testing.assert_allclose(out[:, : size[0] // 2], np.broadcast_to((0.2, 0.4, 0.6, 0.5), out[:, : size[0] // 2].shape), atol=2e-3)
     np.testing.assert_allclose(out[:, size[0] // 2:], np.broadcast_to((1.0, 0.5, 0.25, 0.0), out[:, size[0] // 2:].shape), atol=2e-3)
+
+
+def test_merge_gives_a_lone_probe_no_parent_light(gpu):
+    # A probe whose parents can't stand in for it traced on to the edge of the screen by itself and hands on what its
+    # rays left clear, for the world cache to light where there is one (lumina_ws_merge.comp.glsl). The merge keeps
+    # its parents' light from it, so the card fix holds whether or not a world merge ran. Every other probe takes
+    # its parents' light through its transmittance. Floor probes at 128 x 96, three in four of them lone.
+    cam = Camera(width=128, height=96)
+    g = render(cam, [Plane((0, -1, 0), (0, 1, 0), (1.0, 1.0, 1.0)), Plane((0, 0, -6), (0, 0, 1), (1.0, 1.0, 1.0))])
+    spacing, block = 8, 4
+    support = parent_support(g["linear_z"], spacing)
+    lone = support < LONE_SUPPORT
+    probes = lone.shape[::-1]
+    parent_probes = ((cam.width + 2 * spacing - 1) // (2 * spacing), (cam.height + 2 * spacing - 1) // (2 * spacing))
+    size = (probes[0] * block, probes[1] * block)
+    parent = np.zeros((parent_probes[1] * 2 * block, parent_probes[0] * 2 * block, 4))
+    parent[...] = (0.0, 0.7, 0.0, 1.0)
+    level = np.zeros((size[1], size[0], 4))
+    level[...] = (0.2, 0.0, 0.0, 0.5)
+    out = gpu.run(
+        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"])},
+        [Dispatch("lumina/lumina_rc_merge.comp.glsl",
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest"),
+                   3: ("normal", "sampled_nearest")},
+                  pc.merge(probes, parent_probes, block, 2 * block, float(spacing), 2.0 * spacing, (cam.width, cam.height), cam.depth_params),
+                  groups_for(*size))], ["lvl"])["lvl"]
+    per_probe = out.reshape(probes[1], block, probes[0], block, 4).transpose(0, 2, 1, 3, 4)
+    others = ~lone & ~np.isnan(support)
+    assert lone.sum() > 20 and others.sum() > 20
+    np.testing.assert_allclose(per_probe[lone], np.broadcast_to((0.2, 0.0, 0.0, 0.0), per_probe[lone].shape), atol=2e-3)
+    np.testing.assert_allclose(per_probe[others], np.broadcast_to((0.2, 0.35, 0.0, 0.5), per_probe[others].shape), atol=2e-3)
 
 
 def test_merge_does_not_take_parents_from_another_depth(gpu):
@@ -293,15 +341,144 @@ def test_merge_does_not_take_parents_from_another_depth(gpu):
     parent[:, psize[0] // 2:] = (5.0, 0.0, 0.0, 1.0)      # parent probe on the near half: bright red
     level = np.zeros((size[1], size[0], 4)); level[..., 3] = 1.0   # every interval clear: all parent
     out = gpu.run(
-        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=g["depth"])},
+        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"])},
         [Dispatch("lumina/lumina_rc_merge.comp.glsl",
-                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest")},
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest"),
+                   3: ("normal", "sampled_nearest")},
                   pc.merge(probes, parent_probes, block, parent_block, 8.0, 16.0, (cam.width, cam.height), cam.depth_params),
                   groups_for(*size))], ["lvl"])["lvl"]
     # Child probe column 1 (centre x = 12 px) is on the far half but between the two parent probes.
     far_child = out[:, 1 * block:(1 + 1) * block, 0]
     assert far_child.max() < 0.2, far_child.max()
 
+
+
+def oct_decode(e):
+    """lumina_oct_decode: [-1, 1]^2 -> unit direction."""
+    v = np.array([e[0], e[1], 1.0 - abs(e[0]) - abs(e[1])])
+    if v[2] < 0.0:
+        v[:2] = (1.0 - np.abs(v[[1, 0]])) * np.where(v[:2] >= 0.0, 1.0, -1.0)
+    return v / np.linalg.norm(v)
+
+
+def test_merge_ignores_parents_whose_surface_faces_away_from_the_direction(gpu):
+    # A parent probe on a wall traces a direction pointing into the wall from behind its own surface and
+    # finds nothing, so a floor probe beside it inherited "empty and black" for every direction into the
+    # wall. With one depth everywhere, the left half of the screen faces +z and the right half +x; the
+    # right parent's answer only counts for directions on its own side.
+    probes, parent_probes = (4, 4), (2, 2)
+    block, parent_block = 4, 8
+    size = (probes[0] * block, probes[1] * block)
+    psize = (parent_probes[0] * parent_block, parent_probes[1] * parent_block)
+    cam = Camera(width=32, height=32)
+    flat = render(cam, [Plane((0, 0, -4), (0, 0, 1), (1, 1, 1))])
+    normal = flat["normal"].copy()
+    normal[:, 16:, :3] = (1.0, 0.5, 0.5)                   # +x, encoded
+    parent = np.zeros((psize[1], psize[0], 4))
+    parent[:, : psize[0] // 2] = (0.1, 0.1, 0.1, 1.0)     # parent probe facing +z
+    parent[:, psize[0] // 2:] = (5.0, 0.0, 0.0, 1.0)      # parent probe facing +x: bright red
+    level = np.zeros((size[1], size[0], 4)); level[..., 3] = 1.0   # every interval clear: all parent
+    out = gpu.run(
+        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level),
+         "depth": Img("r32f", data=flat["depth"]), "normal": Img("rgba8", data=normal)},
+        [Dispatch("lumina/lumina_rc_merge.comp.glsl",
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest"),
+                   3: ("normal", "sampled_nearest")},
+                  pc.merge(probes, parent_probes, block, parent_block, 8.0, 16.0, (cam.width, cam.height), cam.depth_params),
+                  groups_for(*size))], ["lvl"])["lvl"]
+    # Child probe column 1 (centre x = 12 px) faces +z, a quarter of the way to the +x parent.
+    away, toward = [], []
+    for dy in range(block):
+        for dx in range(block):
+            d = oct_decode((np.array([dx, dy]) + 0.5) / block * 2.0 - 1.0)
+            if d[2] <= 0.0:
+                continue        # into this probe's own surface: both parents face away, the depth blend is used
+            red = out[1 * block + dy, 1 * block + dx, 0]
+            (away if d[0] < 0.0 else toward).append(red)
+    assert away and toward
+    np.testing.assert_allclose(away, 0.1, atol=2e-3)                    # the +x parent left out
+    np.testing.assert_allclose(toward, 0.75 * 0.1 + 0.25 * 5.0, rtol=2e-3)   # plain bilinear blend
+
+
+def test_a_lone_probe_hands_on_what_its_rays_leave_clear(gpu):
+    # A probe whose parents can't stand in for it traces on to the edge of the screen by itself. It hands on its
+    # rays' real transmittance: the world merge lights what they left clear (lumina_ws_merge.comp.glsl), the only
+    # way light from behind the camera reaches it, and the screen merge gives it no parent light. Floor probes at
+    # 128 x 96, three in four of them lone.
+    cam = Camera(width=128, height=96)
+    g = render(cam, [Plane((0, -1, 0), (0, 1, 0), (1.0, 1.0, 1.0)), Plane((0, 0, -6), (0, 0, 1), (1.0, 1.0, 1.0))])
+    spacing, block = 8, 8
+    lone = parent_support(g["linear_z"], spacing) < LONE_SUPPORT
+    size = (lone.shape[1] * block, lone.shape[0] * block)
+    out = gpu.run(
+        {"depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"]),
+         "color": Img("rgba16f", data=g["color"]), "c": Img("rgba16f", *size)},
+        [Dispatch("lumina/lumina_rc_trace.comp.glsl",
+                  {0: ("depth", "sampled_nearest"), 1: ("normal", "sampled_nearest"), 2: ("color", "sampled_linear"), 3: ("c", "storage")},
+                  pc.trace(cam.width, cam.height, lone.shape[::-1], block, float(spacing), 8.0, 40.0, 6, 0.2, 0, 0.01,
+                           cam.proj, cam.depth_params, sub_rays=1),
+                  groups_for(*size))], ["c"])["c"]
+    per_probe = out.reshape(lone.shape[0], block, lone.shape[1], block, 4).transpose(0, 2, 1, 3, 4)
+    assert lone.sum() > 20, lone.sum()
+    assert per_probe[lone][..., 3].max() > 0.5            # rays that left the screen with nothing in the way
+
+
+def test_a_level_finds_every_surface_its_ray_crosses_before_the_interval_ends(gpu):
+    # Steps sit at (i + jitter) / steps of the interval, so the last one falls short of its end. A ray that
+    # crossed a surface after it was missed by its own level, and the next level started behind the
+    # surface, saw no crossing and called the direction clear and black: every level boundary lost hits.
+    # Floor probes look at a back wall; each direction's crossing is placed on screen exactly, and the
+    # level must hit whatever it reaches before the interval's end, and nothing after. At 512 x 384 every
+    # floor probe's parents can stand in for it; at 128 x 96 three in four can't, and those trace on past
+    # the interval's end by themselves (lumina_rc_trace.comp.glsl).
+    cam = Camera(*TOP_LEVEL_SIZE)
+    planes = [Plane((0, -1, 0), (0, 1, 0), (1.0, 1.0, 1.0)), Plane((0, 0, -6), (0, 0, 1), (1.0, 1.0, 1.0))]
+    g = render(cam, planes)
+    spacing, block, start, length = 8, 8, 8.0, 40.0
+    probes = (cam.width // spacing, cam.height // spacing)
+    size = (probes[0] * block, probes[1] * block)
+    out = gpu.run(
+        {"depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"]),
+         "color": Img("rgba16f", data=g["color"]), "c": Img("rgba16f", *size)},
+        [Dispatch("lumina/lumina_rc_trace.comp.glsl",
+                  {0: ("depth", "sampled_nearest"), 1: ("normal", "sampled_nearest"), 2: ("color", "sampled_linear"), 3: ("c", "storage")},
+                  pc.trace(cam.width, cam.height, probes, block, float(spacing), start, length, 6, 0.2, 0, 0.01, cam.proj,
+                           cam.depth_params, sub_rays=1),
+                  groups_for(*size))], ["c"])["c"]
+
+    p00, p11, _, _ = cam.proj
+    def to_px(q):
+        return np.array([(p00 * q[0] / -q[2] * 0.5 + 0.5) * cam.width, (p11 * q[1] / -q[2] * 0.5 + 0.5) * cam.height])
+
+    reached, beyond = [], []
+    for py in range(probes[1]):
+        for px in range(probes[0]):
+            cx, cy = int((px + 0.5) * spacing), int((py + 0.5) * spacing)
+            z = g["linear_z"][cy, cx]
+            if z <= 0 or g["normal"][cy, cx, 1] < 0.9:
+                continue                                   # floor probes only
+            origin = cam.ray_dirs()[cy, cx] * z
+            origin = origin + np.array([0.0, 1.0, 0.0]) * (0.01 * z)
+            s0 = to_px(origin)
+            for dy in range(block):
+                for dx in range(block):
+                    d = oct_decode((np.array([dx, dy]) + 0.5) / block * 2.0 - 1.0)
+                    if d[1] <= 0.05 or d[2] >= -0.05:
+                        continue                           # up off the floor and away from the camera
+                    t = (-6.0 - origin[2]) / d[2]
+                    hit = origin + d * t
+                    sh = to_px(hit)
+                    if not (0 <= sh[0] < cam.width and 0 <= sh[1] < cam.height):
+                        continue
+                    dist = float(np.linalg.norm(sh - s0))
+                    a = out[py * block + dy, px * block + dx, 3]
+                    if start + 0.75 * length < dist < start + 0.97 * length:
+                        reached.append(a)
+                    elif start + 1.05 * length < dist < start + 2.0 * length:
+                        beyond.append(a)
+    assert len(reached) > 40 and len(beyond) > 40, (len(reached), len(beyond))
+    assert max(reached) < 0.5, f"{sum(a > 0.5 for a in reached)} of {len(reached)} crossings before the end missed"
+    assert min(beyond) > 0.5, f"{sum(a < 0.5 for a in beyond)} of {len(beyond)} crossings after the end counted"
 
 def test_red_wall_bleeds_onto_nearby_floor(gpu):
     cam = Camera()
@@ -344,6 +521,35 @@ def test_light_does_not_leak_through_the_back_of_objects(gpu):
     red_behind = float(irr[behind, 0].mean())
     assert red_front > 0.05                      # the lit face does bounce onto the floor in front
     assert red_behind < 0.25 * red_front, (red_front, red_behind)
+
+
+@pytest.mark.parametrize("size", [(128, 96), (256, 192)])
+def test_floor_behind_a_card_gets_no_light_from_its_front_at_any_resolution(gpu, size):
+    # The card scene above passes at 96 x 64 by luck of where the probes fall. At 128 x 96 the level-1
+    # probes on the floor sit 0.1 m in front of the card and see its lit face, the level-0 probes behind it
+    # match none of their parents' depths, and the merge normalised the least bad parent to full weight:
+    # 7.3x the exact light behind the card (3.5x at 256 x 192). Measured against the exact answer, not
+    # zero: the grey floor behind the card has light of its own from the back wall. Shipping settings.
+    cam = Camera(width=size[0], height=size[1])
+    floor = (0.05, 0.05, 0.05)
+    planes = [
+        Plane((0, -1, 0), (0, 1, 0), floor),
+        Plane((0, 0, -7), (0, 0, 1), floor),
+        Plane((0, 0, -3.5), (0, 0, 1), (4.0, 0.0, 0.0), bounds=((-0.6, 0.6), (-1.0, 0.6), (-4.0, -3.0))),
+    ]
+    g = render(cam, planes)
+    irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1)[..., 0]
+    truth = irradiance_truth(cam, planes)[..., 0]
+    pos = cam.ray_dirs() * g["linear_z"][..., None]
+    on_floor = (g["normal"][..., 1] > 0.9) & (g["linear_z"] > 0)
+    beside = (np.abs(pos[..., 0]) > 0.7) & (np.abs(pos[..., 0]) < 1.6)
+    front = on_floor & beside & (pos[..., 2] > -3.0) & (pos[..., 2] < -2.0)
+    behind = on_floor & beside & (pos[..., 2] > -5.5) & (pos[..., 2] < -4.2)
+    assert front.sum() > 20 and behind.sum() > 20
+    ratio_behind = float(irr[behind].mean() / truth[behind].mean())
+    ratio_front = float(irr[front].mean() / truth[front].mean())
+    assert 0.5 < ratio_behind < 1.5, ratio_behind   # no card light, and not darker than the floor's own
+    assert 0.5 < ratio_front < 1.5, ratio_front     # the lit face still bounces onto the floor in front
 
 
 def rect_irradiance(point, normal, a, b, c, n=64):
@@ -419,31 +625,124 @@ def black_room(extra):
             Plane((-1.5, 0, 0), (1, 0, 0), black), Plane((0, 0, -6), (0, 0, 1), black)] + extra
 
 
-def light_in_black_room(gpu, cam, planes):
+def light_in_black_room(gpu, cam, planes, count=4):
     """Lumina's irradiance and the exact one-bounce truth (red channel), and the mask of dark surface
     pixels, which receive all their light from the bright planes. Shipping defaults: 4 levels, 6 steps."""
     g = render(cam, planes)
-    irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1)[..., 0]
+    irr = run_cascades(gpu, cam, g, count=count, steps=6, thickness=0.1)[..., 0]
     dark = (g["linear_z"] > 0) & (g["color"][..., 0] == 0.0)
     return irr, irradiance_truth(cam, planes)[..., 0], dark, g
 
 
-def test_a_bright_wall_lights_a_black_room_as_much_as_it_should(gpu):
+# Shipping layout (8 px spacing, 4 levels): the top level's interval starts 8 * (4^3 - 1) / 3 = 168 px from
+# its probe, past the edge of a 128 x 96 frame, so small scenes never run it. At 512 x 384 it traces a
+# good part of the frame, the way it does at 1080p.
+TOP_LEVEL_SIZE = (512, 384)
+SIZES = pytest.mark.parametrize("size", [(128, 96), TOP_LEVEL_SIZE], ids=lambda s: f"{s[0]}x{s[1]}")
+
+
+def bright_wall_room():
+    """The far part of the right wall glows; everything else is black."""
+    big = 50.0
+    return black_room([
+        Plane((1.5, 0, 0), (-1, 0, 0), (1.0, 1.0, 1.0), bounds=((-big, big), (-big, big), (-6.5, -3.0))),
+        Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0), bounds=((-big, big), (-big, big), (-3.0, big))),
+    ])
+
+
+def small_spot_room():
+    """A 0.3 m patch on the back wall is the only light; everything else is black."""
+    x0 = 0.3
+    return black_room([
+        Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0)),
+        Plane((x0, 0.3, -5.99), (0, 0, 1), (40.0, 40.0, 40.0), bounds=((x0 - 0.15, x0 + 0.15), (0.15, 0.45), (-6.5, -5.5))),
+    ])
+
+
+@SIZES
+def test_a_bright_wall_lights_a_black_room_as_much_as_it_should(gpu, size):
     # The far part of the right wall glows; everything else is black. A firefly clamp in integrate (any
     # direction much brighter than the probe's mean cut down) cuts this wall's real light too: 0.50x of
     # the truth with one at 8x the mean. What Lumina misses without one (about 0.7x) is mostly near the
     # crease and at the wall's edges, where screen-space mips mix the wall with its black neighbours.
-    cam = Camera(width=128, height=96)
-    big = 50.0
-    irr, truth, dark, _ = light_in_black_room(gpu, cam, black_room([
-        Plane((1.5, 0, 0), (-1, 0, 0), (1.0, 1.0, 1.0), bounds=((-big, big), (-big, big), (-6.5, -3.0))),
-        Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0), bounds=((-big, big), (-big, big), (-3.0, big))),
-    ]))
+    cam = Camera(*size)
+    irr, truth, dark, _ = light_in_black_room(gpu, cam, bright_wall_room())
     ratio = float(irr[dark].mean() / truth[dark].mean())
     assert 0.6 < ratio < 1.2, ratio
 
 
-def test_a_small_bright_spot_lights_the_whole_black_room(gpu):
+def test_the_top_level_carries_light_across_the_room(gpu):
+    # The room above at TOP_LEVEL_SIZE, judged on the left wall alone. It sees the bright right wall from
+    # 3 m away, mostly through level 3: 1.02x of the exact light (0.39x with level 3's trace skipped, before
+    # the interval-end fix). The room-wide mean misses a top level that stops halfway to the screen edge.
+    cam = Camera(*TOP_LEVEL_SIZE)
+    irr, truth, dark, g = light_in_black_room(gpu, cam, bright_wall_room())
+    left = dark & (g["normal"][..., 0] > 0.9)
+    assert left.sum() > 1000, left.sum()
+    ratio_left = float(irr[left].mean() / truth[left].mean())
+    assert 0.7 < ratio_left < 1.3, ratio_left
+
+
+def test_the_top_level_lights_steadily_from_a_moving_patch(gpu):
+    # The moving-patch test above at a size where the top level traces: it carries about 44% of the walls'
+    # light here (0.72x of the exact light, 0.40x with its trace skipped). The top level traces one ray
+    # per direction, a quarter of 2 x 2's cost; measured, it flickers 0.035 against 2 x 2's 0.038, and
+    # lights the room as brightly. Shipping settings, black room, patch moved a few centimetres at a time.
+    cam = Camera(*TOP_LEVEL_SIZE)
+    frames = []
+    for i, dx in enumerate(np.linspace(0.0, 0.12, 5)):
+        x0 = 0.3 + dx
+        planes = black_room([
+            Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0)),
+            Plane((x0, 0.3, -5.99), (0, 0, 1), (40.0, 40.0, 40.0), bounds=((x0 - 0.15, x0 + 0.15), (0.15, 0.45), (-6.5, -5.5))),
+        ])
+        g = render(cam, planes)
+        walls = (g["linear_z"] > 0) & (g["color"][..., 0] < 1.0)
+        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1)[..., 0]
+        if i == 0:
+            ratio = float(irr[walls].mean() / irradiance_truth(cam, planes)[..., 0][walls].mean())
+            assert 0.6 < ratio < 1.2, ratio
+        frames.append(np.where(walls, irr, np.nan))
+    stack = np.stack(frames)
+    flicker = float(np.nanmean(np.nanstd(stack, axis=0)) / np.nanmean(stack))
+    assert flicker < 0.05, flicker
+
+
+def box(x0, x1, z0, z1, y0=-1.0, y1=1.5, color=(0.0, 0.0, 0.0)):
+    """The four sides of an upright box (no top or bottom), facing out."""
+    b = ((x0, x1), (y0, y1), (z0, z1))
+    return [Plane((0, 0, z1), (0, 0, 1), color, bounds=b), Plane((0, 0, z0), (0, 0, -1), color, bounds=b),
+            Plane((x0, 0, 0), (-1, 0, 0), color, bounds=b), Plane((x1, 0, 0), (1, 0, 0), color, bounds=b)]
+
+
+def test_a_row_of_thin_pillars_shades_the_room_as_much_as_it_should(gpu):
+    # The back wall glows and a row of seven black pillars 0.15 m wide stands across the room in front of
+    # it; the near half of the room sees the wall through the gaps. Top-level rays cross the pillars a few
+    # dozen pixels wide between steps far apart, and a ray that skips one lets its light through. The
+    # pillars should cut the near half's light as much as they do exactly (to 0.47x). Measured: 12
+    # top-level steps let 1.23x the exact share through, 6 steps 1.10x (1.08x and 0.94x at 1024 x 768).
+    cam = Camera(*TOP_LEVEL_SIZE)
+    lit_wall = Plane((0, 0, -5.99), (0, 0, 1), (1.0, 1.0, 1.0), bounds=((-1.5, 1.5), (-1.0, 1.5), (-6.5, -5.5)))
+    pillars = [p for xc in np.arange(-1.2, 1.25, 0.4) for p in box(xc - 0.075, xc + 0.075, -4.075, -3.925)]
+    y, x = np.mgrid[0:cam.height, 0:cam.width]
+    sample = (y % 2 == 0) & (x % 2 == 0)   # the exact answer at every fourth pixel keeps the test quick
+    shares = []
+    for planes in (black_room([Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0)), lit_wall]),
+                   black_room([Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0)), lit_wall] + pillars)):
+        g = render(cam, planes)
+        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1)[..., 0]
+        near = sample & (g["linear_z"] > 0) & (g["linear_z"] < 3.5) & (g["color"][..., 0] == 0.0)
+        truth = irradiance_truth(cam, planes, pixels=near)[..., 0]
+        shares.append((float(irr[near].mean()), float(truth[near].mean())))
+    (lumina_open, truth_open), (lumina_pillars, truth_pillars) = shares
+    exact_share = truth_pillars / truth_open
+    assert exact_share < 0.6, exact_share   # the pillars do cast a real shadow
+    leak = (lumina_pillars / lumina_open) / exact_share
+    assert leak < 1.2, leak
+
+
+@SIZES
+def test_a_small_bright_spot_lights_the_whole_black_room(gpu, size):
     # A 0.3 m patch, about 4 px on screen, is the only light. Sampled at full resolution, the coarse
     # levels' fixed directions hit it at full strength or miss it, so a few surfaces get it all and the
     # floor and ceiling almost none; a firefly clamp cuts most of the rest. Tracing each hit at the mip
@@ -451,18 +750,110 @@ def test_a_small_bright_spot_lights_the_whole_black_room(gpu):
     # only about 32 px wide here, so coarse texels around the patch take in the nearer side walls, floor
     # and ceiling, and the trace steps down to sharper mips to keep from leaking light past silhouettes
     # (see the card test above); the coarse levels' 2 x 2 sub-rays per direction need less blur and keep it lit.
-    cam = Camera(width=128, height=96)
-    x0 = 0.3
-    irr, truth, dark, g = light_in_black_room(gpu, cam, black_room([
-        Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0)),
-        Plane((x0, 0.3, -5.99), (0, 0, 1), (40.0, 40.0, 40.0), bounds=((x0 - 0.15, x0 + 0.15), (0.15, 0.45), (-6.5, -5.5))),
-    ]))
+    # (Pixel sizes are at 128 x 96; at 512 x 384 everything is four times wider and the top level runs.)
+    cam = Camera(*size)
+    irr, truth, dark, g = light_in_black_room(gpu, cam, small_spot_room())
     ratio = float(irr[dark].mean() / truth[dark].mean())
     assert 0.6 < ratio < 1.2, ratio
     n = g["normal"][..., :3] * 2.0 - 1.0
     surfaces = {"floor": n[..., 1] > 0.9, "ceiling": n[..., 1] < -0.9, "left wall": n[..., 0] > 0.9, "right wall": n[..., 0] < -0.9}
     per_surface = {k: float(irr[m & dark].mean() / truth[m & dark].mean()) for k, m in surfaces.items()}
     assert all(0.5 * ratio < r < 2.0 * ratio for r in per_surface.values()), per_surface
+
+
+@pytest.mark.parametrize("count", [2, 3])
+def test_a_small_bright_spot_lights_the_room_with_fewer_levels_too(gpu, count):
+    # cascade_count runs from 1 to 4. With fewer than four the top level has 256 directions or fewer, and one ray
+    # per direction there let the patch slip between them: 0.38x of the exact light with two levels and 0.58x with
+    # three, against 0.68x and 0.78x with 2 x 2.
+    cam = Camera(*TOP_LEVEL_SIZE)
+    irr, truth, dark, _ = light_in_black_room(gpu, cam, small_spot_room(), count=count)
+    ratio = float(irr[dark].mean() / truth[dark].mean())
+    assert 0.6 < ratio < 1.2, ratio
+
+
+def test_the_top_level_adds_light_instead_of_losing_it(gpu):
+    # A fourth level only reaches further, so the room can't get darker than with three, where level 2
+    # is the top and runs to the screen's edge itself. At 512 x 384 it did, on every surface (0.83x of the
+    # truth against 0.89x). The interval-end and facing-parent fixes and the top level's one-ray trace
+    # bring it to 0.876x against 0.886x, inside the bar; parallax is what's left (docs/NEXT_STEPS.md). With
+    # 1.2% to spare, a small change to the trace can tip it: check the margin before calling a failure a
+    # regression.
+    cam = Camera(*TOP_LEVEL_SIZE)
+    planes = bright_wall_room()
+    three, truth, dark, _ = light_in_black_room(gpu, cam, planes, count=3)
+    four = light_in_black_room(gpu, cam, planes, count=4)[0]
+    ratio3 = float(three[dark].mean() / truth[dark].mean())
+    ratio4 = float(four[dark].mean() / truth[dark].mean())
+    assert ratio4 > 0.97 * ratio3, (ratio3, ratio4)
+
+
+def test_light_does_not_leak_through_the_back_of_objects_with_the_top_level(gpu):
+    # The card test above at shipping settings, in a frame large enough for the top level to trace. The
+    # floor behind the card still gets the grey floor and back wall's own light, so the leak is measured
+    # against the exact answer rather than against zero.
+    cam = Camera(*TOP_LEVEL_SIZE)
+    floor = (0.05, 0.05, 0.05)
+    planes = [
+        Plane((0, -1, 0), (0, 1, 0), floor),
+        Plane((0, 0, -7), (0, 0, 1), floor),
+        Plane((0, 0, -3.5), (0, 0, 1), (4.0, 0.0, 0.0), bounds=((-0.6, 0.6), (-1.0, 0.6), (-4.0, -3.0))),
+    ]
+    g = render(cam, planes)
+    irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1)[..., 0]
+    truth = irradiance_truth(cam, planes)[..., 0]
+    pos = cam.ray_dirs() * g["linear_z"][..., None]
+    on_floor = (g["normal"][..., 1] > 0.9) & (g["linear_z"] > 0)
+    beside = (np.abs(pos[..., 0]) > 0.7) & (np.abs(pos[..., 0]) < 1.6)
+    front = on_floor & beside & (pos[..., 2] > -3.0) & (pos[..., 2] < -2.0)
+    behind = on_floor & beside & (pos[..., 2] > -5.5) & (pos[..., 2] < -4.2)
+    assert front.sum() > 300 and behind.sum() > 300
+    lit = float(truth[front].mean())
+    assert float(irr[front].mean()) > 0.5 * lit                        # the lit face does bounce onto the floor in front
+    leak = float(irr[behind].mean() - truth[behind].mean())
+    assert leak < 0.25 * lit, (leak, lit)
+
+
+def test_light_bounces_more_than_once(gpu):
+    # Grey walls of albedo 0.5 (what the albedo proxy guesses for them) and the far part of the right wall lit.
+    # Godot's colour buffer holds direct light only, so on its own Lumina traces one bounce: 0.49x of the
+    # exact light with every bounce counted. Bouncing last frame's GI off every pixel adds one each frame:
+    # 0.78x by frame 4 (0.88x is what one bounce gets of one bounce's exact light: the rest is off screen).
+    cam = Camera(width=128, height=96)
+    big, grey, black = 50.0, (0.5, 0.5, 0.5), (0.0, 0.0, 0.0)
+    planes = [
+        Plane((0, -1, 0), (0, 1, 0), black, albedo=grey), Plane((0, 1.5, 0), (0, -1, 0), black, albedo=grey),
+        Plane((-1.5, 0, 0), (1, 0, 0), black, albedo=grey), Plane((0, 0, -6), (0, 0, 1), black, albedo=grey),
+        Plane((1.5, 0, 0), (-1, 0, 0), (1.0, 1.0, 1.0), bounds=((-big, big), (-big, big), (-6.5, -3.0)), albedo=grey),
+        Plane((1.5, 0, 0), (-1, 0, 0), black, bounds=((-big, big), (-big, big), (-3.0, big)), albedo=grey),
+    ]
+    g = render(cam, planes)
+    y, x = np.mgrid[0:cam.height, 0:cam.width]
+    dark = (g["linear_z"] > 0) & (g["color"][..., 0] == 0.0) & (y % 2 == 0) & (x % 2 == 0)   # every fourth: quicker
+    truth = irradiance_truth(cam, planes, pixels=dark, bounces=8)[..., 0]
+    irr = None
+    for _ in range(6):
+        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1, previous=irr)
+    ratio = float(irr[dark, 0].mean() / truth[dark].mean())
+    assert 0.7 < ratio < 1.2, ratio
+
+
+@pytest.mark.parametrize("intensity", [1.0, 4.0])
+def test_bounced_light_stays_bounded_in_a_saturated_room(gpu, intensity):
+    # A closed box of saturated red. The albedo proxy reads pure red as albedo 1 in red, and bounced again every
+    # frame that ran up to 2.8x the walls' own light; the bounce caps the proxy at 0.8 (1.77x). It must settle,
+    # at the effect's highest intensity too, which scales the bounce as it scales what the viewer sees.
+    cam = Camera(width=128, height=96)
+    red = (0.5, 0.0, 0.0)
+    g = render(cam, [Plane((0, -1, 0), (0, 1, 0), red), Plane((0, 1.5, 0), (0, -1, 0), red), Plane((-1.5, 0, 0), (1, 0, 0), red),
+                     Plane((1.5, 0, 0), (-1, 0, 0), red), Plane((0, 0, -6), (0, 0, 1), red), Plane((0, 0, 1), (0, 0, -1), red)])
+    surf = g["linear_z"] > 0
+    irr, means = None, []
+    for _ in range(20):
+        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1, previous=irr, bounce_gain=intensity)
+        means.append(float(irr[surf, 0].mean()))
+    assert abs(means[-1] - means[-2]) < 0.01 * means[-1], means[-5:]   # settled
+    assert means[-1] < 2.0 * red[0], means[-1]
 
 
 def test_black_scene_has_no_gi(gpu):

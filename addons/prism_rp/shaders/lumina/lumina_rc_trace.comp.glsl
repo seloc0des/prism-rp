@@ -12,7 +12,9 @@
 // Intervals are measured in screen pixels along the ray's projection: level i covers
 // [interval_start_px, interval_start_px + interval_length_px) of it, and the top level
 // (interval_length_px <= 0) runs on until the ray leaves the screen. Steps are spaced evenly on screen and
-// placed on the ray with perspective-correct interpolation. (Converting the pixel lengths to world
+// placed on the ray with perspective-correct interpolation. The jitter moves the first step, and the last
+// always lands on the interval's end: with steps at (i + jitter) / steps, a ray crossing a surface after
+// the last one was missed by its level, and the next level, starting behind the surface, missed it too. (Converting the pixel lengths to world
 // units at the probe's own depth gave each probe a reach of about its own distance from the camera,
 // so walls and floor near the camera never saw the far side of the room.)
 //
@@ -26,9 +28,9 @@
 // is nearer than kNearerOccluder times the hit's depth.
 //
 // Near silhouettes that check falls back to sharp mips, and one ray per direction misses a small bright
-// patch again. Levels above 0 (and a lone level 0) trace 2 x 2 sub-rays: each covers a quarter of the cone,
-// so it needs less blur and falls back less. More sub-rays leak: a partly blocked direction's fractional transmittance lets
-// parent probes' light through past objects.
+// patch again. Levels between 0 and the top (and a lone level 0) trace 2 x 2 sub-rays: each covers a quarter
+// of the cone, so it needs less blur and falls back less. The top level has directions enough to do without. More sub-rays leak: a partly blocked direction's fractional transmittance lets
+// parent probes' light through past objects. (A probe that traces on by itself takes no parent light, so it can use more.)
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -58,7 +60,7 @@ const float kNearerOccluder = 0.9;
 
 // One ray of a direction's interval: radiance found (rgb) and transmittance (a, 0 or 1). `cone_angle` is
 // the angular width its hit is blurred over; `jitter` places its steps along the interval.
-vec4 trace_ray(vec3 origin, float origin_depth, vec3 dir, float cone_angle, float jitter) {
+vec4 trace_ray(vec3 origin, float origin_depth, vec3 dir, float cone_angle, float jitter, float interval_length_px, int steps) {
     vec2 res_f = vec2(pc.internal_resolution);
 
     // The ray's far end: far enough to leave the view, kept in front of the near plane.
@@ -95,7 +97,7 @@ vec4 trace_ray(vec3 origin, float origin_depth, vec3 dir, float cone_angle, floa
         }
     }
     float u0 = pc.interval_start_px / screen_len;
-    float u1 = pc.interval_length_px > 0.0 ? (pc.interval_start_px + pc.interval_length_px) / screen_len : 1.0;
+    float u1 = interval_length_px > 0.0 ? (pc.interval_start_px + interval_length_px) / screen_len : 1.0;
     u1 = min(u1, u_exit);
     if (u0 >= u1) {
         return vec4(0.0, 0.0, 0.0, 1.0);   // left the screen before this interval
@@ -117,8 +119,9 @@ vec4 trace_ray(vec3 origin, float origin_depth, vec3 dir, float cone_angle, floa
         }
     }
     float u_prev = u0;
-    for (int i = 0; i < pc.steps; ++i) {
-        float u = mix(u0, u1, (float(i) + jitter) / float(pc.steps));
+    float step_div = float(steps - 1) + jitter;
+    for (int i = 0; i < steps; ++i) {
+        float u = mix(u0, u1, (float(i) + jitter) / max(step_div, 1e-3));
         float ray_z = 1.0 / mix(k0, k1, u);
         vec2 sample_uv = mix(s0, s1, u) / res_f;
         float scene_depth = textureLod(u_depth_tex, sample_uv, 0.0).r;
@@ -197,19 +200,45 @@ void main() {
     origin += normal * (pc.normal_bias * view_depth);
     float origin_depth = -origin.z;
 
+    // The merge hands this probe's rays its parents' light past the interval's end, but a parent at another
+    // depth sees from somewhere else. On a floor seen at a grazing angle, a parent a probe spacing away on
+    // screen can be most of a metre away, in front of an object this probe is behind: a floor probe behind
+    // a bright card inherited the light of its lit front face. The merge's depth weights rank every parent
+    // as poor there, then normalise the least poor to full weight. When no parent can stand in for this
+    // probe, it traces on to the edge of the screen by itself, with twice its level's steps, and takes no
+    // parent light at all: even rays that leave the screen picked up the parent's hits. The merge keeps that
+    // light from it (lumina_rc_merge.comp.glsl). It hands on its rays' real transmittance all the same: where
+    // there is a world cache, lumina_ws_merge lights what they left clear, the only way light from off screen
+    // reaches the probe (a lit wall behind the camera left the floor black without it).
+    // Its own rays then carry everything the parents would have, so it traces 4 x 4 sub-rays per
+    // direction to match their angular detail (with 2 x 2, level 0's 16 directions came out 30-45% dark
+    // behind the card and missed a small bright patch). At 1080p in the card scene that is 0.1% of level 0
+    // and 3.5% of level 2, mostly along silhouettes. Grazing floors qualify more, higher up: where a floor
+    // runs 40 m to a back wall, 1.5%, 12% and 25% of the floor probes on levels 0 to 2, near the horizon.
+    float interval_length_px = pc.interval_length_px;
+    int steps = pc.steps;
+    int sub_rays = pc.sub_rays;
+    bool on_its_own = interval_length_px > 0.0 &&
+        lumina_parent_support(u_depth_tex, probe, pc.probe_spacing_px, pc.internal_resolution, pc.depth_params) < kLuminaMinParentSupport;
+    if (on_its_own) {
+        interval_length_px = -1.0;
+        steps = 2 * pc.steps;
+        sub_rays = 4;
+    }
+
     // Each sub-ray blurs over twice its own share of the direction's 4pi / block^2 sr, so neighbouring
     // sub-rays' footprints overlap: with exactly its share a moving hotspot flickers more, and with the
     // whole cone the hotspot loses light. The jitter along the ray changes per texel and frame (SVGF
     // integrates it); golden-ratio offsets keep the sub-rays' steps apart.
-    float cone_angle = sqrt(2.0) * sqrt(4.0 * 3.14159265) / float(pc.block * pc.sub_rays);
+    float cone_angle = sqrt(2.0) * sqrt(4.0 * 3.14159265) / float(pc.block * sub_rays);
     float jitter = prism_interleaved_gradient_noise(vec2(texel), pc.frame_index);
     vec4 sum = vec4(0.0);
-    for (int sy = 0; sy < pc.sub_rays; ++sy) {
-        for (int sx = 0; sx < pc.sub_rays; ++sx) {
-            vec2 cell = (vec2(dir_texel) + (vec2(sx, sy) + 0.5) / float(pc.sub_rays)) / float(pc.block);
-            float sub_jitter = fract(jitter + 0.618034 * float(sy * pc.sub_rays + sx));
-            sum += trace_ray(origin, origin_depth, lumina_oct_decode(cell * 2.0 - 1.0), cone_angle, sub_jitter);
+    for (int sy = 0; sy < sub_rays; ++sy) {
+        for (int sx = 0; sx < sub_rays; ++sx) {
+            vec2 cell = (vec2(dir_texel) + (vec2(sx, sy) + 0.5) / float(sub_rays)) / float(pc.block);
+            float sub_jitter = fract(jitter + 0.618034 * float(sy * sub_rays + sx));
+            sum += trace_ray(origin, origin_depth, lumina_oct_decode(cell * 2.0 - 1.0), cone_angle, sub_jitter, interval_length_px, steps);
         }
     }
-    imageStore(u_cascade_out, texel, sum / float(pc.sub_rays * pc.sub_rays));
+    imageStore(u_cascade_out, texel, sum / float(sub_rays * sub_rays));
 }

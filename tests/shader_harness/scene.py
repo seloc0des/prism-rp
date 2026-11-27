@@ -47,6 +47,7 @@ class Plane:
     normal: tuple[float, float, float]
     color: tuple[float, float, float]
     bounds: tuple | None = None   # ((xmin, xmax), (ymin, ymax), (zmin, zmax)) in view space; None = infinite
+    albedo: tuple[float, float, float] = (0.0, 0.0, 0.0)   # what irradiance_truth's later bounces reflect
 
 
 def render(cam: Camera, planes: list[Plane]) -> dict[str, np.ndarray]:
@@ -86,30 +87,86 @@ def cornell(cam: Camera, red=(4.0, 0.0, 0.0), floor=(0.05, 0.05, 0.05)) -> dict[
     ])
 
 
-def irradiance_truth(cam: Camera, planes: list[Plane], n_dirs: int = 256) -> np.ndarray:
+LONE_SUPPORT = 0.3   # kLuminaMinParentSupport
+
+
+def parent_support(linear_z: np.ndarray, spacing: int) -> np.ndarray:
+    """lumina_parent_support for every probe of a level `spacing` px apart, (probes_y, probes_x); nan on sky
+    probes. A probe under LONE_SUPPORT traces on to the edge of the screen by itself (lumina_rc_trace.comp.glsl)."""
+    h, w = linear_z.shape
+    ps = 2 * spacing
+    parents = np.array([(w + ps - 1) // ps, (h + ps - 1) // ps])
+    py, px = np.mgrid[0:(h + spacing - 1) // spacing, 0:(w + spacing - 1) // spacing]
+    probe = np.stack([px, py], axis=-1)
+    c = np.clip(((probe + 0.5) * spacing).astype(int), 0, [w - 1, h - 1])
+    child_z = linear_z[c[..., 1], c[..., 0]]
+    coord = (probe + 0.5) * spacing / ps - 0.5
+    p0 = np.floor(coord).astype(int)
+    f = coord - p0
+    support = np.zeros(child_z.shape)
+    for ox, oy in ((0, 0), (1, 0), (0, 1), (1, 1)):
+        q = np.clip(((np.clip(p0 + (ox, oy), 0, parents - 1) + 0.5) * ps).astype(int), 0, [w - 1, h - 1])
+        parent_z = linear_z[q[..., 1], q[..., 0]]
+        bilinear = (f[..., 0] if ox else 1 - f[..., 0]) * (f[..., 1] if oy else 1 - f[..., 1])
+        with np.errstate(divide="ignore", invalid="ignore"):
+            depth_w = np.exp(-np.abs(parent_z - child_z) / (0.1 * child_z))
+        support += np.where(parent_z > 0, bilinear * depth_w, 0.0)
+    return np.where(child_z > 0, support, np.nan)
+
+
+def irradiance_truth(cam: Camera, planes: list[Plane], n_dirs: int = 256, pixels: np.ndarray | None = None,
+                     bounces: int = 1) -> np.ndarray:
     """One-bounce E / pi (what Lumina's irradiance estimates) per pixel: the cosine-weighted mean of the
     radiance (plane colour) seen from each visible point, by casting n_dirs fixed cosine-distributed rays.
     Room means converge by 256 rays for large lights; a light a few pixels wide reads about 5% high there
-    (most pixels' rays miss it, a few catch it). 0 on sky pixels. Planes are one-sided, as in render()."""
+    (most pixels' rays miss it, a few catch it). 0 on sky pixels. Planes are one-sided, as in render().
+    `pixels` (a boolean mask) limits the work to those pixels; the rest come back 0.
+
+    bounces > 1 adds light that bounced more often: a ray's hit sends out its plane's colour plus its albedo
+    times the E / pi at the hit, estimated by one random cosine-distributed ray from there (path tracing:
+    noisy per pixel, exact on average over a region). bounces = n counts n - 1 such reflections."""
     g = render(cam, planes)
     z = g["linear_z"]
     surf = z > 0
+    if pixels is not None:
+        surf = surf & pixels
     pos = (cam.ray_dirs() * z[..., None])[surf]
     nrm = g["normal"][..., :3][surf] * 2.0 - 1.0
     nrm /= np.linalg.norm(nrm, axis=-1, keepdims=True)
-    k = np.arange(n_dirs) + 0.5
-    r = np.sqrt(k / n_dirs)
+    local = _cosine_dirs(n_dirs)   # (D, 3), cosine-weighted, the same for every pixel
+    rng = np.random.default_rng(7)
+    radiance = np.zeros((len(pos), 3))
+    chunk = max(1, (1 << 22) // n_dirs)   # pixels per pass: keeps the (P, D, 3) arrays near 100 MB
+    for i in range(0, len(pos), chunk):
+        radiance[i:i + chunk] = _mean_radiance(pos[i:i + chunk], nrm[i:i + chunk], local, planes, bounces - 1, rng)
+    out = np.zeros(z.shape + (3,))
+    out[surf] = radiance
+    return out
+
+
+def _cosine_dirs(n):
+    k = np.arange(n) + 0.5
+    r = np.sqrt(k / n)
     phi = k * np.pi * (3.0 - np.sqrt(5.0))
-    local = np.stack([r * np.cos(phi), r * np.sin(phi), np.sqrt(1.0 - r * r)], axis=-1)     # (D, 3), cosine-weighted
+    return np.stack([r * np.cos(phi), r * np.sin(phi), np.sqrt(1.0 - r * r)], axis=-1)
+
+
+def _mean_radiance(pos, nrm, local, planes, deeper=0, rng=None):
+    """irradiance_truth for points `pos` with normals `nrm` (P, 3): mean radiance over the directions `local`
+    ((D, 3), the same for every point, or (P, D, 3)), each hit adding its albedo times the light one random ray
+    from there finds, `deeper` times over."""
     helper = np.where(np.abs(nrm[:, 1:2]) < 0.9, [[0.0, 1.0, 0.0]], [[1.0, 0.0, 0.0]])
     t = np.cross(nrm, helper)
     t /= np.linalg.norm(t, axis=-1, keepdims=True)
     b = np.cross(nrm, t)
-    d = local[None, :, 0:1] * t[:, None] + local[None, :, 1:2] * b[:, None] + local[None, :, 2:3] * nrm[:, None]  # (P, D, 3)
+    if local.ndim == 2:
+        local = local[None]
+    d = local[..., 0:1] * t[:, None] + local[..., 1:2] * b[:, None] + local[..., 2:3] * nrm[:, None]  # (P, D, 3)
     o = (pos + nrm * 1e-4)[:, None, :]
     best = np.full(d.shape[:2], np.inf)
     col = np.zeros(d.shape)
-    for pl in planes:
+    which = np.full(d.shape[:2], -1)
+    for i, pl in enumerate(planes):
         pn = np.array(pl.normal, float)
         pn /= np.linalg.norm(pn)
         den = d @ pn
@@ -117,11 +174,23 @@ def irradiance_truth(cam: Camera, planes: list[Plane], n_dirs: int = 256) -> np.
             tt = ((np.array(pl.point, float) - o) @ pn) / den
         hit = (den < -1e-6) & (tt > 1e-4) & (tt < best)
         if pl.bounds is not None:
-            hp = o + d * np.where(np.isfinite(tt), tt, 0.0)[..., None]
+            idx = np.nonzero(hit)   # check the bounds only where the ray can hit the plane at all
+            hp = o[idx[0], 0] + d[idx] * tt[idx][:, None]
+            inside = np.ones(len(idx[0]), bool)
             for axis, (lo, hi) in enumerate(pl.bounds):
-                hit &= (hp[..., axis] >= lo) & (hp[..., axis] <= hi)
+                inside &= (hp[:, axis] >= lo) & (hp[:, axis] <= hi)
+            hit[idx[0][~inside], idx[1][~inside]] = False
         best[hit] = tt[hit]
         col[hit] = pl.color
-    out = np.zeros(z.shape + (3,))
-    out[surf] = col.mean(axis=1)
-    return out
+        which[hit] = i
+    if deeper:
+        albedo = np.array([pl.albedo for pl in planes] + [(0.0, 0.0, 0.0)], float)[which]   # index -1: missed
+        idx = np.nonzero(albedo.max(axis=-1) > 0.0)
+        if len(idx[0]):
+            hit_pos = o[idx[0], 0] + d[idx] * best[idx][:, None]
+            hit_n = np.array([np.array(pl.normal, float) / np.linalg.norm(pl.normal) for pl in planes])[which[idx]]
+            u = rng.random((len(hit_pos), 1, 2))
+            r, phi = np.sqrt(u[..., 0]), 2.0 * np.pi * u[..., 1]
+            one_ray = np.stack([r * np.cos(phi), r * np.sin(phi), np.sqrt(1.0 - r * r)], axis=-1)   # (H, 1, 3)
+            col[idx] += albedo[idx] * _mean_radiance(hit_pos, hit_n, one_ray, planes, deeper - 1, rng)
+    return col.mean(axis=1)

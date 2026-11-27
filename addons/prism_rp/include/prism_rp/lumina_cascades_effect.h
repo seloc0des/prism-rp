@@ -92,6 +92,8 @@ public:
     [[nodiscard]] float get_world_probe_spacing() const;
     void set_world_multi_bounce_enabled(bool p_enabled);
     [[nodiscard]] bool is_world_multi_bounce_enabled() const;
+    void set_screen_multi_bounce_enabled(bool p_enabled);
+    [[nodiscard]] bool is_screen_multi_bounce_enabled() const;
 
     void reset_history();
     void reload_shaders();
@@ -150,8 +152,10 @@ private:
         int32_t width = 0;
         int32_t height = 0;
         float depth_params[2] = { 0.05f, 0.0f };
+        float bounce_gain = 0.0f;   // 0: no previous GI to bounce
+        float _pad[3] = { 0.0f, 0.0f, 0.0f };
     };
-    static_assert(sizeof(RadianceCopyPushConstants) == 16);
+    static_assert(sizeof(RadianceCopyPushConstants) == 32);
 
     struct alignas(16) MergePushConstants {
         int32_t probe_count_x = 0;
@@ -243,6 +247,8 @@ private:
         std::array<godot::RID, 2> filter;           // RGBA16F a-trous ping-pong: rgb, a = variance
         uint32_t history_index = 0;                 // which of [0], [1] holds last frame
         bool has_history = false;
+        uint32_t last_gi = 0;                       // which filter[] holds last frame's denoised GI
+        bool has_last_gi = false;
     };
 
     bool _ensure_render_resources();
@@ -301,6 +307,7 @@ private:
     bool world_cascades_enabled = true;
     float world_probe_spacing = 1.0f;
     bool world_multi_bounce_enabled = true;   // the ray-traced update bounces the cache's own irradiance
+    bool screen_multi_bounce_enabled = true;  // the radiance copy bounces last frame's GI off every pixel
 
     bool _ensure_world_targets();
     [[nodiscard]] godot::RID _world_scene_set();
