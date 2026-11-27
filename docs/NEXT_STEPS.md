@@ -611,26 +611,50 @@ mirror where a camera ray through the pixel hits it (`lumina_rt_albedo`, the Ray
 proxy elsewhere. The Cornell box then scores 25.48 dB at 1.00x the reference's light, and Sponza 31.76 dB at 1.05x
 (31.45 dB raw, up from 29.81). Sponza is still below the bounce off, so the rest of the bounce's error is screen
 space's own, repeated every bounce: it bounces light only off what is on screen and drops it where pixels come into
-view. The cost of the albedo rays, one per pixel per frame, isn't measured yet.
+view. The albedo rays, one per pixel per frame, cost 0.12 to 0.26 ms (below).
 
-Lumina's frame time, median of three runs, before and after #37: Cornell box 2.12 and 2.21 ms, foliage 2.39 and 2.50,
-thin geometry 1.98 and 2.66, Sponza 2.85 and 3.27, volumetrics 2.79 and 3.08. That puts four scenes over the 2.40 ms
-budget, where two were. The validation script records one frame per run and a scene's runs swung by up to 1.7 ms, so
-these differences sit inside the noise; the budget needs the several-run timing that settled it in #33.
+**Timed over several runs (2026-11-27).** The telemetry now keeps each pass's last 32 frames and exports their median,
+and each stage as the sum of its passes' medians (below). The validation runner and the editor dock read those, so a
+single slow or fast frame no longer decides a reading. With nothing but the desktop on the 4060 Ti and the three
+builds interleaved, three runs each, this is Lumina's cost as the sum of its passes' medians (the measure #33 used),
+median of the three runs:
+
+| Scene | Before #37 | After #37 | Main, with #38 |
+| :--- | :--- | :--- | :--- |
+| Cornell box | 1.91 ms | 2.13 | 2.33 |
+| Foliage | 2.13 ms | 2.36 | 2.33 |
+| Thin geometry | 1.47 ms | 2.15 | 2.26 |
+| Sponza | 2.31 ms | 2.75 | 2.88 |
+| Volumetrics | 2.14 ms | 2.38 | 2.66 |
+
+A scene's runs now agree to within 0.35 ms and often to 0.05, where one frame per run swung by up to 1.7. Every
+scene was under the 2.40 ms budget before #37; on main Sponza and volumetrics are over. #37 costs 0.2 to 0.7 ms,
+all of it in the trace of levels 0 to 2, which takes 0.5 to 0.85 ms more (level 0 alone goes from 0.02-0.03 ms to
+0.20-0.31), while the top level's cheaper trace takes back 0.23 to 0.46. The lone probes are the change in #37 that
+traces those levels further, to the screen edge with twice the steps and 4 x 4 sub-rays, but the timing wasn't
+bisected. #38's albedo rays cost 0.12 to 0.17 ms, and 0.26 in the volumetrics scene.
+
+Each frame's total over Lumina's passes has a median 0.1 to 0.7 ms above that sum (Sponza on main: 3.56 against
+2.88 ms). The raw 32 frames of every pass show why. In most frames one pass runs about 0.45 ms long (0.2 to 0.57
+for the middle half), a different pass each frame, and the gap's size has nothing to do with the pass's own
+(correlation 0.05): the 0.03 ms composite came out at up to 0.5 ms and the 0.06 ms world-cache merge at 0.9. That
+is the GPU switching to another client partway through a pass, the desktop on this machine, not Lumina's work. A
+stage's exported median is now the sum of its passes' medians, which leaves those gaps out, and the budget check
+reads it.
 
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
 3. Next, in order:
-   - bring Sponza and volumetrics under the 2.40 ms Tier 2 budget without losing the image: the a-trous denoiser
-     (0.35 to 0.75 ms) and the top cascade level (about 0.5 ms) are the biggest passes left; time several runs per
-     change. The top level now traces one ray per direction instead of 2 x 2, a quarter of its rays: in the
-     harness at 512 x 384 and 1024 x 768 it lights the rooms within 3% of before and flickers no more (two tests
+   - bring Sponza and volumetrics under the 2.40 ms Tier 2 budget without losing the image: the trace of levels 0 to 2
+     (0.5 to 0.85 ms more since #37, above) and the a-trous denoiser (0.33 to 0.55 ms) are the biggest costs now; time
+     three runs per change. The top level now traces one ray per direction instead of 2 x 2, a quarter of its rays: in
+     the harness at 512 x 384 and 1024 x 768 it lights the rooms within 3% of before and flickers no more (two tests
      hold it). It also takes as many steps as the other levels now, not twice as many: in a room whose back wall
-     shines through a row of thin pillars, twice the steps let more light through the pillars (1.23x the exact
-     share against 1.10x, tested). Together that is an eighth of the top level's old trace. To time on Tier 2,
-     and to check Gate 2 for any change. Both changes were tried on the GPU before the harness reached the top
-     level (above): one ray made thin wires sparkle and fewer steps darkened Sponza. Neither harness test moves
+     shines through a row of thin pillars, twice the steps let more light through the pillars (1.23x the exact share
+     against 1.10x, tested). Together that is an eighth of the top level's old trace, and on the 4060 Ti it now takes
+     0.04 to 0.09 ms against 0.28 to 0.55 before. Both changes were tried on the GPU before the harness reached the
+     top level (above): one ray made thin wires sparkle and fewer steps darkened Sponza. Neither harness test moves
      thin geometry, so watch the wires in motion and Sponza's light level.
 
      One limit found on the way, not fixed: pillars that hide behind one another from the camera (looking down
@@ -638,7 +662,6 @@ these differences sit inside the noise; the budget needs the several-run timing 
      a colonnade gets 1.5x its exact light (a thickness of 0.3 instead of 0.1 brings it to 1.0x, at the cost of
      blocking light everywhere else). Screen space can't see them; the ray-traced world cache can, so it may
      explain part of what's left of the smears on Sponza's columns;
-   - time #37's changes over several runs (Gate 2 for each is above), and the albedo rays the screen bounce now traces;
    - the parallax that is left of the top level's light loss (above): its test passes with 1.2% to spare, and the
      hotspot room still gets 0.73x from four levels against 0.78x from three; then a moving wire test at 512 x 384,
      so the top level's sub-rays and steps can be judged off the GPU;

@@ -39,6 +39,17 @@ constexpr double kEmaAlpha = 0.20;
 
 PrismTelemetry *PrismTelemetry::singleton = nullptr;
 
+double PrismTelemetry::PassSample::median_gpu_ms() const {
+    const size_t count = static_cast<size_t>(std::min<uint64_t>(sample_count, kMedianWindow));
+    if (count == 0) {
+        return 0.0;
+    }
+    std::array<double, kMedianWindow> sorted = recent_gpu_ms;
+    std::sort(sorted.begin(), sorted.begin() + count);
+    const size_t mid = count / 2;
+    return (count % 2 == 1) ? sorted[mid] : 0.5 * (sorted[mid - 1] + sorted[mid]);
+}
+
 // The RenderingServer is not registered yet when extensions initialize, so nothing here (or in
 // connect_frame_hook, which register_types defers to the first main-loop iteration) touches it.
 PrismTelemetry::PrismTelemetry() {
@@ -323,18 +334,21 @@ void PrismTelemetry::_collect_on_render_thread() {
     auto update_sample_map = [](
         std::unordered_map<std::string, PassSample> &r_target_map,
         const std::unordered_map<std::string, double> &p_frame_gpu,
-        const std::unordered_map<std::string, double> &p_frame_cpu
+        const std::unordered_map<std::string, double> &p_frame_cpu,
+        uint64_t p_gpu_frame
     ) {
         for (const auto &[key, gpu_ms] : p_frame_gpu) {
             PassSample &sample = r_target_map[key];
             const double cpu_ms = p_frame_cpu.contains(key) ? p_frame_cpu.at(key) : 0.0;
             sample.latest_gpu_ms = gpu_ms;
             sample.latest_cpu_ms = cpu_ms;
+            sample.last_gpu_frame = p_gpu_frame;
             if (sample.sample_count == 0) {
                 sample.ema_gpu_ms = gpu_ms;
             } else {
                 sample.ema_gpu_ms = (kEmaAlpha * gpu_ms) + ((1.0 - kEmaAlpha) * sample.ema_gpu_ms);
             }
+            sample.recent_gpu_ms[sample.sample_count % kMedianWindow] = gpu_ms;
             ++sample.sample_count;
         }
     };
@@ -349,8 +363,8 @@ void PrismTelemetry::_collect_on_render_thread() {
             insertion_order.push_back(key);
         }
     }
-    update_sample_map(subpass_stats, frame_subpass_gpu_ms, frame_subpass_cpu_ms);
-    update_sample_map(canonical_stage_stats, frame_stage_gpu_ms, frame_stage_cpu_ms);
+    update_sample_map(subpass_stats, frame_subpass_gpu_ms, frame_subpass_cpu_ms, retired_gpu_frame);
+    update_sample_map(canonical_stage_stats, frame_stage_gpu_ms, frame_stage_cpu_ms, retired_gpu_frame);
 }
 
 double PrismTelemetry::get_pass_gpu_ms(const godot::String &p_pass_name) const {
@@ -387,13 +401,30 @@ godot::Dictionary PrismTelemetry::get_telemetry_dictionary() const {
         root["vram_usage_mb"] = vram_mb;
     }
 
+    // A stage's median is the sum of its passes' medians, not the median of its per-frame totals. In most
+    // frames another GPU client takes the GPU for about 0.45 ms in the middle of whichever pass is running
+    // (on the Tier 2 machine a 0.03 ms pass came out at 0.5 ms), so nearly every frame's total holds one
+    // such gap while each pass's own median leaves it out. Passes not timed within the window are gone.
+    std::unordered_map<std::string, double> stage_median_ms;
+    for (const auto &[sub_name, sample] : subpass_stats) {
+        if (last_collected_gpu_frame - sample.last_gpu_frame < kMedianWindow) {
+            const godot::String stage = _map_to_canonical_stage(godot::String::utf8(sub_name.c_str()));
+            stage_median_ms[stage.utf8().get_data()] += sample.median_gpu_ms();
+        }
+    }
+
     godot::Dictionary pass_timings_ms;
+    godot::Dictionary pass_timings_median_ms;
     double total_gpu_ms = 0.0;
     for (const auto &[stage_name, sample] : canonical_stage_stats) {
-        pass_timings_ms[godot::String::utf8(stage_name.c_str())] = sample.latest_gpu_ms;
+        const godot::String name = godot::String::utf8(stage_name.c_str());
+        pass_timings_ms[name] = sample.latest_gpu_ms;
+        pass_timings_median_ms[name] = stage_median_ms[stage_name];
         total_gpu_ms += sample.latest_gpu_ms;
     }
     root["pass_timings_ms"] = pass_timings_ms;
+    root["pass_timings_median_ms"] = pass_timings_median_ms;
+    root["median_window_frames"] = static_cast<int64_t>(kMedianWindow);
     root["total_prism_gpu_ms"] = total_gpu_ms;
 
     godot::Dictionary subpass_timings;
@@ -405,6 +436,7 @@ godot::Dictionary PrismTelemetry::get_telemetry_dictionary() const {
         godot::Dictionary entry;
         entry["gpu_ms"] = it->second.latest_gpu_ms;
         entry["ema_gpu_ms"] = it->second.ema_gpu_ms;
+        entry["median_gpu_ms"] = it->second.median_gpu_ms();
         entry["cpu_encode_ms"] = it->second.latest_cpu_ms;
         entry["samples"] = static_cast<int64_t>(it->second.sample_count);
         subpass_timings[godot::String::utf8(sub_name.c_str())] = entry;

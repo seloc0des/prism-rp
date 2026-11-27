@@ -3,7 +3,8 @@
 Prism RP Automated Visual Regression & Frame-Budget Gatekeeper
 
 Runs the 5 canonical Prism RP benchmark scenes deterministically (--fixed-fps 60), has the
-benchmark rig save the displayed frame and PrismTelemetry GPU timings at the capture frame,
+benchmark rig save the displayed frame and PrismTelemetry GPU timings at the capture frame
+(each stage the sum of its passes' medians over the frames before it),
 evaluates perceptual image error with NVIDIA FLIP (`flip-evaluator`), and enforces
 Tier 1 / Tier 2 / Tier 3 frame-time budgets.
 
@@ -228,6 +229,13 @@ def extract_timings_from_rdc(rd_mod: Any, rdc_path: Path) -> dict[str, float]:
     return pass_timings_ms
 
 
+def telemetry_pass_timings(telemetry: dict[str, Any]) -> dict[str, float]:
+    """Each stage's GPU ms from a telemetry export: the median over its recent frames, or for an
+    export from before the median existed, the last frame's."""
+    timings = telemetry.get("pass_timings_median_ms") or telemetry.get("pass_timings_ms", {})
+    return {name: float(ms) for name, ms in timings.items()}
+
+
 def capture_scene(
     godot_bin: str,
     renderdoccmd: str | None,
@@ -327,8 +335,8 @@ def capture_scene(
 
     if telemetry_json.exists():
         telemetry_data = json.loads(telemetry_json.read_text(encoding="utf-8"))
-        for pass_name, ms_val in telemetry_data.get("pass_timings_ms", {}).items():
-            pass_timings_ms.setdefault(pass_name, float(ms_val))
+        for pass_name, ms_val in telemetry_pass_timings(telemetry_data).items():
+            pass_timings_ms.setdefault(pass_name, ms_val)
 
     return captured_png, pass_timings_ms, validation_errors
 

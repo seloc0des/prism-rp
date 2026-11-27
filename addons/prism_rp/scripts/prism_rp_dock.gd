@@ -150,13 +150,14 @@ func _update_telemetry() -> void:
 		_telemetry_label.text = "[i]Telemetry disabled (release build?).[/i]"
 		return
 	var data: Dictionary = telemetry.call(&"get_telemetry_dictionary")
-	var lines := PackedStringArray(["[b]GPU ms (last frame)[/b]"])
-	var stages: Dictionary = data.get("pass_timings_ms", {})
+	var window := int(data.get("median_window_frames", 0))
+	var lines := PackedStringArray(["[b]GPU ms (each pass's median over the last %d frames)[/b]" % window])
+	var stages: Dictionary = data.get("pass_timings_median_ms", {})
 	for stage in stages:
 		lines.append("%s: %.3f" % [stage, float(stages[stage])])
 	var subpasses: Dictionary = data.get("subpass_timings", {})
 	if not subpasses.is_empty():
-		lines.append("[b]Passes (EMA)[/b]")
+		lines.append("[b]Passes[/b]")
 		for sub in subpasses:
-			lines.append("  %s: %.3f" % [sub, float(subpasses[sub].get("ema_gpu_ms", 0.0))])
+			lines.append("  %s: %.3f" % [sub, float(subpasses[sub].get("median_gpu_ms", 0.0))])
 	_telemetry_label.text = "\n".join(lines)

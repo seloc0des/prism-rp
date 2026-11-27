@@ -54,6 +54,16 @@ def test_baseline_csv_roundtrip(tmp_path):
     assert loaded == {"01_cornell_box": {"aces2_optics": 0.5, "chronos_vpu": 1.2346}}
 
 
+def test_telemetry_timings_prefer_the_median_over_the_last_frame():
+    telemetry = {"pass_timings_ms": {"lumina_cascades_gi": 4.1},
+                 "pass_timings_median_ms": {"lumina_cascades_gi": 2.2}}
+    assert rvr.telemetry_pass_timings(telemetry) == {"lumina_cascades_gi": 2.2}
+
+
+def test_telemetry_timings_from_an_export_without_medians_use_the_last_frame():
+    assert rvr.telemetry_pass_timings({"pass_timings_ms": {"chronos_vpu": 0.15}}) == {"chronos_vpu": 0.15}
+
+
 def test_missing_baseline_is_empty(tmp_path):
     assert rvr.load_baseline_timings(tmp_path / "nope.csv") == {}
 
