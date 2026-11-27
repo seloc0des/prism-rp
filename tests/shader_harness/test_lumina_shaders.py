@@ -26,7 +26,7 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefi
     whole chain, each hit at the mip that matches its cone's footprint (prefilter=False traces the colour
     buffer alone, so every hit is sampled at full resolution), level 0 and the top level trace one ray per
     direction (top_sub_rays per axis at the top; a lone level 0 traces 2 x 2) and the others 2 x 2, and the top
-    level runs on to the edge of the screen with twice the steps."""
+    level runs on to the edge of the screen."""
     levels = cascade_layout(cam, spacing, count)
     mips = int(np.log2(max(cam.width, cam.height))) + 1
     images = {
@@ -56,7 +56,7 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefi
             {0: ("depth", "sampled_nearest"), 1: ("normal", "sampled_nearest"), 2: (radiance, "sampled_linear"), 3: (f"c{i}", "storage")},
             pc.trace(cam.width, cam.height, lv["probes"], lv["block"], float(lv["spacing"]),
                      spacing * (scale - 1) / 3.0, spacing * scale if i + 1 < count else -1.0,
-                     steps if i + 1 < count else 2 * steps, thickness, 0, 0.01, cam.proj, cam.depth_params,
+                     steps, thickness, 0, 0.01, cam.proj, cam.depth_params,
                      sub_rays=(top_sub_rays if i > 0 else 2) if i + 1 == count else (1 if i == 0 else 2)),
             groups_for(*lv["size"])))
     for i in range(count - 2, -1, -1):
@@ -514,6 +514,39 @@ def test_the_top_level_lights_steadily_from_a_moving_patch(gpu):
     stack = np.stack(frames)
     flicker = float(np.nanmean(np.nanstd(stack, axis=0)) / np.nanmean(stack))
     assert flicker < 0.05, flicker
+
+
+def box(x0, x1, z0, z1, y0=-1.0, y1=1.5, color=(0.0, 0.0, 0.0)):
+    """The four sides of an upright box (no top or bottom), facing out."""
+    b = ((x0, x1), (y0, y1), (z0, z1))
+    return [Plane((0, 0, z1), (0, 0, 1), color, bounds=b), Plane((0, 0, z0), (0, 0, -1), color, bounds=b),
+            Plane((x0, 0, 0), (-1, 0, 0), color, bounds=b), Plane((x1, 0, 0), (1, 0, 0), color, bounds=b)]
+
+
+def test_a_row_of_thin_pillars_shades_the_room_as_much_as_it_should(gpu):
+    # The back wall glows and a row of seven black pillars 0.15 m wide stands across the room in front of
+    # it; the near half of the room sees the wall through the gaps. Top-level rays cross the pillars a few
+    # dozen pixels wide between steps far apart, and a ray that skips one lets its light through. The
+    # pillars should cut the near half's light as much as they do exactly (to 0.47x). Measured: 12
+    # top-level steps let 1.23x the exact share through, 6 steps 1.06x (1.24x and 1.07x at 1024 x 768).
+    cam = Camera(width=512, height=384)
+    lit_wall = Plane((0, 0, -5.99), (0, 0, 1), (1.0, 1.0, 1.0), bounds=((-1.5, 1.5), (-1.0, 1.5), (-6.5, -5.5)))
+    pillars = [p for xc in np.arange(-1.2, 1.25, 0.4) for p in box(xc - 0.075, xc + 0.075, -4.075, -3.925)]
+    y, x = np.mgrid[0:cam.height, 0:cam.width]
+    sample = (y % 2 == 0) & (x % 2 == 0)   # the exact answer at every fourth pixel keeps the test quick
+    shares = []
+    for planes in (black_room([Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0)), lit_wall]),
+                   black_room([Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0)), lit_wall] + pillars)):
+        g = render(cam, planes)
+        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1)[..., 0]
+        near = sample & (g["linear_z"] > 0) & (g["linear_z"] < 3.5) & (g["color"][..., 0] == 0.0)
+        truth = irradiance_truth(cam, planes, pixels=near)[..., 0]
+        shares.append((float(irr[near].mean()), float(truth[near].mean())))
+    (lumina_open, truth_open), (lumina_pillars, truth_pillars) = shares
+    exact_share = truth_pillars / truth_open
+    assert exact_share < 0.6, exact_share   # the pillars do cast a real shadow
+    leak = (lumina_pillars / lumina_open) / exact_share
+    assert leak < 1.2, leak
 
 
 def test_a_small_bright_spot_lights_the_whole_black_room(gpu):
