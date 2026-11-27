@@ -43,7 +43,8 @@ var qa_screenshot_out: String = ""
 var qa_scene_export: String = ""
 var ambient_enabled := true
 ## --prism-gi-single-bounce: GI computes one bounce, as Gate 2's single-bounce reference does: SDFGI without bounce
-## feedback, Lumina's world cache without its own irradiance (world_multi_bounce_enabled off).
+## feedback, Lumina's world cache without its own irradiance (world_multi_bounce_enabled off) and its screen
+## levels without last frame's GI (screen_multi_bounce_enabled off).
 var gi_single_bounce := false
 var quit_after_frame: int = -1
 ## --prism-hdr=on: request HDR output on the window (Godot 4.7; needs platform support, e.g. Wayland on Linux).
@@ -390,6 +391,7 @@ func _setup_environment_and_chronos_vpu() -> void:
 		env.sdfgi_bounce_feedback = 0.0
 		if lumina_effect != null:
 			lumina_effect.set(&"world_multi_bounce_enabled", false)
+			lumina_effect.set(&"screen_multi_bounce_enabled", false)
 	var ssr_on := lumina_effect != null and not sdfgi_on
 	if ssr_override == "on":
 		ssr_on = true

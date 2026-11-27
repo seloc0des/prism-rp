@@ -20,13 +20,14 @@ def cascade_layout(cam, spacing, count):
     return levels
 
 
-def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefilter=True, top_sub_rays=1):
+def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefilter=True, top_sub_rays=1, previous=None):
     """[radiance mip chain] -> trace every level -> merge top-down -> integrate. Returns irradiance (h, w, 4).
     As in the C++, mip 0 of the chain is the colour buffer plus linear depth and every level traces the
     whole chain, each hit at the mip that matches its cone's footprint (prefilter=False traces the colour
     buffer alone, so every hit is sampled at full resolution), level 0 and the top level trace one ray per
     direction (top_sub_rays per axis at the top; a lone level 0 traces 2 x 2) and the others 2 x 2, and the top
-    level runs on to the edge of the screen."""
+    level runs on to the edge of the screen. `previous` is last frame's GI for a camera that stood still: the
+    radiance copy bounces it once more off every pixel (multi-bounce), as the C++ does with the denoised GI."""
     levels = cascade_layout(cam, spacing, count)
     mips = int(np.log2(max(cam.width, cam.height))) + 1
     images = {
@@ -38,10 +39,21 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefi
     dispatches = []
     if prefilter:
         images["radiance"] = Img("rgba16f", cam.width, cam.height, mips=mips)
+        bindings = {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("radiance", "storage", 0)}
+        if previous is None:   # bounce_gain 0 never reads these
+            bindings |= {3: ("color", "sampled_linear"), 4: ("color", "sampled_nearest"), 5: ("color", "sampled_linear"),
+                         6: ("color", "sampled_nearest")}
+        else:
+            n = g["normal"][..., :3] * 2.0 - 1.0
+            images["prev_gi"] = Img("rgba16f", data=np.concatenate([previous[..., :3], np.ones(previous.shape[:2] + (1,))], axis=-1))
+            images["velocity"] = Img("rg16f", data=np.zeros((cam.height, cam.width, 2)))
+            images["prev_geo"] = Img("rgba16f", data=np.concatenate([n, g["linear_z"][..., None]], axis=-1))
+            bindings |= {3: ("prev_gi", "sampled_linear"), 4: ("velocity", "sampled_nearest"), 5: ("prev_geo", "sampled_nearest"),
+                         6: ("normal", "sampled_nearest")}
         dispatches.append(Dispatch(
-            "lumina/lumina_radiance_copy.comp.glsl",
-            {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("radiance", "storage", 0)},
-            pc.radiance_copy(cam.width, cam.height, cam.depth_params), groups_for(cam.width, cam.height)))
+            "lumina/lumina_radiance_copy.comp.glsl", bindings,
+            pc.radiance_copy(cam.width, cam.height, cam.depth_params, 0.0 if previous is None else 1.0),
+            groups_for(cam.width, cam.height)))
         for m in range(1, mips):
             size = (max(1, cam.width >> m), max(1, cam.height >> m))
             dispatches.append(Dispatch(
@@ -169,7 +181,7 @@ def test_radiance_copy_stores_colour_and_linear_depth(gpu):
     color[~floor, :3] = (0.3, 0.6, 1.0)               # a background colour on the sky
     out = gpu.run({"color": Img("rgba16f", data=color), "depth": Img("r32f", data=g["depth"]), "dst": Img("rgba16f", 32, 24)},
                   [Dispatch("lumina/lumina_radiance_copy.comp.glsl",
-                            {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("dst", "storage")},
+                            {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("dst", "storage"), 3: ("color", "sampled_linear"), 4: ("color", "sampled_nearest"), 5: ("color", "sampled_linear"), 6: ("color", "sampled_nearest")},
                             pc.radiance_copy(32, 24, cam.depth_params), groups_for(32, 24))],
                   ["dst"])["dst"]
     assert floor.sum() > 50 and (~floor).sum() > 50
@@ -723,6 +735,46 @@ def test_light_does_not_leak_through_the_back_of_objects_with_the_top_level(gpu)
     assert float(irr[front].mean()) > 0.5 * lit                        # the lit face does bounce onto the floor in front
     leak = float(irr[behind].mean() - truth[behind].mean())
     assert leak < 0.25 * lit, (leak, lit)
+
+
+def test_light_bounces_more_than_once(gpu):
+    # Grey walls of albedo 0.5 (what the albedo proxy guesses for them) and the far part of the right wall lit.
+    # Godot's colour buffer holds direct light only, so on its own Lumina traces one bounce: 0.49x of the
+    # exact light with every bounce counted. Bouncing last frame's GI off every pixel adds one each frame:
+    # 0.78x by frame 4 (0.88x is what one bounce gets of one bounce's exact light: the rest is off screen).
+    cam = Camera(width=128, height=96)
+    big, grey, black = 50.0, (0.5, 0.5, 0.5), (0.0, 0.0, 0.0)
+    planes = [
+        Plane((0, -1, 0), (0, 1, 0), black, albedo=grey), Plane((0, 1.5, 0), (0, -1, 0), black, albedo=grey),
+        Plane((-1.5, 0, 0), (1, 0, 0), black, albedo=grey), Plane((0, 0, -6), (0, 0, 1), black, albedo=grey),
+        Plane((1.5, 0, 0), (-1, 0, 0), (1.0, 1.0, 1.0), bounds=((-big, big), (-big, big), (-6.5, -3.0)), albedo=grey),
+        Plane((1.5, 0, 0), (-1, 0, 0), black, bounds=((-big, big), (-big, big), (-3.0, big)), albedo=grey),
+    ]
+    g = render(cam, planes)
+    y, x = np.mgrid[0:cam.height, 0:cam.width]
+    dark = (g["linear_z"] > 0) & (g["color"][..., 0] == 0.0) & (y % 2 == 0) & (x % 2 == 0)   # every fourth: quicker
+    truth = irradiance_truth(cam, planes, pixels=dark, bounces=8)[..., 0]
+    irr = None
+    for _ in range(6):
+        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1, previous=irr)
+    ratio = float(irr[dark, 0].mean() / truth[dark].mean())
+    assert 0.7 < ratio < 1.2, ratio
+
+
+def test_bounced_light_stays_bounded_in_a_saturated_room(gpu):
+    # A closed box of saturated red. The albedo proxy reads pure red as albedo 1 in red, and bounced again every
+    # frame that ran up to 2.8x the walls' own light; the bounce caps the proxy at 0.8 (1.65x). It must settle.
+    cam = Camera(width=128, height=96)
+    red = (0.5, 0.0, 0.0)
+    g = render(cam, [Plane((0, -1, 0), (0, 1, 0), red), Plane((0, 1.5, 0), (0, -1, 0), red), Plane((-1.5, 0, 0), (1, 0, 0), red),
+                     Plane((1.5, 0, 0), (-1, 0, 0), red), Plane((0, 0, -6), (0, 0, 1), red), Plane((0, 0, 1), (0, 0, -1), red)])
+    surf = g["linear_z"] > 0
+    irr, means = None, []
+    for _ in range(20):
+        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1, previous=irr)
+        means.append(float(irr[surf, 0].mean()))
+    assert abs(means[-1] - means[-2]) < 0.01 * means[-1], means[-5:]   # settled
+    assert means[-1] < 2.0 * red[0], means[-1]
 
 
 def test_black_scene_has_no_gi(gpu):

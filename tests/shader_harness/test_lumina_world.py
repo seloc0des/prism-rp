@@ -55,7 +55,7 @@ def radiance_mip_dispatches(cam):
     "depth" into "radiance"."""
     dispatches = [Dispatch(
         "lumina/lumina_radiance_copy.comp.glsl",
-        {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("radiance", "storage", 0)},
+        {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("radiance", "storage", 0), 3: ("color", "sampled_linear"), 4: ("color", "sampled_nearest"), 5: ("color", "sampled_linear"), 6: ("color", "sampled_nearest")},
         pc.radiance_copy(cam.width, cam.height, cam.depth_params), groups_for(cam.width, cam.height))]
     for m in range(1, radiance_mip_count(cam)):
         size = (max(1, cam.width >> m), max(1, cam.height >> m))
