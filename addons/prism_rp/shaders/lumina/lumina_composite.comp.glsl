@@ -29,12 +29,6 @@ layout(push_constant, std430) uniform PushConstants {
     vec2 _pad;
 } pc;
 
-vec3 albedo_proxy(vec3 color) {
-    float l = lumina_luminance(color);
-    vec3 chroma = color / max(l, 1e-4);
-    return clamp(mix(vec3(0.5), chroma * 0.5, smoothstep(0.0, 0.02, l)), vec3(0.0), vec3(1.0));
-}
-
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     if (pixel.x >= pc.internal_resolution.x || pixel.y >= pc.internal_resolution.y) {
@@ -64,13 +58,13 @@ void main() {
         imageStore(u_color_io, pixel, vec4(n * 0.5 + 0.5, 1.0));
         return;
     } else if (pc.debug_view_mode == 6) {
-        imageStore(u_color_io, pixel, vec4(albedo_proxy(color.rgb), 1.0));
+        imageStore(u_color_io, pixel, vec4(lumina_albedo_proxy(color.rgb), 1.0));
         return;
     }
 
     if (lumina_is_sky(depth)) {
         return;
     }
-    vec3 albedo = (pc.albedo_mode == 1) ? vec3(1.0) : albedo_proxy(color.rgb);
+    vec3 albedo = (pc.albedo_mode == 1) ? vec3(1.0) : lumina_albedo_proxy(color.rgb);
     imageStore(u_color_io, pixel, vec4(color.rgb + albedo * max(gi.rgb, vec3(0.0)) * pc.intensity, color.a));
 }

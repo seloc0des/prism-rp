@@ -47,6 +47,15 @@ float lumina_luminance(vec3 c) {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
 }
 
+// Forward+ has no albedo buffer, so Lumina guesses a pixel's albedo from its lit colour: its chromaticity at
+// mid-grey (0.5) reflectance, neutral grey where the pixel is too dark to tell. Used where GI is composited
+// (lumina_composite.comp.glsl) and where last frame's GI is bounced again (lumina_radiance_copy.comp.glsl).
+vec3 lumina_albedo_proxy(vec3 color) {
+    float l = lumina_luminance(color);
+    vec3 chroma = color / max(l, 1e-4);
+    return clamp(mix(vec3(0.5), chroma * 0.5, smoothstep(0.0, 0.02, l)), vec3(0.0), vec3(1.0));
+}
+
 bool lumina_is_sky(float depth) {
     return depth <= 1e-6;  // reverse-Z: the far plane / sky is 0
 }

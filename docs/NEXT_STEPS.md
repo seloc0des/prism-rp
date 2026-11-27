@@ -460,6 +460,22 @@ no parent light at all. The floor behind the card gets 0.7–1.2x the exact ligh
   silhouettes and grazing floors may come out a little darker. Check both scenes' scores, and look at the compare
   images around Sponza's pillars and the Cornell box's blocks.
 
+**The screen-space levels now bounce light more than once.** Godot's colour buffer holds direct light only, so
+every screen level traced a single bounce while Gate 2 scores four. The radiance copy now adds last frame's
+denoised GI times the albedo proxy (and the effect's intensity) to every pixel it can reproject onto the same
+surface, the light the viewer saw that pixel reflect, so each frame adds a bounce. In a harness room with grey
+walls of albedo 0.5, Lumina gets 0.78x of the exact light with every bounce counted (`irradiance_truth` now
+path-traces later bounces), against 0.49x before, and it settles by the fourth frame. The proxy reads a saturated
+colour as albedo 1 in its channel, and in a closed red box that ran up to 2.8x the walls' own light, so the
+bounce caps it at 0.8 (1.65x). `screen_multi_bounce_enabled` turns it off; the rig's `--prism-gi-single-bounce`
+does, for the single-bounce comparison. To confirm on the GPU:
+
+- **Gate 2:** both scenes' scores and light levels, the Cornell box most of all (it was 0.76x the reference's
+  light, too dark for want of bounces). The albedo proxy's errors now count once per bounce.
+- **Settling:** `tests/check_gi_convergence.py` after a light switches on. Each bounce arrives a frame later,
+  through SVGF's history as well, so it may take longer to settle than the 1 frame measured before.
+- **Cost:** four more texture reads per pixel in the radiance copy, likely too small to see.
+
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
@@ -483,8 +499,8 @@ no parent light at all. The floor behind the card gets 0.7–1.2x the exact ligh
      level stops halfway to the screen edge, which every 128 x 96 test misses), and more as the top level changes;
    - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
      templates;
-   - on the custom build, what is left of Sponza's 1.1 dB gap to SDFGI after the ray-traced cache (above): more than
-     one bounce in the screen-space levels, skinned, blend-shape and MultiMesh geometry in the scene mirror, Lumina's
+   - on the custom build, what is left of Sponza's 1.1 dB gap to SDFGI after the ray-traced cache (above), once the
+     screen levels' new bounces are measured: skinned, blend-shape and MultiMesh geometry in the scene mirror, Lumina's
      real albedo instead of the albedo proxy, and a specular term so metals reflect bounced light, to finish Gate 2;
    - Track B wired up for Gates 3 and 4, then Gate 5.
 
