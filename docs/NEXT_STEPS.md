@@ -525,10 +525,15 @@ no parent light at all. The floor behind the card gets 0.7–1.2x the exact ligh
 3. Next, in order:
    - bring Sponza and volumetrics under the 2.40 ms Tier 2 budget without losing the image: the a-trous denoiser
      (0.35 to 0.75 ms) and the top cascade level (about 0.5 ms) are the biggest passes left; time several runs per
+     change. The top level now traces one ray per direction instead of 2 x 2, a quarter of its rays: in the
+     harness at 512 x 384 and 1024 x 768 it lights the rooms within 3% of before and flickers no more (two tests
+     hold it). Halving its steps changed nothing there either, but the rooms have no thin geometry to slip
+     past, so that waits on a test that has some. One ray per direction once made thin wires sparkle on the GPU
+     (above), and the moving patch has no wires, so watch for it. To time on Tier 2, and to check Gate 2 for any
      change;
    - measure the interval-end and facing-parent fixes (above) on the GPU: Gate 2 and Lumina's timings;
    - the parallax that is left of the top level's light loss (above), until its expected failure passes; then a
-     moving hotspot or wire test at 512 x 384, so the top level's sub-rays and steps can be judged off the GPU;
+     moving wire test at 512 x 384, so the top level's sub-rays and steps can be judged off the GPU;
    - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
      templates;
    - on the custom build, what is left of Sponza's 1.1 dB gap to SDFGI after the ray-traced cache (above): more than

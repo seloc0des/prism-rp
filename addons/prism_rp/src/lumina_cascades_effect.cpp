@@ -324,8 +324,11 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 std::copy(std::begin(proj4), std::end(proj4), pc.proj);
                 std::copy(std::begin(depth_params), std::end(depth_params), pc.depth_params);
                 // Below the top, level 0's interval is only the first probe spacing: 2 x 2 sub-rays there changed
-                // neither the harness scenes nor Gate 2, and cost three times as much as one ray.
-                pc.sub_rays = (level == 0 && !top) ? 1 : 2;
+                // neither the harness scenes nor Gate 2, and cost three times as much as one ray. The top level
+                // (above level 0) has directions enough and its rays run across the screen: at 512 x 384 and
+                // 1024 x 768 one ray per direction lit the harness rooms within 3% of 2 x 2 and flickered no more,
+                // for a quarter of its trace. A lone level 0 keeps 2 x 2 for its 16 directions.
+                pc.sub_rays = (level == 0) != top ? 1 : 2;
 
                 ScopedPassTimer timer(godot::String("lumina_rc_trace_l") + godot::itos(level), godot::Color(0.30f, 0.65f, 1.00f, 1.0f));
                 dispatch_compute(rd, trace_pipeline, uset, make_push_constant_bytes(pc),
