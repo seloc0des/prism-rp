@@ -642,20 +642,42 @@ is the GPU switching to another client partway through a pass, the desktop on th
 stage's exported median is now the sum of its passes' medians, which leaves those gaps out, and the budget check
 reads it.
 
+**Lone level-2 probes trace 2 x 2 (2026-11-27).** The lone probes' 4 x 4 sub-rays were 90% of what lone probes
+cost. On the 4060 Ti, Sponza's levels 0 to 2 took 1.35 ms with them, 0.55 ms with every lone probe at its level's
+own sub-rays and 0.44 ms with no lone probes. Lone probes on level 2 now trace 2 x 2, as many rays as the top
+level traces, and levels 0 and 1 keep 4 x 4. In the harness at 512 x 384 that gives the card scene's lone level-2
+pixels 3.6% less light (0.78x the exact light against 0.81x), and the bright-wall and small-spot rooms move by
+under 1%. Gate 2 doesn't move: 25.48 dB in the Cornell box and 31.76 dB in Sponza, at the same light level.
+Spreading the 4 x 4 over four frames, a quarter each frame, was tried first and dropped. It matched all 16
+sub-rays on average, but after SVGF the lone pixels flickered by 7 to 32% wherever they saw a small bright spot,
+because the swing tripped the temporal pass's lighting-change reset.
+
+| Scene | Main | Lone level 2 at 2 x 2 |
+| :--- | :--- | :--- |
+| Cornell box | 2.32 ms | 2.12 |
+| Foliage | 2.34 ms | 2.27 |
+| Thin geometry | 2.29 ms | 2.08 |
+| Sponza | 2.88 ms | 2.48 |
+| Volumetrics | 2.65 ms | 2.57 |
+
+Three runs each, interleaved, as above. Level 2's trace goes from 0.42-0.69 ms to 0.17-0.30. Sponza is now 0.08 ms
+over the budget and volumetrics 0.17 over; its level 2 saved 0.21 ms, but its other passes came out higher in
+these runs. The other three scenes are under.
+
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
 3. Next, in order:
-   - bring Sponza and volumetrics under the 2.40 ms Tier 2 budget without losing the image: the trace of levels 0 to 2
-     (0.5 to 0.85 ms more since #37, above) and the a-trous denoiser (0.33 to 0.55 ms) are the biggest costs now; time
-     three runs per change. The top level now traces one ray per direction instead of 2 x 2, a quarter of its rays: in
-     the harness at 512 x 384 and 1024 x 768 it lights the rooms within 3% of before and flickers no more (two tests
-     hold it). It also takes as many steps as the other levels now, not twice as many: in a room whose back wall
-     shines through a row of thin pillars, twice the steps let more light through the pillars (1.23x the exact share
-     against 1.10x, tested). Together that is an eighth of the top level's old trace, and on the 4060 Ti it now takes
-     0.04 to 0.09 ms against 0.28 to 0.55 before. Both changes were tried on the GPU before the harness reached the
-     top level (above): one ray made thin wires sparkle and fewer steps darkened Sponza. Neither harness test moves
-     thin geometry, so watch the wires in motion and Sponza's light level.
+   - bring Sponza (0.08 ms over) and volumetrics (0.17 over) under the 2.40 ms Tier 2 budget without losing the image:
+     the a-trous denoiser (0.33 to 0.55 ms) and the lone probes' 4 x 4 on levels 0 and 1 (0.16 to 0.28 ms a level) are
+     the biggest costs left; time three runs per change. The top level now traces one ray per direction instead of
+     2 x 2, a quarter of its rays: in the harness at 512 x 384 and 1024 x 768 it lights the rooms within 3% of before
+     and flickers no more (two tests hold it). It also takes as many steps as the other levels now, not twice as many:
+     in a room whose back wall shines through a row of thin pillars, twice the steps let more light through the
+     pillars (1.23x the exact share against 1.10x, tested). Together that is an eighth of the top level's old trace,
+     and on the 4060 Ti it now takes 0.04 to 0.09 ms against 0.28 to 0.55 before. Both changes were tried on the GPU
+     before the harness reached the top level (above): one ray made thin wires sparkle and fewer steps darkened
+     Sponza. Neither harness test moves thin geometry, so watch the wires in motion and Sponza's light level.
 
      One limit found on the way, not fixed: pillars that hide behind one another from the camera (looking down
      a colonnade) are missing from the depth buffer, so light crosses them. In the harness, the wall beside such
