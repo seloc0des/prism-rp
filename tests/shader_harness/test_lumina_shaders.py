@@ -450,6 +450,37 @@ def test_a_lone_probe_hands_on_what_its_rays_leave_clear(gpu):
     assert per_probe[lone][..., 3].max() > 0.5            # rays that left the screen with nothing in the way
 
 
+@pytest.mark.parametrize("block, grid", [(4, 4), (8, 4), (16, 2)], ids=["level0", "level1", "level2"])
+def test_a_lone_probe_traces_as_many_rays_as_the_finest_level_above(gpu, block, grid):
+    # A lone probe traces on to the edge of the screen with twice the steps and sub-rays enough to match the
+    # finest level above it: 4 x 4 on levels 0 and 1, 2 x 2 on level 2 (the top level's 1024 rays per
+    # probe). That is exactly the same trace run as a top level, which is never lone. The small spot makes
+    # a 4 x 4 and a 2 x 2 grid see different light.
+    cam = Camera(width=128, height=96)
+    g = render(cam, small_spot_room())
+    spacing, steps = 8, 6
+    lone = parent_support(g["linear_z"], spacing) < LONE_SUPPORT
+    probes = lone.shape[::-1]
+    size = (probes[0] * block, probes[1] * block)
+
+    def trace(length, trace_steps, sub_rays):
+        out = gpu.run(
+            {"depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"]),
+             "color": Img("rgba16f", data=g["color"]), "c": Img("rgba16f", *size)},
+            [Dispatch("lumina/lumina_rc_trace.comp.glsl",
+                      {0: ("depth", "sampled_nearest"), 1: ("normal", "sampled_nearest"), 2: ("color", "sampled_linear"),
+                       3: ("c", "storage")},
+                      pc.trace(cam.width, cam.height, probes, block, float(spacing), 8.0, length, trace_steps, 0.1, 0, 0.01,
+                               cam.proj, cam.depth_params, sub_rays=sub_rays),
+                      groups_for(*size))], ["c"])["c"]
+        return out.reshape(lone.shape[0], block, lone.shape[1], block, 4).transpose(0, 2, 1, 3, 4)[lone]
+
+    as_lone = trace(8.0, steps, 1 if block == 4 else 2)   # the C++'s sub-rays for a level below the top
+    as_top = trace(-1.0, 2 * steps, grid)
+    assert lone.sum() > 40, lone.sum()
+    np.testing.assert_allclose(as_lone, as_top, atol=1e-3)
+
+
 def test_a_level_finds_every_surface_its_ray_crosses_before_the_interval_ends(gpu):
     # Steps sit at (i + jitter) / steps of the interval, so the last one falls short of its end. A ray that
     # crossed a surface after it was missed by its own level, and the next level started behind the

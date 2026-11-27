@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -18,11 +20,19 @@ class PrismTelemetry : public godot::Object {
     GDCLASS(PrismTelemetry, godot::Object)
 
 public:
+    // A single frame's GPU time can be far from its neighbours', so readings that judge a budget
+    // take the median of the last kMedianWindow frames instead.
+    static constexpr size_t kMedianWindow = 32;
+
     struct PassSample {
         double latest_gpu_ms = 0.0;
         double ema_gpu_ms = 0.0;
         double latest_cpu_ms = 0.0;
         uint64_t sample_count = 0;
+        uint64_t last_gpu_frame = 0;
+        std::array<double, kMedianWindow> recent_gpu_ms{};
+
+        [[nodiscard]] double median_gpu_ms() const;
     };
 
     PrismTelemetry();

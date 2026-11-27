@@ -57,6 +57,9 @@ layout(push_constant, std430) uniform PushConstants {
 } pc;
 
 const float kNearerOccluder = 0.9;
+// Rays per probe, per axis, of the finest-traced level: level 2 (16 directions per axis x 2 sub-rays) and
+// the top, level 3 (32 x 1), alike. There are 4 levels at most.
+const int kFinestRaysPerAxis = 32;
 
 // One ray of a direction's interval: radiance found (rgb) and transmittance (a, 0 or 1). `cone_angle` is
 // the angular width its hit is blurred over; `jitter` places its steps along the interval.
@@ -210,9 +213,13 @@ void main() {
     // light from it (lumina_rc_merge.comp.glsl). It hands on its rays' real transmittance all the same: where
     // there is a world cache, lumina_ws_merge lights what they left clear, the only way light from off screen
     // reaches the probe (a lit wall behind the camera left the floor black without it).
-    // Its own rays then carry everything the parents would have, so it traces 4 x 4 sub-rays per
-    // direction to match their angular detail (with 2 x 2, level 0's 16 directions came out 30-45% dark
-    // behind the card and missed a small bright patch). At 1080p in the card scene that is 0.1% of level 0
+    // Its own rays then carry everything the parents would have, so it traces sub-rays enough to match the
+    // finest of them, at most 4 x 4: 4 x 4 on levels 0 and 1 (with 2 x 2, level 0's 16 directions came out
+    // 30-45% dark behind the card and missed a small bright patch) and 2 x 2 on level 2, as many rays as the
+    // top level traces. 4 x 4 there cost Sponza 0.43 ms on Tier 2; 2 x 2 gives the card scene's lone level-2
+    // pixels at 512 x 384 3.6% less light, the other harness rooms within 1%. A quarter of the 4 x 4 each frame
+    // instead, averaged by SVGF, flickered by 7-32% where lone probes saw a small bright spot: the swing
+    // tripped the temporal pass's lighting-change reset. At 1080p in the card scene lone probes are 0.1% of level 0
     // and 3.5% of level 2, mostly along silhouettes. Grazing floors qualify more, higher up: where a floor
     // runs 40 m to a back wall, 1.5%, 12% and 25% of the floor probes on levels 0 to 2, near the horizon.
     float interval_length_px = pc.interval_length_px;
@@ -223,7 +230,7 @@ void main() {
     if (on_its_own) {
         interval_length_px = -1.0;
         steps = 2 * pc.steps;
-        sub_rays = 4;
+        sub_rays = clamp(kFinestRaysPerAxis / pc.block, pc.sub_rays, 4);
     }
 
     // Each sub-ray blurs over twice its own share of the direction's 4pi / block^2 sr, so neighbouring

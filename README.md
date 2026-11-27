@@ -112,7 +112,7 @@ Enable **Prism RP** under Project Settings > Plugins. The dock finds the Chronos
    ```bash
    python3 tests/run_visual_regression.py --tier tier2 --max-flip 0.015 --max-pass-delta-ms 0.25
    ```
-   The benchmark rig saves the displayed frame and the PrismTelemetry GPU timings at the capture frame. Add `--renderdoc` to run under `renderdoccmd`: the rig triggers a capture through RenderDoc's in-app API, and if RenderDoc's Python module can be imported (`RENDERDOC_PYTHON_PATH`), per-pass durations come from the capture instead.
+   The benchmark rig saves the displayed frame and the PrismTelemetry GPU timings at the capture frame: each stage is the sum of its passes' medians over the 32 frames before it. Add `--renderdoc` to run under `renderdoccmd`: the rig triggers a capture through RenderDoc's in-app API, and if RenderDoc's Python module can be imported (`RENDERDOC_PYTHON_PATH`), per-pass durations come from the capture instead.
 
 6. **Validate everything on a real GPU in one go**: `python3 tests/run_gpu_validation.py --tier tier2` runs every scene through 24 configurations (each Chronos and Lumina stage, every debug view, the guards) plus Gate 1, and writes one `report.md`. `docs/GPU_TEST_PLAN.md` says what each image should show.
 
