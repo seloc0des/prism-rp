@@ -51,4 +51,13 @@ bool lumina_is_sky(float depth) {
     return depth <= 1e-6;  // reverse-Z: the far plane / sky is 0
 }
 
+// How far a parent probe's light can stand in for a child probe's, from their linear depths (> 0): an
+// exponential falloff in their relative depth difference. Shared by the merge, which weights parents by
+// it, and the trace, which runs a probe's interval on by itself when no parent qualifies.
+const float kLuminaParentDepthTolerance = 0.1;
+
+float lumina_parent_depth_weight(float child_z, float parent_z) {
+    return exp(-abs(parent_z - child_z) / (kLuminaParentDepthTolerance * child_z));
+}
+
 #endif // LUMINA_COMMON_GLSL

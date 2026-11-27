@@ -501,6 +501,24 @@ The card's leak at 512 x 384 fell from 0.10 to 0.07 of the light in front. The t
 its test stays an expected failure. None of this is measured on the GPU yet: Gate 2 should rise in both scenes,
 most in the closed Cornell box, and the trace costs the same, while the merge reads four normals per texel.
 
+**The floor behind an object took the light of its lit front (fixed after #36).** The harness's card test (a bright
+red card standing on a grey floor) passed at 96 x 64 and leaked at the other sizes tried: 7.3x the exact light on the
+floor behind the card at 128 x 96 and 3.5x at 256 x 192. Neither the integrate pass nor the trace's thickness test
+was the cause. On a floor seen at a grazing angle one probe spacing on screen is most of a metre, so at 128 x 96 the
+level-1 probes sat 0.1 m in front of the card and saw its lit face, while the level-0 probes they served were 0.6 m
+behind it. The merge's depth weights rated every parent there a poor match (0.19 at best). Then it normalised the
+least poor one to full weight. Now a probe that no parent can stand in for (bilinear times depth weight under 0.3)
+traces on to the edge of the screen by itself, with the top level's steps and 4 x 4 sub-rays per direction, and takes
+no parent light at all. The floor behind the card gets 0.7–1.2x the exact light at every size from 96 x 64 to
+512 x 384, and a harness test holds 128 x 96 and 256 x 192 to 0.5–1.5x of it. To confirm on the GPU:
+
+- **Cost:** in the analytic scenes at 1080p, under 1% of level-0 probes and up to 4% of an upper level's take this
+  path, but each traces 16 rays across the whole screen where it used to trace one ray over its interval. Time the
+  trace passes over several runs.
+- **Gate 2:** those probes also stop receiving the world cache, which reaches the screen levels through the merge, so
+  silhouettes and grazing floors may come out a little darker. Check both scenes' scores, and look at the compare
+  images around Sponza's pillars and the Cornell box's blocks.
+
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.

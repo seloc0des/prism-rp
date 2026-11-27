@@ -16,6 +16,8 @@
 // carry at least kMinFacingWeight of the bilinear weight, or a parent the depth test nearly rejected
 // becomes the whole answer (the floor behind a card took the light seen by probes in front of it);
 // otherwise the depth weights alone are used, and if those reject every parent, the plain bilinear blend.
+// A probe whose parents all match poorly has already traced on by itself with transmittance 0
+// (lumina_rc_trace.comp.glsl), so it takes none of this.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -35,7 +37,6 @@ layout(push_constant, std430) uniform PushConstants {
     vec2 depth_params;
 } pc;
 
-const float kParentDepthTolerance = 0.1;   // relative linear-depth difference, as an exponential falloff
 const float kMinFacingWeight = 0.1;        // of the bilinear weights' sum of 1
 
 float probe_linear_depth(vec2 center_px) {
@@ -83,7 +84,7 @@ void main() {
         float parent_z = probe_linear_depth((vec2(pp) + 0.5) * pc.parent_spacing_px);
         float depth_w;
         if (child_z > 0.0 && parent_z > 0.0) {
-            depth_w = exp(-abs(parent_z - child_z) / (kParentDepthTolerance * child_z));
+            depth_w = lumina_parent_depth_weight(child_z, parent_z);
         } else {
             depth_w = (child_z > 0.0) == (parent_z > 0.0) ? 1.0 : 0.0;   // sky matches only sky
         }

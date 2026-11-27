@@ -30,7 +30,7 @@
 // Near silhouettes that check falls back to sharp mips, and one ray per direction misses a small bright
 // patch again. Levels above 0 (and a lone level 0) trace 2 x 2 sub-rays: each covers a quarter of the cone,
 // so it needs less blur and falls back less. More sub-rays leak: a partly blocked direction's fractional transmittance lets
-// parent probes' light through past objects.
+// parent probes' light through past objects. (A probe that traces on by itself takes no parent light, so it can use more.)
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -57,10 +57,33 @@ layout(push_constant, std430) uniform PushConstants {
 } pc;
 
 const float kNearerOccluder = 0.9;
+const float kMinParentSupport = 0.3;
+
+// How well this probe's parents (the next level up, at twice the spacing) can stand in for it: their
+// bilinear weights times the merge's depth weights (lumina_rc_merge.comp.glsl). 1 on a flat surface.
+float parent_support(ivec2 probe, float child_z) {
+    float parent_spacing = 2.0 * pc.probe_spacing_px;
+    ivec2 parent_count = (pc.internal_resolution + ivec2(parent_spacing) - 1) / ivec2(parent_spacing);
+    vec2 coord = (vec2(probe) + 0.5) * pc.probe_spacing_px / parent_spacing - 0.5;
+    ivec2 p0 = ivec2(floor(coord));
+    vec2 f = coord - vec2(p0);
+    float support = 0.0;
+    for (int j = 0; j < 4; ++j) {
+        ivec2 o = ivec2(j & 1, j >> 1);
+        ivec2 pp = clamp(p0 + o, ivec2(0), parent_count - ivec2(1));
+        ivec2 px = clamp(ivec2((vec2(pp) + 0.5) * parent_spacing), ivec2(0), pc.internal_resolution - ivec2(1));
+        float d = texelFetch(u_depth_tex, px, 0).r;
+        if (!lumina_is_sky(d)) {
+            float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
+            support += w * lumina_parent_depth_weight(child_z, prism_linearize_depth(d, pc.depth_params));
+        }
+    }
+    return support;
+}
 
 // One ray of a direction's interval: radiance found (rgb) and transmittance (a, 0 or 1). `cone_angle` is
 // the angular width its hit is blurred over; `jitter` places its steps along the interval.
-vec4 trace_ray(vec3 origin, float origin_depth, vec3 dir, float cone_angle, float jitter) {
+vec4 trace_ray(vec3 origin, float origin_depth, vec3 dir, float cone_angle, float jitter, float interval_length_px, int steps) {
     vec2 res_f = vec2(pc.internal_resolution);
 
     // The ray's far end: far enough to leave the view, kept in front of the near plane.
@@ -97,7 +120,7 @@ vec4 trace_ray(vec3 origin, float origin_depth, vec3 dir, float cone_angle, floa
         }
     }
     float u0 = pc.interval_start_px / screen_len;
-    float u1 = pc.interval_length_px > 0.0 ? (pc.interval_start_px + pc.interval_length_px) / screen_len : 1.0;
+    float u1 = interval_length_px > 0.0 ? (pc.interval_start_px + interval_length_px) / screen_len : 1.0;
     u1 = min(u1, u_exit);
     if (u0 >= u1) {
         return vec4(0.0, 0.0, 0.0, 1.0);   // left the screen before this interval
@@ -119,8 +142,8 @@ vec4 trace_ray(vec3 origin, float origin_depth, vec3 dir, float cone_angle, floa
         }
     }
     float u_prev = u0;
-    float step_div = float(pc.steps - 1) + jitter;
-    for (int i = 0; i < pc.steps; ++i) {
+    float step_div = float(steps - 1) + jitter;
+    for (int i = 0; i < steps; ++i) {
         float u = mix(u0, u1, (float(i) + jitter) / max(step_div, 1e-3));
         float ray_z = 1.0 / mix(k0, k1, u);
         vec2 sample_uv = mix(s0, s1, u) / res_f;
@@ -200,19 +223,44 @@ void main() {
     origin += normal * (pc.normal_bias * view_depth);
     float origin_depth = -origin.z;
 
+    // The merge hands this probe's rays its parents' light past the interval's end, but a parent at another
+    // depth sees from somewhere else. On a floor seen at a grazing angle, a parent a probe spacing away on
+    // screen can be most of a metre away, in front of an object this probe is behind: a floor probe behind
+    // a bright card inherited the light of its lit front face. The merge's depth weights rank every parent
+    // as poor there, then normalise the least poor to full weight. When no parent can stand in for this
+    // probe, it traces on to the edge of the screen by itself, with the top level's steps, and takes no
+    // parent light at all (transmittance 0): even rays that leave the screen picked up the parent's hits.
+    // Its own rays then carry everything the parents would have, so it traces 4 x 4 sub-rays per
+    // direction to match their angular detail (with 2 x 2, level 0's 16 directions came out 30-45% dark
+    // behind the card and missed a small bright patch). Few probes qualify: none on smooth surfaces, under
+    // 1% of level 0 at 1080p in the card scene, mostly along silhouettes.
+    float interval_length_px = pc.interval_length_px;
+    int steps = pc.steps;
+    int sub_rays = pc.sub_rays;
+    bool on_its_own = interval_length_px > 0.0 && parent_support(probe, view_depth) < kMinParentSupport;
+    if (on_its_own) {
+        interval_length_px = -1.0;
+        steps = 2 * pc.steps;
+        sub_rays = 4;
+    }
+
     // Each sub-ray blurs over twice its own share of the direction's 4pi / block^2 sr, so neighbouring
     // sub-rays' footprints overlap: with exactly its share a moving hotspot flickers more, and with the
     // whole cone the hotspot loses light. The jitter along the ray changes per texel and frame (SVGF
     // integrates it); golden-ratio offsets keep the sub-rays' steps apart.
-    float cone_angle = sqrt(2.0) * sqrt(4.0 * 3.14159265) / float(pc.block * pc.sub_rays);
+    float cone_angle = sqrt(2.0) * sqrt(4.0 * 3.14159265) / float(pc.block * sub_rays);
     float jitter = prism_interleaved_gradient_noise(vec2(texel), pc.frame_index);
     vec4 sum = vec4(0.0);
-    for (int sy = 0; sy < pc.sub_rays; ++sy) {
-        for (int sx = 0; sx < pc.sub_rays; ++sx) {
-            vec2 cell = (vec2(dir_texel) + (vec2(sx, sy) + 0.5) / float(pc.sub_rays)) / float(pc.block);
-            float sub_jitter = fract(jitter + 0.618034 * float(sy * pc.sub_rays + sx));
-            sum += trace_ray(origin, origin_depth, lumina_oct_decode(cell * 2.0 - 1.0), cone_angle, sub_jitter);
+    for (int sy = 0; sy < sub_rays; ++sy) {
+        for (int sx = 0; sx < sub_rays; ++sx) {
+            vec2 cell = (vec2(dir_texel) + (vec2(sx, sy) + 0.5) / float(sub_rays)) / float(pc.block);
+            float sub_jitter = fract(jitter + 0.618034 * float(sy * sub_rays + sx));
+            sum += trace_ray(origin, origin_depth, lumina_oct_decode(cell * 2.0 - 1.0), cone_angle, sub_jitter, interval_length_px, steps);
         }
     }
-    imageStore(u_cascade_out, texel, sum / float(pc.sub_rays * pc.sub_rays));
+    sum /= float(sub_rays * sub_rays);
+    if (on_its_own) {
+        sum.a = 0.0;
+    }
+    imageStore(u_cascade_out, texel, sum);
 }
