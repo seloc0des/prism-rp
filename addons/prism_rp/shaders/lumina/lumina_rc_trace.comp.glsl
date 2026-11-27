@@ -26,8 +26,8 @@
 // is nearer than kNearerOccluder times the hit's depth.
 //
 // Near silhouettes that check falls back to sharp mips, and one ray per direction misses a small bright
-// patch again. Levels above 0 (and a lone level 0) trace 2 x 2 sub-rays: each covers a quarter of the cone,
-// so it needs less blur and falls back less. More sub-rays leak: a partly blocked direction's fractional transmittance lets
+// patch again. Levels between 0 and the top (and a lone level 0) trace 2 x 2 sub-rays: each covers a quarter
+// of the cone, so it needs less blur and falls back less. The top level has directions enough to do without. More sub-rays leak: a partly blocked direction's fractional transmittance lets
 // parent probes' light through past objects. (A probe that traces on by itself takes no parent light, so it can use more.)
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;

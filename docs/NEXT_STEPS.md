@@ -466,7 +466,10 @@ no parent light at all. The floor behind the card gets 0.7–1.2x the exact ligh
 3. Next, in order:
    - bring Sponza and volumetrics under the 2.40 ms Tier 2 budget without losing the image: the a-trous denoiser
      (0.35 to 0.75 ms) and the top cascade level (about 0.5 ms) are the biggest passes left; time several runs per
-     change;
+     change. The top level now traces one ray per direction instead of 2 x 2, a quarter of its rays: in the
+     harness at 512 x 384 and 1024 x 768 it lights the rooms within 3% of before and flickers no more (two tests
+     hold it). Halving its steps changed nothing there either, but the rooms have no thin geometry to slip
+     past, so that waits on a test that has some. To time on Tier 2, and to check Gate 2 for any change;
    - harness scenes large enough to reach the top cascade level, so its changes can be tested off the GPU: one
      so far (a black room at 512 x 384 whose left wall gets its light mostly through level 3; it fails if the top
      level stops halfway to the screen edge, which every 128 x 96 test misses), and more as the top level changes;
