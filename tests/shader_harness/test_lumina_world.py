@@ -5,7 +5,7 @@ import pytest
 
 import pc
 from harness import Dispatch, Img, groups_for
-from scene import Camera, Plane, render
+from scene import LONE_SUPPORT, Camera, Plane, parent_support, render
 
 WORLD_BLOCK = 8
 N = 4
@@ -254,6 +254,29 @@ def test_ws_merge_adds_far_field_through_open_intervals(gpu):
 
     only_world = _ws_merge(gpu, cam, g, interval, probes, state, (0.0, 0.0, 0.0), *FORWARD, block, spacing_px, flags=1)
     np.testing.assert_allclose(only_world[..., :3].reshape(-1, 3).mean(0), W, rtol=0.02)
+
+
+def test_ws_merge_lights_only_the_lone_probes_of_a_lower_level(gpu):
+    # Below the top level the world merge runs for lone probes alone (flags bit 1): those whose parents can't stand
+    # in for them, so they take no parent light (lumina_rc_trace.comp.glsl). What their rays leave clear gets the
+    # cache, and they end at transmittance 0 so the screen merge adds nothing after. Without this, light from
+    # behind the camera never reached them. Every other probe keeps its interval for the screen merge. The floor
+    # and back wall are inside the grid; at 32 x 24 a third of the probes are lone.
+    cam = Camera(width=32, height=24)
+    g = render(cam, [Plane((0, -0.3, 0), (0, 1, 0), (0.1, 0.1, 0.1)), Plane((0, 0, -1.9), (0, 0, 1), (0.1, 0.1, 0.1))])
+    spacing_px, block = 4, 8
+    lone = parent_support(g["linear_z"], spacing_px) < LONE_SUPPORT
+    assert 0 < lone.sum() < lone.size
+    interval = np.zeros((lone.shape[0] * block, lone.shape[1] * block, 4))
+    interval[...] = (0.2, 0.0, 0.0, 0.5)
+    W = np.array([0.1, 0.5, 0.9])
+    probes = np.zeros((N * WORLD_BLOCK, N * N * WORLD_BLOCK, 4)); probes[..., :3] = W; probes[..., 3] = 1.0
+    state = np.zeros((N, N * N, 4))
+    out = _ws_merge(gpu, cam, g, interval, probes, state, (0.0, 0.0, 0.0), *FORWARD, block, spacing_px, flags=2)
+    per_probe = out.reshape(lone.shape[0], block, lone.shape[1], block, 4).transpose(0, 2, 1, 3, 4)
+    np.testing.assert_allclose(per_probe[lone][..., :3].reshape(-1, 3).mean(0), (0.2, 0.0, 0.0) + 0.5 * W, rtol=0.02)
+    assert np.all(per_probe[lone][..., 3] == 0.0)
+    np.testing.assert_allclose(per_probe[~lone], interval[:block, :block][None].repeat((~lone).sum(), 0), atol=1e-3)
 
 
 def _view_to_world(v, right, up):

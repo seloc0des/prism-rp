@@ -87,6 +87,33 @@ def cornell(cam: Camera, red=(4.0, 0.0, 0.0), floor=(0.05, 0.05, 0.05)) -> dict[
     ])
 
 
+LONE_SUPPORT = 0.3   # kLuminaMinParentSupport
+
+
+def parent_support(linear_z: np.ndarray, spacing: int) -> np.ndarray:
+    """lumina_parent_support for every probe of a level `spacing` px apart, (probes_y, probes_x); nan on sky
+    probes. A probe under LONE_SUPPORT traces on to the edge of the screen by itself (lumina_rc_trace.comp.glsl)."""
+    h, w = linear_z.shape
+    ps = 2 * spacing
+    parents = np.array([(w + ps - 1) // ps, (h + ps - 1) // ps])
+    py, px = np.mgrid[0:(h + spacing - 1) // spacing, 0:(w + spacing - 1) // spacing]
+    probe = np.stack([px, py], axis=-1)
+    c = np.clip(((probe + 0.5) * spacing).astype(int), 0, [w - 1, h - 1])
+    child_z = linear_z[c[..., 1], c[..., 0]]
+    coord = (probe + 0.5) * spacing / ps - 0.5
+    p0 = np.floor(coord).astype(int)
+    f = coord - p0
+    support = np.zeros(child_z.shape)
+    for ox, oy in ((0, 0), (1, 0), (0, 1), (1, 1)):
+        q = np.clip(((np.clip(p0 + (ox, oy), 0, parents - 1) + 0.5) * ps).astype(int), 0, [w - 1, h - 1])
+        parent_z = linear_z[q[..., 1], q[..., 0]]
+        bilinear = (f[..., 0] if ox else 1 - f[..., 0]) * (f[..., 1] if oy else 1 - f[..., 1])
+        with np.errstate(divide="ignore", invalid="ignore"):
+            depth_w = np.exp(-np.abs(parent_z - child_z) / (0.1 * child_z))
+        support += np.where(parent_z > 0, bilinear * depth_w, 0.0)
+    return np.where(child_z > 0, support, np.nan)
+
+
 def irradiance_truth(cam: Camera, planes: list[Plane], n_dirs: int = 256, pixels: np.ndarray | None = None,
                      bounces: int = 1) -> np.ndarray:
     """One-bounce E / pi (what Lumina's irradiance estimates) per pixel: the cosine-weighted mean of the

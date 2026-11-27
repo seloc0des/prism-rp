@@ -5,7 +5,7 @@ import pytest
 
 import pc
 from harness import Dispatch, Img, groups_for
-from scene import Camera, Plane, cornell, irradiance_truth, render
+from scene import LONE_SUPPORT, Camera, Plane, cornell, irradiance_truth, parent_support, render
 
 BASE_BLOCK = 4
 
@@ -20,14 +20,16 @@ def cascade_layout(cam, spacing, count):
     return levels
 
 
-def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefilter=True, top_sub_rays=1, previous=None):
+def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefilter=True, top_sub_rays=1, previous=None,
+                 bounce_gain=1.0):
     """[radiance mip chain] -> trace every level -> merge top-down -> integrate. Returns irradiance (h, w, 4).
     As in the C++, mip 0 of the chain is the colour buffer plus linear depth and every level traces the
     whole chain, each hit at the mip that matches its cone's footprint (prefilter=False traces the colour
-    buffer alone, so every hit is sampled at full resolution), level 0 and the top level trace one ray per
-    direction (top_sub_rays per axis at the top; a lone level 0 traces 2 x 2) and the others 2 x 2, and the top
-    level runs on to the edge of the screen. `previous` is last frame's GI for a camera that stood still: the
-    radiance copy bounces it once more off every pixel (multi-bounce), as the C++ does with the denoised GI."""
+    buffer alone, so every hit is sampled at full resolution). Level 0 below the top traces one ray per
+    direction, and so does the top when it is level 3 (top_sub_rays per axis there); every other level traces
+    2 x 2, a lone level 0 and a lower top included. The top level runs on to the edge of the screen. `previous` is last frame's GI for a camera that stood still: the
+    radiance copy bounces it once more off every pixel (multi-bounce), as the C++ does with the denoised GI, scaled
+    by bounce_gain (the C++ passes the effect's intensity)."""
     levels = cascade_layout(cam, spacing, count)
     mips = int(np.log2(max(cam.width, cam.height))) + 1
     images = {
@@ -52,7 +54,7 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefi
                          6: ("normal", "sampled_nearest")}
         dispatches.append(Dispatch(
             "lumina/lumina_radiance_copy.comp.glsl", bindings,
-            pc.radiance_copy(cam.width, cam.height, cam.depth_params, 0.0 if previous is None else 1.0),
+            pc.radiance_copy(cam.width, cam.height, cam.depth_params, 0.0 if previous is None else bounce_gain),
             groups_for(cam.width, cam.height)))
         for m in range(1, mips):
             size = (max(1, cam.width >> m), max(1, cam.height >> m))
@@ -69,7 +71,7 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefi
             pc.trace(cam.width, cam.height, lv["probes"], lv["block"], float(lv["spacing"]),
                      spacing * (scale - 1) / 3.0, spacing * scale if i + 1 < count else -1.0,
                      steps, thickness, 0, 0.01, cam.proj, cam.depth_params,
-                     sub_rays=(top_sub_rays if i > 0 else 2) if i + 1 == count else (1 if i == 0 else 2)),
+                     sub_rays=(top_sub_rays if i >= 3 else 2) if i + 1 == count else (1 if i == 0 else 2)),
             groups_for(*lv["size"])))
     for i in range(count - 2, -1, -1):
         lv, parent = levels[i], levels[i + 1]
@@ -292,6 +294,37 @@ def test_merge_combines_interval_transmittance_and_parent(gpu):
     np.testing.assert_allclose(out[:, size[0] // 2:], np.broadcast_to((1.0, 0.5, 0.25, 0.0), out[:, size[0] // 2:].shape), atol=2e-3)
 
 
+def test_merge_gives_a_lone_probe_no_parent_light(gpu):
+    # A probe whose parents can't stand in for it traced on to the edge of the screen by itself and hands on what its
+    # rays left clear, for the world cache to light where there is one (lumina_ws_merge.comp.glsl). The merge keeps
+    # its parents' light from it, so the card fix holds whether or not a world merge ran. Every other probe takes
+    # its parents' light through its transmittance. Floor probes at 128 x 96, three in four of them lone.
+    cam = Camera(width=128, height=96)
+    g = render(cam, [Plane((0, -1, 0), (0, 1, 0), (1.0, 1.0, 1.0)), Plane((0, 0, -6), (0, 0, 1), (1.0, 1.0, 1.0))])
+    spacing, block = 8, 4
+    support = parent_support(g["linear_z"], spacing)
+    lone = support < LONE_SUPPORT
+    probes = lone.shape[::-1]
+    parent_probes = ((cam.width + 2 * spacing - 1) // (2 * spacing), (cam.height + 2 * spacing - 1) // (2 * spacing))
+    size = (probes[0] * block, probes[1] * block)
+    parent = np.zeros((parent_probes[1] * 2 * block, parent_probes[0] * 2 * block, 4))
+    parent[...] = (0.0, 0.7, 0.0, 1.0)
+    level = np.zeros((size[1], size[0], 4))
+    level[...] = (0.2, 0.0, 0.0, 0.5)
+    out = gpu.run(
+        {"parent": Img("rgba16f", data=parent), "lvl": Img("rgba16f", data=level), "depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"])},
+        [Dispatch("lumina/lumina_rc_merge.comp.glsl",
+                  {0: ("parent", "sampled_linear"), 1: ("lvl", "storage"), 2: ("depth", "sampled_nearest"),
+                   3: ("normal", "sampled_nearest")},
+                  pc.merge(probes, parent_probes, block, 2 * block, float(spacing), 2.0 * spacing, (cam.width, cam.height), cam.depth_params),
+                  groups_for(*size))], ["lvl"])["lvl"]
+    per_probe = out.reshape(probes[1], block, probes[0], block, 4).transpose(0, 2, 1, 3, 4)
+    others = ~lone & ~np.isnan(support)
+    assert lone.sum() > 20 and others.sum() > 20
+    np.testing.assert_allclose(per_probe[lone], np.broadcast_to((0.2, 0.0, 0.0, 0.0), per_probe[lone].shape), atol=2e-3)
+    np.testing.assert_allclose(per_probe[others], np.broadcast_to((0.2, 0.35, 0.0, 0.5), per_probe[others].shape), atol=2e-3)
+
+
 def test_merge_does_not_take_parents_from_another_depth(gpu):
     # Parent probes on a near surface hold light this probe (on a far surface) can't see; with a plain
     # screen-space blend it inherited part of it. Depth weights keep only the parent at its depth.
@@ -367,13 +400,38 @@ def test_merge_ignores_parents_whose_surface_faces_away_from_the_direction(gpu):
     np.testing.assert_allclose(toward, 0.75 * 0.1 + 0.25 * 5.0, rtol=2e-3)   # plain bilinear blend
 
 
+def test_a_lone_probe_hands_on_what_its_rays_leave_clear(gpu):
+    # A probe whose parents can't stand in for it traces on to the edge of the screen by itself. It hands on its
+    # rays' real transmittance: the world merge lights what they left clear (lumina_ws_merge.comp.glsl), the only
+    # way light from behind the camera reaches it, and the screen merge gives it no parent light. Floor probes at
+    # 128 x 96, three in four of them lone.
+    cam = Camera(width=128, height=96)
+    g = render(cam, [Plane((0, -1, 0), (0, 1, 0), (1.0, 1.0, 1.0)), Plane((0, 0, -6), (0, 0, 1), (1.0, 1.0, 1.0))])
+    spacing, block = 8, 8
+    lone = parent_support(g["linear_z"], spacing) < LONE_SUPPORT
+    size = (lone.shape[1] * block, lone.shape[0] * block)
+    out = gpu.run(
+        {"depth": Img("r32f", data=g["depth"]), "normal": Img("rgba8", data=g["normal"]),
+         "color": Img("rgba16f", data=g["color"]), "c": Img("rgba16f", *size)},
+        [Dispatch("lumina/lumina_rc_trace.comp.glsl",
+                  {0: ("depth", "sampled_nearest"), 1: ("normal", "sampled_nearest"), 2: ("color", "sampled_linear"), 3: ("c", "storage")},
+                  pc.trace(cam.width, cam.height, lone.shape[::-1], block, float(spacing), 8.0, 40.0, 6, 0.2, 0, 0.01,
+                           cam.proj, cam.depth_params, sub_rays=1),
+                  groups_for(*size))], ["c"])["c"]
+    per_probe = out.reshape(lone.shape[0], block, lone.shape[1], block, 4).transpose(0, 2, 1, 3, 4)
+    assert lone.sum() > 20, lone.sum()
+    assert per_probe[lone][..., 3].max() > 0.5            # rays that left the screen with nothing in the way
+
+
 def test_a_level_finds_every_surface_its_ray_crosses_before_the_interval_ends(gpu):
     # Steps sit at (i + jitter) / steps of the interval, so the last one falls short of its end. A ray that
     # crossed a surface after it was missed by its own level, and the next level started behind the
     # surface, saw no crossing and called the direction clear and black: every level boundary lost hits.
     # Floor probes look at a back wall; each direction's crossing is placed on screen exactly, and the
-    # level must hit whatever it reaches before the interval's end, and nothing after.
-    cam = Camera(width=128, height=96)
+    # level must hit whatever it reaches before the interval's end, and nothing after. At 512 x 384 every
+    # floor probe's parents can stand in for it; at 128 x 96 three in four can't, and those trace on past
+    # the interval's end by themselves (lumina_rc_trace.comp.glsl).
+    cam = Camera(*TOP_LEVEL_SIZE)
     planes = [Plane((0, -1, 0), (0, 1, 0), (1.0, 1.0, 1.0)), Plane((0, 0, -6), (0, 0, 1), (1.0, 1.0, 1.0))]
     g = render(cam, planes)
     spacing, block, start, length = 8, 8, 8.0, 40.0
@@ -592,6 +650,15 @@ def bright_wall_room():
     ])
 
 
+def small_spot_room():
+    """A 0.3 m patch on the back wall is the only light; everything else is black."""
+    x0 = 0.3
+    return black_room([
+        Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0)),
+        Plane((x0, 0.3, -5.99), (0, 0, 1), (40.0, 40.0, 40.0), bounds=((x0 - 0.15, x0 + 0.15), (0.15, 0.45), (-6.5, -5.5))),
+    ])
+
+
 @SIZES
 def test_a_bright_wall_lights_a_black_room_as_much_as_it_should(gpu, size):
     # The far part of the right wall glows; everything else is black. A firefly clamp in integrate (any
@@ -606,8 +673,8 @@ def test_a_bright_wall_lights_a_black_room_as_much_as_it_should(gpu, size):
 
 def test_the_top_level_carries_light_across_the_room(gpu):
     # The room above at TOP_LEVEL_SIZE, judged on the left wall alone. It sees the bright right wall from
-    # 3 m away, mostly through level 3: 0.99x of the exact light, against 0.39x with level 3's trace
-    # skipped. The room-wide mean misses a top level that stops halfway to the screen edge; this doesn't.
+    # 3 m away, mostly through level 3: 1.02x of the exact light (0.39x with level 3's trace skipped, before
+    # the interval-end fix). The room-wide mean misses a top level that stops halfway to the screen edge.
     cam = Camera(*TOP_LEVEL_SIZE)
     irr, truth, dark, g = light_in_black_room(gpu, cam, bright_wall_room())
     left = dark & (g["normal"][..., 0] > 0.9)
@@ -653,7 +720,7 @@ def test_a_row_of_thin_pillars_shades_the_room_as_much_as_it_should(gpu):
     # it; the near half of the room sees the wall through the gaps. Top-level rays cross the pillars a few
     # dozen pixels wide between steps far apart, and a ray that skips one lets its light through. The
     # pillars should cut the near half's light as much as they do exactly (to 0.47x). Measured: 12
-    # top-level steps let 1.23x the exact share through, 6 steps 1.06x (1.24x and 1.07x at 1024 x 768).
+    # top-level steps let 1.23x the exact share through, 6 steps 1.10x (1.08x and 0.94x at 1024 x 768).
     cam = Camera(*TOP_LEVEL_SIZE)
     lit_wall = Plane((0, 0, -5.99), (0, 0, 1), (1.0, 1.0, 1.0), bounds=((-1.5, 1.5), (-1.0, 1.5), (-6.5, -5.5)))
     pillars = [p for xc in np.arange(-1.2, 1.25, 0.4) for p in box(xc - 0.075, xc + 0.075, -4.075, -3.925)]
@@ -685,11 +752,7 @@ def test_a_small_bright_spot_lights_the_whole_black_room(gpu, size):
     # (see the card test above); the coarse levels' 2 x 2 sub-rays per direction need less blur and keep it lit.
     # (Pixel sizes are at 128 x 96; at 512 x 384 everything is four times wider and the top level runs.)
     cam = Camera(*size)
-    x0 = 0.3
-    irr, truth, dark, g = light_in_black_room(gpu, cam, black_room([
-        Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0)),
-        Plane((x0, 0.3, -5.99), (0, 0, 1), (40.0, 40.0, 40.0), bounds=((x0 - 0.15, x0 + 0.15), (0.15, 0.45), (-6.5, -5.5))),
-    ]))
+    irr, truth, dark, g = light_in_black_room(gpu, cam, small_spot_room())
     ratio = float(irr[dark].mean() / truth[dark].mean())
     assert 0.6 < ratio < 1.2, ratio
     n = g["normal"][..., :3] * 2.0 - 1.0
@@ -698,10 +761,24 @@ def test_a_small_bright_spot_lights_the_whole_black_room(gpu, size):
     assert all(0.5 * ratio < r < 2.0 * ratio for r in per_surface.values()), per_surface
 
 
-@pytest.mark.xfail(strict=True, reason="the top level loses light: 0.83x of the truth with 4 levels, 0.89x with 3 (docs/NEXT_STEPS.md)")
+@pytest.mark.parametrize("count", [2, 3])
+def test_a_small_bright_spot_lights_the_room_with_fewer_levels_too(gpu, count):
+    # cascade_count runs from 1 to 4. With fewer than four the top level has 256 directions or fewer, and one ray
+    # per direction there let the patch slip between them: 0.38x of the exact light with two levels and 0.58x with
+    # three, against 0.68x and 0.78x with 2 x 2.
+    cam = Camera(*TOP_LEVEL_SIZE)
+    irr, truth, dark, _ = light_in_black_room(gpu, cam, small_spot_room(), count=count)
+    ratio = float(irr[dark].mean() / truth[dark].mean())
+    assert 0.6 < ratio < 1.2, ratio
+
+
 def test_the_top_level_adds_light_instead_of_losing_it(gpu):
     # A fourth level only reaches further, so the room can't get darker than with three, where level 2
-    # is the top and runs to the screen's edge itself. At 512 x 384 it does, on every surface.
+    # is the top and runs to the screen's edge itself. At 512 x 384 it did, on every surface (0.83x of the
+    # truth against 0.89x). The interval-end and facing-parent fixes and the top level's one-ray trace
+    # bring it to 0.876x against 0.886x, inside the bar; parallax is what's left (docs/NEXT_STEPS.md). With
+    # 1.2% to spare, a small change to the trace can tip it: check the margin before calling a failure a
+    # regression.
     cam = Camera(*TOP_LEVEL_SIZE)
     planes = bright_wall_room()
     three, truth, dark, _ = light_in_black_room(gpu, cam, planes, count=3)
@@ -761,9 +838,11 @@ def test_light_bounces_more_than_once(gpu):
     assert 0.7 < ratio < 1.2, ratio
 
 
-def test_bounced_light_stays_bounded_in_a_saturated_room(gpu):
+@pytest.mark.parametrize("intensity", [1.0, 4.0])
+def test_bounced_light_stays_bounded_in_a_saturated_room(gpu, intensity):
     # A closed box of saturated red. The albedo proxy reads pure red as albedo 1 in red, and bounced again every
-    # frame that ran up to 2.8x the walls' own light; the bounce caps the proxy at 0.8 (1.65x). It must settle.
+    # frame that ran up to 2.8x the walls' own light; the bounce caps the proxy at 0.8 (1.77x). It must settle,
+    # at the effect's highest intensity too, which scales the bounce as it scales what the viewer sees.
     cam = Camera(width=128, height=96)
     red = (0.5, 0.0, 0.0)
     g = render(cam, [Plane((0, -1, 0), (0, 1, 0), red), Plane((0, 1.5, 0), (0, -1, 0), red), Plane((-1.5, 0, 0), (1, 0, 0), red),
@@ -771,7 +850,7 @@ def test_bounced_light_stays_bounded_in_a_saturated_room(gpu):
     surf = g["linear_z"] > 0
     irr, means = None, []
     for _ in range(20):
-        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1, previous=irr)
+        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1, previous=irr, bounce_gain=intensity)
         means.append(float(irr[surf, 0].mean()))
     assert abs(means[-1] - means[-2]) < 0.01 * means[-1], means[-5:]   # settled
     assert means[-1] < 2.0 * red[0], means[-1]

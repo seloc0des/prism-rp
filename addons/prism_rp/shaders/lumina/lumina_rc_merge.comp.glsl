@@ -16,8 +16,9 @@
 // carry at least kMinFacingWeight of the bilinear weight, or a parent the depth test nearly rejected
 // becomes the whole answer (the floor behind a card took the light seen by probes in front of it);
 // otherwise the depth weights alone are used, and if those reject every parent, the plain bilinear blend.
-// A probe whose parents all match poorly has already traced on by itself with transmittance 0
-// (lumina_rc_trace.comp.glsl), so it takes none of this.
+// A probe whose parents all match poorly is lone (lumina_parent_support): it has already traced on to the edge of
+// the screen by itself (lumina_rc_trace.comp.glsl) and takes none of this. Where there is a world cache, that lit
+// what its rays left clear (lumina_ws_merge.comp.glsl).
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -69,6 +70,11 @@ void main() {
     ivec2 max_probe = pc.parent_probe_count - ivec2(1);
 
     float child_z = probe_linear_depth(center_px);
+    if (child_z > 0.0 && lumina_parent_support(u_depth_tex, probe, pc.probe_spacing_px, pc.internal_resolution,
+                                               pc.depth_params) < kLuminaMinParentSupport) {
+        imageStore(u_cascade_io, texel, vec4(interval.rgb, 0.0));
+        return;
+    }
     vec3 dir = lumina_block_direction(dir_texel, pc.block);
     vec4 plain = vec4(0.0);
     vec4 by_depth = vec4(0.0);

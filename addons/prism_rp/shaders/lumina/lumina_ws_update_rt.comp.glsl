@@ -14,12 +14,15 @@
 //   miss                              -> nothing there: black (Lumina adds no sky light)
 //   back of a one-sided surface       -> blocked: black (the ray started inside something or behind it)
 //   a surface the camera sees         -> its radiance from the mip chain at the cone's width, as lumina_ws_update
-//                                        reads it, plus albedo x the cache's irradiance there
+//                                        reads it, plus albedo x the cache's irradiance there unless the
+//                                        screen-space bounce already put it in the mips
 //   a surface the camera doesn't see  -> albedo x (the scene's lights, shadow rays included, + the cache's
 //                                        irradiance there) + emission
-// The screen holds only direct light, so both kinds of hit add the cache's irradiance (last frame's, from
+// Godot's colour buffer holds only direct light, so both kinds of hit add the cache's irradiance (last frame's, from
 // lumina_ws_irradiance): light bounces once more each frame, and surfaces lit only by other surfaces aren't black.
-// misc.w scales that term: 0 keeps to one bounce, as Gate 2's single-bounce reference measures.
+// misc.w scales that term off screen and misc.z on screen: 0 keeps to one bounce, as Gate 2's single-bounce
+// reference measures. With the screen-space bounce on, the radiance copy has already added last frame's GI to the
+// mips, so misc.z is 0 and on-screen hits don't count that light a second time.
 // rgb = radiance, a = number of samples blended (capped), as in lumina_ws_update.
 //
 // Each texel's ray takes a new direction inside the texel's cone every frame, so the running average covers the cone
@@ -83,11 +86,11 @@ vec3 shade(LuminaScenePoint hit, vec3 p, vec3 normal, vec3 dir, float t) {
     float coverage;
     vec3 irradiance = lumina_world_sample(u_world_irradiance_tex, u_state_tex, p, normal,
         lumina_direction_texel(normal, WORLD_BLOCK), coverage);
-    vec3 bounce = irradiance * wpc.misc.w;
     vec3 on_screen;
     if (screen_radiance(p, normal, t, on_screen)) {
-        return on_screen + albedo * bounce;
+        return on_screen + albedo * irradiance * wpc.misc.z;
     }
+    vec3 bounce = irradiance * wpc.misc.w;
     // Godot sums negative lights into the same diffuse light as the indirect light; the total can't go below zero.
     return albedo * max(lumina_scene_direct_light(p, normal) + bounce, vec3(0.0)) + lumina_scene_emission(hit, dir, cone_width);
 }

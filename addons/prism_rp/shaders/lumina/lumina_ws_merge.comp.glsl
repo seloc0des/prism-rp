@@ -5,11 +5,14 @@
 #include "lumina_common.glsl"
 #include "lumina_world_common.glsl"
 
-// Merge for the TOP screen-space cascade level: instead of ending in nothing, rays that make it
+// Merge for the TOP screen-space cascade level, and for lone probes below it: instead of ending in nothing, rays that make it
 // through the level's interval (transmittance a) pick up the world-space radiance cache at the
 // probe's world position, in the matching world direction (trilinear over the 8 nearest cells that lie
 // in front of the probe's surface).
 // flags bit 0 (debug "world cascade only"): ignore the screen interval, show only the cache.
+// flags bit 1: a level below the top, where only lone probes take the cache (lumina_parent_support): they trace
+// to the edge of the screen like the top level, and the screen merge gives them no parent light. They end at
+// transmittance 0. Every other probe is left for the screen merge.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -32,13 +35,18 @@ void main() {
         return;
     }
 
+    ivec2 center_px = clamp(ivec2((vec2(probe) + 0.5) * probe_spacing_px), ivec2(0), res - ivec2(1));
+    float depth = textureLod(u_depth_tex, (vec2(center_px) + 0.5) / vec2(res), 0.0).r;
+    bool lone_only = (wpc.a1.w & 2) != 0;
+    if (lone_only && (lumina_is_sky(depth) ||
+                      lumina_parent_support(u_depth_tex, probe, probe_spacing_px, res, wpc.misc.xy) >= kLuminaMinParentSupport)) {
+        return;
+    }
+
     vec4 interval = imageLoad(u_cascade_io, texel);
     if ((wpc.a1.w & 1) != 0) {
         interval = vec4(0.0, 0.0, 0.0, 1.0);
     }
-
-    ivec2 center_px = clamp(ivec2((vec2(probe) + 0.5) * probe_spacing_px), ivec2(0), res - ivec2(1));
-    float depth = textureLod(u_depth_tex, (vec2(center_px) + 0.5) / vec2(res), 0.0).r;
     if (lumina_is_sky(depth) || interval.a <= 0.0) {
         imageStore(u_cascade_io, texel, interval);
         return;
@@ -52,5 +60,6 @@ void main() {
     float coverage;
     vec3 far_field = lumina_world_sample(u_world_probes_tex, u_state_tex, world_pos, world_normal,
         lumina_direction_texel(world_dir, WORLD_BLOCK), coverage);
-    imageStore(u_cascade_io, texel, vec4(interval.rgb + interval.a * far_field, interval.a * (1.0 - min(coverage, 1.0))));
+    float transmittance = lone_only ? 0.0 : interval.a * (1.0 - min(coverage, 1.0));
+    imageStore(u_cascade_io, texel, vec4(interval.rgb + interval.a * far_field, transmittance));
 }

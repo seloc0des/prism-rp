@@ -464,9 +464,9 @@ It is marked as an expected failure (strict, so it reports when a fix makes it p
 Sponza too, which reads too dark.
 
 The large scenes don't settle everything. Tracing the top level with one ray instead of 2 x 2, or with 8 steps
-instead of 12, moves every ratio above by under 0.02, while on the GPU the first made thin wires sparkle and the
+instead of 12, moves every ratio above by under 0.02 with four levels, while on the GPU the first made thin wires sparkle and the
 second darkened Sponza. Sparkle is a frame-to-frame effect, so judging those two needs a moving test at this size,
-not a mean. The four large scenes add about 60 s to the lavapipe job.
+not a mean. The large scenes add a minute or more to the lavapipe job.
 
 **Where the top level's light went.** Three causes, measured in the 512 x 384 wall room:
 
@@ -497,9 +497,39 @@ Shipping settings, fraction of the exact answer:
 | Hotspot room, 128 x 96 | 0.64 / 0.64 | 0.67 / 0.67 |
 | Hotspot room, 512 x 384 | 0.77 / 0.68 | 0.77 / 0.72 |
 
-The card's leak at 512 x 384 fell from 0.10 to 0.07 of the light in front. The top level still loses light, so
-its test stays an expected failure. None of this is measured on the GPU yet: Gate 2 should rise in both scenes,
-most in the closed Cornell box, and the trace costs the same, while the merge reads four normals per texel.
+The card's leak at 512 x 384 fell from 0.10 to 0.07 of the light in front. The top level still lost light, so
+its test stayed an expected failure. These two fixes leave the trace's cost as it was; the merge reads four normals
+per texel more.
+
+**All of it together.** This section and the next two were written on separate branches, each measured without the
+other's changes. The same harness scenes, measured again with everything in (shipping settings, lavapipe):
+
+| Test | Measured apart | Together |
+| :--- | :--- | :--- |
+| Wall room, 128 x 96, 3 / 4 levels | 0.75 / 0.74 | 0.90 / 0.90 |
+| Wall room, 512 x 384, 3 / 4 levels | 0.89 / 0.83 | 0.89 / 0.88 |
+| Hotspot room, 128 x 96, 3 / 4 levels | 0.67 / 0.67 | 0.66 / 0.66 |
+| Hotspot room, 512 x 384, 3 / 4 levels | 0.77 / 0.72 | 0.78 / 0.73 |
+| Far (left) wall of the wall room, 512 x 384 | 0.99x | 1.02x |
+| Card, leak past the exact answer, 512 x 384 | 0.07 of the light in front | none (-0.01) |
+| Card, floor behind it, 96 x 64 to 512 x 384 | 0.7–1.2x | 0.72–1.11x |
+| Pillars, Lumina's share through them, 512 x 384 / 1024 x 768 | 1.06x / 1.07x | 1.10x / 0.94x |
+| Grey room, every bounce counted, frame 4 | 0.78x | 0.79x (0.81x by frame 6) |
+| Saturated red box, settled | 1.65x | 1.77x |
+
+Four levels now light the 512 x 384 wall room to 98.8% of three levels' light, over the 97% bar of
+`test_the_top_level_adds_light_instead_of_losing_it`, which runs as an ordinary test now. The hotspot room still
+gets less from four levels than from three, so the top level's loss isn't closed.
+
+One ray per direction suits only a top level with 1024 directions. With three levels the top is level 2, with 256,
+and one ray there left the hotspot room at 0.58x against 0.78x with 2 x 2 (0.38x against 0.68x with two levels).
+A top below level 3 keeps 2 x 2, and a test holds two and three levels to it. With four levels one ray costs
+little: 0.73x against 0.74x.
+
+At 128 x 96 the top level never traces, so that row's jump is the lone path: in the wall room it takes 34% of
+level 0's probes and over 80% of levels 1 and 2 at that size, against 0%, 1.3% and 33% at 512 x 384. The 128 x 96
+variants now mostly test that path, which 1080p seldom takes; judge changes to the cascades by the 512 x 384 rows.
+None of this is measured on the GPU yet: Gate 2 should rise in both scenes, most in the closed Cornell box.
 
 **The floor behind an object took the light of its lit front (fixed after #36).** The harness's card test (a bright
 red card standing on a grey floor) passed at 96 x 64 and leaked at the other sizes tried: 7.3x the exact light on the
@@ -512,12 +542,21 @@ traces on to the edge of the screen by itself, with twice its level's steps and 
 no parent light at all. The floor behind the card gets 0.7–1.2x the exact light at every size from 96 x 64 to
 512 x 384, and a harness test holds 128 x 96 and 256 x 192 to 0.5–1.5x of it. To confirm on the GPU:
 
-- **Cost:** in the analytic scenes at 1080p, under 1% of level-0 probes and up to 4% of an upper level's take this
-  path, but each traces 16 rays across the whole screen where it used to trace one ray over its interval. Time the
-  trace passes over several runs.
-- **Gate 2:** those probes also stop receiving the world cache, which reaches the screen levels through the merge, so
-  silhouettes and grazing floors may come out a little darker. Check both scenes' scores, and look at the compare
-  images around Sponza's pillars and the Cornell box's blocks.
+- **Cost:** in the card scene at 1080p, 0.1% of level-0 probes and 3.5% of level 2's take this path. Grazing floors
+  take it more, higher up: where a floor runs 40 m to a back wall, 1.5%, 12% and 25% of the floor probes on levels 0
+  to 2, near the horizon. Each traces 16 rays with twice the steps across the whole screen where it used to trace
+  one to four over its interval. With a world cache, each level below the top also gets a world-merge pass, which
+  every probe but the lone ones leaves after six depth reads. Time the trace and world-merge passes over several
+  runs, Sponza's open courtyard most of all.
+- **Gate 2:** at first those probes lost the world cache as well, since it reaches the screen levels only through the
+  merge. On the custom build a lit wall behind the camera then left the floor black in
+  `tests/engine/run_world_cache_rt.sh`, where at 320 x 180 most floor probes are lone. A lone probe now hands on its
+  rays' real transmittance; the screen merge gives it no parent light, and where there is a cache `lumina_ws_merge`
+  lights what its rays left clear on every level below the top, as it does the top level. The engine test passes
+  again on the 4060 Ti, and three harness tests hold the pieces. Check both scenes' scores, and look at the compare
+  images around Sponza's pillars and the Cornell box's blocks. The cache is sampled at the lone probe's own position,
+  from the nearest 1 m cells in front of its surface, and no test covers a card with a cache, so check too that the
+  floor behind an object doesn't pick up the cache's light from its lit face.
 
 **The screen-space levels now bounce light more than once.** Godot's colour buffer holds direct light only, so
 every screen level traced a single bounce while Gate 2 scores four. The radiance copy now adds last frame's
@@ -535,6 +574,17 @@ does, for the single-bounce comparison. To confirm on the GPU:
   through SVGF's history as well, so it may take longer to settle than the 1 frame measured before.
 - **Cost:** four more texture reads per pixel in the radiance copy, likely too small to see.
 
+Two fixes to it since, both with harness tests that failed before them:
+
+- **The ray-traced cache counted that light twice.** Its hits on screen read the radiance mips, which now hold last
+  frame's GI bounced off each pixel, and then added albedo x the cache's irradiance as well. They add the cache's
+  light only while the screen-space bounce is off. Gate 2 hasn't run with both bounces on yet; its light levels on
+  the custom build are the check.
+- **It could run away above an intensity of 1.25.** The bounce scales by the effect's intensity, up to 4, and with
+  only the albedo capped at 0.8 a closed room gains light every frame once 0.8 x intensity passes 1: 0.5 to 44,000
+  in 20 frames at intensity 4. The cap
+  now applies to albedo x intensity, and the saturated box settles at 1.77x at intensity 4, as at 1.
+
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
@@ -545,7 +595,7 @@ does, for the single-bounce comparison. To confirm on the GPU:
      harness at 512 x 384 and 1024 x 768 it lights the rooms within 3% of before and flickers no more (two tests
      hold it). It also takes as many steps as the other levels now, not twice as many: in a room whose back wall
      shines through a row of thin pillars, twice the steps let more light through the pillars (1.23x the exact
-     share against 1.06x, tested). Together that is an eighth of the top level's old trace. To time on Tier 2,
+     share against 1.10x, tested). Together that is an eighth of the top level's old trace. To time on Tier 2,
      and to check Gate 2 for any change. Both changes were tried on the GPU before the harness reached the top
      level (above): one ray made thin wires sparkle and fewer steps darkened Sponza. Neither harness test moves
      thin geometry, so watch the wires in motion and Sponza's light level.
@@ -556,8 +606,9 @@ does, for the single-bounce comparison. To confirm on the GPU:
      blocking light everywhere else). Screen space can't see them; the ray-traced world cache can, so it may
      explain part of what's left of the smears on Sponza's columns;
    - measure the interval-end and facing-parent fixes (above) on the GPU: Gate 2 and Lumina's timings;
-   - the parallax that is left of the top level's light loss (above), until its expected failure passes; then a
-     moving wire test at 512 x 384, so the top level's sub-rays and steps can be judged off the GPU;
+   - the parallax that is left of the top level's light loss (above): its test passes with 1.2% to spare, and the
+     hotspot room still gets 0.73x from four levels against 0.78x from three; then a moving wire test at 512 x 384,
+     so the top level's sub-rays and steps can be judged off the GPU;
    - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
      templates;
    - on the custom build, what is left of Sponza's 1.1 dB gap to SDFGI after the ray-traced cache (above), once the

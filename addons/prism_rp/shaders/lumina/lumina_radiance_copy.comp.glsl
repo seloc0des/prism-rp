@@ -16,7 +16,8 @@
 // frame's GI is reprojected with the motion vectors and used only on the same surface, as SVGF's temporal
 // pass decides it (lumina_svgf_temporal.comp.glsl). bounce_gain 0 turns this off (single-bounce GI).
 // The proxy gives a saturated colour an albedo of 1 in its channel, which nothing real has; bounced again
-// and again that runs away in a saturated room, so the bounce caps it at kMaxBounceAlbedo.
+// and again that runs away in a saturated room, so the bounce caps it at kMaxBounceAlbedo. Above an
+// intensity of 1 the cap applies to albedo x intensity, or a closed room gains light every frame without end.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -59,7 +60,8 @@ void main() {
             vec3 n = lumina_decode_normal(texelFetch(u_normal_roughness_tex, p, 0));
             if (prev_geo.w > 0.0 && abs(prev_geo.w - z) / z < 0.1 && dot(normalize(prev_geo.xyz), n) > 0.9) {
                 vec3 gi = max(textureLod(u_prev_gi_tex, prev_uv, 0.0).rgb, vec3(0.0));
-                radiance += min(lumina_albedo_proxy(radiance), vec3(kMaxBounceAlbedo)) * gi * pc.bounce_gain;
+                vec3 albedo = min(lumina_albedo_proxy(radiance), vec3(kMaxBounceAlbedo / max(pc.bounce_gain, 1.0)));
+                radiance += albedo * gi * pc.bounce_gain;
             }
         }
     }

@@ -57,29 +57,6 @@ layout(push_constant, std430) uniform PushConstants {
 } pc;
 
 const float kNearerOccluder = 0.9;
-const float kMinParentSupport = 0.3;
-
-// How well this probe's parents (the next level up, at twice the spacing) can stand in for it: their
-// bilinear weights times the merge's depth weights (lumina_rc_merge.comp.glsl). 1 on a flat surface.
-float parent_support(ivec2 probe, float child_z) {
-    float parent_spacing = 2.0 * pc.probe_spacing_px;
-    ivec2 parent_count = (pc.internal_resolution + ivec2(parent_spacing) - 1) / ivec2(parent_spacing);
-    vec2 coord = (vec2(probe) + 0.5) * pc.probe_spacing_px / parent_spacing - 0.5;
-    ivec2 p0 = ivec2(floor(coord));
-    vec2 f = coord - vec2(p0);
-    float support = 0.0;
-    for (int j = 0; j < 4; ++j) {
-        ivec2 o = ivec2(j & 1, j >> 1);
-        ivec2 pp = clamp(p0 + o, ivec2(0), parent_count - ivec2(1));
-        ivec2 px = clamp(ivec2((vec2(pp) + 0.5) * parent_spacing), ivec2(0), pc.internal_resolution - ivec2(1));
-        float d = texelFetch(u_depth_tex, px, 0).r;
-        if (!lumina_is_sky(d)) {
-            float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
-            support += w * lumina_parent_depth_weight(child_z, prism_linearize_depth(d, pc.depth_params));
-        }
-    }
-    return support;
-}
 
 // One ray of a direction's interval: radiance found (rgb) and transmittance (a, 0 or 1). `cone_angle` is
 // the angular width its hit is blurred over; `jitter` places its steps along the interval.
@@ -229,15 +206,20 @@ void main() {
     // a bright card inherited the light of its lit front face. The merge's depth weights rank every parent
     // as poor there, then normalise the least poor to full weight. When no parent can stand in for this
     // probe, it traces on to the edge of the screen by itself, with twice its level's steps, and takes no
-    // parent light at all (transmittance 0): even rays that leave the screen picked up the parent's hits.
+    // parent light at all: even rays that leave the screen picked up the parent's hits. The merge keeps that
+    // light from it (lumina_rc_merge.comp.glsl). It hands on its rays' real transmittance all the same: where
+    // there is a world cache, lumina_ws_merge lights what they left clear, the only way light from off screen
+    // reaches the probe (a lit wall behind the camera left the floor black without it).
     // Its own rays then carry everything the parents would have, so it traces 4 x 4 sub-rays per
     // direction to match their angular detail (with 2 x 2, level 0's 16 directions came out 30-45% dark
-    // behind the card and missed a small bright patch). Few probes qualify: none on smooth surfaces, under
-    // 1% of level 0 at 1080p in the card scene, mostly along silhouettes.
+    // behind the card and missed a small bright patch). At 1080p in the card scene that is 0.1% of level 0
+    // and 3.5% of level 2, mostly along silhouettes. Grazing floors qualify more, higher up: where a floor
+    // runs 40 m to a back wall, 1.5%, 12% and 25% of the floor probes on levels 0 to 2, near the horizon.
     float interval_length_px = pc.interval_length_px;
     int steps = pc.steps;
     int sub_rays = pc.sub_rays;
-    bool on_its_own = interval_length_px > 0.0 && parent_support(probe, view_depth) < kMinParentSupport;
+    bool on_its_own = interval_length_px > 0.0 &&
+        lumina_parent_support(u_depth_tex, probe, pc.probe_spacing_px, pc.internal_resolution, pc.depth_params) < kLuminaMinParentSupport;
     if (on_its_own) {
         interval_length_px = -1.0;
         steps = 2 * pc.steps;
@@ -258,9 +240,5 @@ void main() {
             sum += trace_ray(origin, origin_depth, lumina_oct_decode(cell * 2.0 - 1.0), cone_angle, sub_jitter, interval_length_px, steps);
         }
     }
-    sum /= float(sub_rays * sub_rays);
-    if (on_its_own) {
-        sum.a = 0.0;
-    }
-    imageStore(u_cascade_out, texel, sum);
+    imageStore(u_cascade_out, texel, sum / float(sub_rays * sub_rays));
 }

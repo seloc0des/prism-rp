@@ -264,8 +264,8 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
         // one above (see lumina_radiance_copy.comp.glsl and lumina_radiance_downsample.comp.glsl). Mip 0 also
         // bounces last frame's denoised GI off every pixel, reprojected onto last frame's geometry, so light
         // gains a bounce each frame.
+        const bool screen_bounce = screen_multi_bounce_enabled && vt.has_last_gi && vt.has_history && !reset_requested;
         {
-            const bool bounce = screen_multi_bounce_enabled && vt.has_last_gi && vt.has_history && !reset_requested;
             ScopedPassTimer timer("lumina_radiance_downsample", godot::Color(0.35f, 0.60f, 0.95f, 1.0f));
             godot::TypedArray<godot::RDUniform> cu;
             cu.push_back(make_sampler_texture_uniform(0, nearest_sampler, color_tex));
@@ -283,7 +283,7 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
             cpc.width = size.x;
             cpc.height = size.y;
             std::copy(std::begin(depth_params), std::end(depth_params), cpc.depth_params);
-            cpc.bounce_gain = bounce ? intensity : 0.0f;   // as the composite scales what the viewer sees
+            cpc.bounce_gain = screen_bounce ? intensity : 0.0f;   // as the composite scales what the viewer sees
             dispatch_compute(rd, radiance_copy_pipeline, cset, make_push_constant_bytes(cpc), gx, gy);
 
             for (uint32_t mip = 1; mip < vt.radiance_mip_count; ++mip) {
@@ -319,7 +319,7 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 // Interval i covers [l0 * (4^i - 1) / 3, l0 * (4^(i+1) - 1) / 3) screen pixels along the ray's
                 // projection, l0 = probe spacing. The top level runs on to the edge of the screen (length <= 0)
                 // with the same steps as the others. Twice as many let more light through rows of thin pillars in
-                // the harness (1.57x the exact light against 1.39x at 1024 x 768) and changed nothing elsewhere.
+                // the harness (1.23x the exact share against 1.10x at 512 x 384) and changed nothing elsewhere.
                 const float l0 = static_cast<float>(probe_spacing);
                 const float scale = std::pow(4.0f, static_cast<float>(level));
                 const bool top = level + 1 == cascade_count;
@@ -339,11 +339,13 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 std::copy(std::begin(proj4), std::end(proj4), pc.proj);
                 std::copy(std::begin(depth_params), std::end(depth_params), pc.depth_params);
                 // Below the top, level 0's interval is only the first probe spacing: 2 x 2 sub-rays there changed
-                // neither the harness scenes nor Gate 2, and cost three times as much as one ray. The top level
-                // (above level 0) has directions enough and its rays run across the screen: at 512 x 384 and
-                // 1024 x 768 one ray per direction lit the harness rooms within 3% of 2 x 2 and flickered no more,
-                // for a quarter of its trace. A lone level 0 keeps 2 x 2 for its 16 directions.
-                pc.sub_rays = (level == 0) != top ? 1 : 2;
+                // neither the harness scenes nor Gate 2, and cost three times as much as one ray. A top level with
+                // 1024 directions (level 3) has directions enough and its rays run across the screen: at 512 x 384
+                // and 1024 x 768 one ray per direction lit the harness rooms within 3% of 2 x 2 and flickered no
+                // more, for a quarter of its trace. With fewer levels the top has 256 directions or fewer, and one
+                // ray let a small bright patch slip between them (0.58x of the exact light against 0.78x with three
+                // levels), so it keeps 2 x 2, as a lone level 0 does for its 16.
+                pc.sub_rays = ((level == 0 && !top) || (top && level >= 3)) ? 1 : 2;
 
                 ScopedPassTimer timer(godot::String("lumina_rc_trace_l") + godot::itos(level), godot::Color(0.30f, 0.65f, 1.00f, 1.0f));
                 dispatch_compute(rd, trace_pipeline, uset, make_push_constant_bytes(pc),
@@ -386,8 +388,10 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 const godot::RID scene_set = _world_scene_set();
                 const bool traced = scene_set.is_valid();
                 const bool bounce = traced && world_multi_bounce_enabled;
-                upc.misc[2] = 8.0f * spacing;    // ray length (the march; the traced update reaches the far plane)
-                upc.misc[3] = traced ? (bounce ? 1.0f : 0.0f) : 32.0f;   // the traced update's bounce, or the march's steps
+                // The march's ray length, or the traced update's bounce at hits the camera sees: none when this
+                // frame's radiance copy has already bounced last frame's GI into the mips those hits read.
+                upc.misc[2] = traced ? (bounce && !screen_bounce ? 1.0f : 0.0f) : 8.0f * spacing;
+                upc.misc[3] = traced ? (bounce ? 1.0f : 0.0f) : 32.0f;   // the traced update's bounce off screen, or the march's steps
                 const auto bytes = make_push_constant_bytes(upc);
                 const uint32_t ax = groups_for(kWorldGridN * kWorldGridN * kWorldBlock);
                 const uint32_t ay = groups_for(kWorldGridN * kWorldBlock);
@@ -447,6 +451,23 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 if (mset.is_valid()) {
                     dispatch_compute(rd, ws_merge_pipeline, mset, make_push_constant_bytes(mpc),
                         groups_for(top.probe_count.x * top.block), groups_for(top.probe_count.y * top.block));
+                }
+
+                // Lone probes below the top traced on to the edge of the screen by themselves and take no parent
+                // light, so the cache lights what their rays left clear (flags bit 1), as it does the top's.
+                for (int32_t level = 0; level < cascade_count - 1; ++level) {
+                    const CascadeLevel &cl = vt.cascades[static_cast<size_t>(level)];
+                    WorldPushConstants lpc = mpc;
+                    lpc.a0[3] = cl.block;
+                    lpc.a1[3] |= 2;
+                    lpc.misc[2] = cl.spacing_px;
+                    godot::TypedArray<godot::RDUniform> lu = u.duplicate();
+                    lu[3] = make_image_uniform(3, cl.texture);
+                    const godot::RID lset = godot::UniformSetCacheRD::get_cache(ws_merge_shader, 0, lu);
+                    if (lset.is_valid()) {
+                        dispatch_compute(rd, ws_merge_pipeline, lset, make_push_constant_bytes(lpc),
+                            groups_for(cl.probe_count.x * cl.block), groups_for(cl.probe_count.y * cl.block));
+                    }
                 }
             }
         }

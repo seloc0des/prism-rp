@@ -100,7 +100,7 @@ The report's **Errors** section lists any run with a Vulkan validation message (
 
 ### Lumina
 
-Lumina adds one bounce of indirect light, computed from what's on screen. The Cornell box (01) is the clearest test: red and green walls should tint the white floor, block and ceiling next to them.
+Lumina adds indirect light, computed from what's on screen and bounced more than once (the rig's `--prism-gi-single-bounce` keeps it to one). The Cornell box (01) is the clearest test: red and green walls should tint the white floor, block and ceiling next to them.
 
 | Config | Looks right | Looks wrong, and what it points to |
 | :--- | :--- | :--- |

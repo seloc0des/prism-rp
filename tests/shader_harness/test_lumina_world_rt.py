@@ -20,12 +20,14 @@ def atlas_shape():
     return (N * WORLD_BLOCK, N * N * WORLD_BLOCK, 4)
 
 
-def update_rt(gpu, cam, g, scene, irradiance=None, bounce=1.0, classify=True):
+def update_rt(gpu, cam, g, scene, irradiance=None, bounce=1.0, classify=True, screen_holds_bounce=False):
     """One frame of classify + ray-traced update from an empty cache, camera at the origin looking down -Z.
-    bounce scales the cache's irradiance at hits (misc.w: 1 multi-bounce, 0 one bounce). Without classify, no probe
-    is buried behind what the camera sees."""
+    bounce scales the cache's irradiance at hits (misc.w: 1 multi-bounce, 0 one bounce); at hits the camera sees
+    (misc.z) it is 0 when the screen already holds a bounce, as the C++ sets it. Without classify, no probe is
+    buried behind what the camera sees."""
     cam_pos = (0.0, 0.0, 0.0)
-    push = world_pc(cam, cam_pos, *FORWARD, base_cell_for(cam_pos), steps=bounce)
+    push = world_pc(cam, cam_pos, *FORWARD, base_cell_for(cam_pos), misc_z=0.0 if screen_holds_bounce else bounce,
+                    steps=bounce)
     irradiance = np.zeros(atlas_shape()) if irradiance is None else irradiance
     dispatches = radiance_mip_dispatches(cam)
     if classify:
@@ -227,6 +229,22 @@ def test_rt_update_bounces_the_caches_irradiance_off_a_hit(gpu, bounce, expected
     irradiance[...] = (0.8, 0.8, 0.8, 1.0)
     probes = update_rt(gpu, cam, render(cam, []), Scene([wall_behind_camera(z=1.75)]), irradiance=irradiance, bounce=bounce)
     assert at(probes, (0, 0, 0), (0, 0, 1))[:3] == pytest.approx((expected,) * 3, abs=0.01)
+
+
+@pytest.mark.parametrize("screen_holds_bounce, expected", [(False, (2.4, 0.4, 0.4)), (True, (2.0, 0.0, 0.0))],
+                         ids=["screen_direct_only", "screen_bounced"])
+def test_rt_update_bounces_the_cache_off_a_hit_on_screen_only_once(gpu, screen_holds_bounce, expected):
+    # A hit the camera sees takes the screen's red plus albedo x the cache's irradiance, the bounce Godot's direct
+    # light lacks. With the screen-space bounce on, the radiance copy has already bounced last frame's GI into the
+    # mips the hit reads, and adding the cache's on top would count that light twice. The wall is inside the grid,
+    # where the cache has irradiance to give.
+    cam = Camera(width=64, height=48, fov_y_deg=90.0)
+    g = render(cam, [Plane((0.0, 0.0, -1.75), (0.0, 0.0, 1.0), (2.0, 0.0, 0.0))])
+    wall = Mesh(quad((0.0, 0.0, -1.75), (0.0, 0.0, 1.0), 40.0), GREY)
+    irradiance = np.zeros(atlas_shape())
+    irradiance[...] = (0.8, 0.8, 0.8, 1.0)
+    probes = update_rt(gpu, cam, g, Scene([wall]), irradiance=irradiance, screen_holds_bounce=screen_holds_bounce)
+    assert at(probes, (0, 0, -1), (0, 0, -1))[:3] == pytest.approx(expected, abs=0.02)
 
 
 def block_directions():
