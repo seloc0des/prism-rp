@@ -592,6 +592,18 @@ def test_a_bright_wall_lights_a_black_room_as_much_as_it_should(gpu, size):
     assert 0.6 < ratio < 1.2, ratio
 
 
+def test_the_top_level_carries_light_across_the_room(gpu):
+    # The room above at TOP_LEVEL_SIZE, judged on the left wall alone. It sees the bright right wall from
+    # 3 m away, mostly through level 3: 0.99x of the exact light, against 0.39x with level 3's trace
+    # skipped. The room-wide mean misses a top level that stops halfway to the screen edge; this doesn't.
+    cam = Camera(*TOP_LEVEL_SIZE)
+    irr, truth, dark, g = light_in_black_room(gpu, cam, bright_wall_room())
+    left = dark & (g["normal"][..., 0] > 0.9)
+    assert left.sum() > 1000, left.sum()
+    ratio_left = float(irr[left].mean() / truth[left].mean())
+    assert 0.7 < ratio_left < 1.3, ratio_left
+
+
 @SIZES
 def test_a_small_bright_spot_lights_the_whole_black_room(gpu, size):
     # A 0.3 m patch, about 4 px on screen, is the only light. Sampled at full resolution, the coarse
