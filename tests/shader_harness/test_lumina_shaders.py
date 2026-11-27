@@ -419,31 +419,45 @@ def black_room(extra):
             Plane((-1.5, 0, 0), (1, 0, 0), black), Plane((0, 0, -6), (0, 0, 1), black)] + extra
 
 
-def light_in_black_room(gpu, cam, planes):
+def light_in_black_room(gpu, cam, planes, count=4):
     """Lumina's irradiance and the exact one-bounce truth (red channel), and the mask of dark surface
     pixels, which receive all their light from the bright planes. Shipping defaults: 4 levels, 6 steps."""
     g = render(cam, planes)
-    irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1)[..., 0]
+    irr = run_cascades(gpu, cam, g, count=count, steps=6, thickness=0.1)[..., 0]
     dark = (g["linear_z"] > 0) & (g["color"][..., 0] == 0.0)
     return irr, irradiance_truth(cam, planes)[..., 0], dark, g
 
 
-def test_a_bright_wall_lights_a_black_room_as_much_as_it_should(gpu):
+# Shipping layout (8 px spacing, 4 levels): the top level's interval starts 8 * (4^3 - 1) / 3 = 168 px from
+# its probe, past the edge of a 128 x 96 frame, so small scenes never run it. At 512 x 384 it traces a
+# good part of the frame, the way it does at 1080p.
+TOP_LEVEL_SIZE = (512, 384)
+SIZES = pytest.mark.parametrize("size", [(128, 96), TOP_LEVEL_SIZE], ids=lambda s: f"{s[0]}x{s[1]}")
+
+
+def bright_wall_room():
+    """The far part of the right wall glows; everything else is black."""
+    big = 50.0
+    return black_room([
+        Plane((1.5, 0, 0), (-1, 0, 0), (1.0, 1.0, 1.0), bounds=((-big, big), (-big, big), (-6.5, -3.0))),
+        Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0), bounds=((-big, big), (-big, big), (-3.0, big))),
+    ])
+
+
+@SIZES
+def test_a_bright_wall_lights_a_black_room_as_much_as_it_should(gpu, size):
     # The far part of the right wall glows; everything else is black. A firefly clamp in integrate (any
     # direction much brighter than the probe's mean cut down) cuts this wall's real light too: 0.50x of
     # the truth with one at 8x the mean. What Lumina misses without one (about 0.7x) is mostly near the
     # crease and at the wall's edges, where screen-space mips mix the wall with its black neighbours.
-    cam = Camera(width=128, height=96)
-    big = 50.0
-    irr, truth, dark, _ = light_in_black_room(gpu, cam, black_room([
-        Plane((1.5, 0, 0), (-1, 0, 0), (1.0, 1.0, 1.0), bounds=((-big, big), (-big, big), (-6.5, -3.0))),
-        Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0), bounds=((-big, big), (-big, big), (-3.0, big))),
-    ]))
+    cam = Camera(*size)
+    irr, truth, dark, _ = light_in_black_room(gpu, cam, bright_wall_room())
     ratio = float(irr[dark].mean() / truth[dark].mean())
     assert 0.6 < ratio < 1.2, ratio
 
 
-def test_a_small_bright_spot_lights_the_whole_black_room(gpu):
+@SIZES
+def test_a_small_bright_spot_lights_the_whole_black_room(gpu, size):
     # A 0.3 m patch, about 4 px on screen, is the only light. Sampled at full resolution, the coarse
     # levels' fixed directions hit it at full strength or miss it, so a few surfaces get it all and the
     # floor and ceiling almost none; a firefly clamp cuts most of the rest. Tracing each hit at the mip
@@ -451,7 +465,8 @@ def test_a_small_bright_spot_lights_the_whole_black_room(gpu):
     # only about 32 px wide here, so coarse texels around the patch take in the nearer side walls, floor
     # and ceiling, and the trace steps down to sharper mips to keep from leaking light past silhouettes
     # (see the card test above); the coarse levels' 2 x 2 sub-rays per direction need less blur and keep it lit.
-    cam = Camera(width=128, height=96)
+    # (Pixel sizes are at 128 x 96; at 512 x 384 everything is four times wider and the top level runs.)
+    cam = Camera(*size)
     x0 = 0.3
     irr, truth, dark, g = light_in_black_room(gpu, cam, black_room([
         Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0)),
@@ -463,6 +478,45 @@ def test_a_small_bright_spot_lights_the_whole_black_room(gpu):
     surfaces = {"floor": n[..., 1] > 0.9, "ceiling": n[..., 1] < -0.9, "left wall": n[..., 0] > 0.9, "right wall": n[..., 0] < -0.9}
     per_surface = {k: float(irr[m & dark].mean() / truth[m & dark].mean()) for k, m in surfaces.items()}
     assert all(0.5 * ratio < r < 2.0 * ratio for r in per_surface.values()), per_surface
+
+
+@pytest.mark.xfail(strict=True, reason="the top level loses light: 0.80x of the truth with 4 levels, 0.87x with 3 (docs/NEXT_STEPS.md)")
+def test_the_top_level_adds_light_instead_of_losing_it(gpu):
+    # A fourth level only reaches further, so the room can't get darker than with three, where level 2
+    # is the top and runs to the screen's edge itself. At 512 x 384 it does, on every surface.
+    cam = Camera(*TOP_LEVEL_SIZE)
+    planes = bright_wall_room()
+    three, truth, dark, _ = light_in_black_room(gpu, cam, planes, count=3)
+    four = light_in_black_room(gpu, cam, planes, count=4)[0]
+    ratio3 = float(three[dark].mean() / truth[dark].mean())
+    ratio4 = float(four[dark].mean() / truth[dark].mean())
+    assert ratio4 > 0.97 * ratio3, (ratio3, ratio4)
+
+
+def test_light_does_not_leak_through_the_back_of_objects_with_the_top_level(gpu):
+    # The card test above at shipping settings, in a frame large enough for the top level to trace. The
+    # floor behind the card still gets the grey floor and back wall's own light, so the leak is measured
+    # against the exact answer rather than against zero.
+    cam = Camera(*TOP_LEVEL_SIZE)
+    floor = (0.05, 0.05, 0.05)
+    planes = [
+        Plane((0, -1, 0), (0, 1, 0), floor),
+        Plane((0, 0, -7), (0, 0, 1), floor),
+        Plane((0, 0, -3.5), (0, 0, 1), (4.0, 0.0, 0.0), bounds=((-0.6, 0.6), (-1.0, 0.6), (-4.0, -3.0))),
+    ]
+    g = render(cam, planes)
+    irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1)[..., 0]
+    truth = irradiance_truth(cam, planes)[..., 0]
+    pos = cam.ray_dirs() * g["linear_z"][..., None]
+    on_floor = (g["normal"][..., 1] > 0.9) & (g["linear_z"] > 0)
+    beside = (np.abs(pos[..., 0]) > 0.7) & (np.abs(pos[..., 0]) < 1.6)
+    front = on_floor & beside & (pos[..., 2] > -3.0) & (pos[..., 2] < -2.0)
+    behind = on_floor & beside & (pos[..., 2] > -5.5) & (pos[..., 2] < -4.2)
+    assert front.sum() > 300 and behind.sum() > 300
+    lit = float(truth[front].mean())
+    assert float(irr[front].mean()) > 0.5 * lit                        # the lit face does bounce onto the floor in front
+    leak = float(irr[behind].mean() - truth[behind].mean())
+    assert leak < 0.25 * lit, (leak, lit)
 
 
 def test_black_scene_has_no_gi(gpu):

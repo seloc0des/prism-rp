@@ -101,27 +101,32 @@ def irradiance_truth(cam: Camera, planes: list[Plane], n_dirs: int = 256) -> np.
     r = np.sqrt(k / n_dirs)
     phi = k * np.pi * (3.0 - np.sqrt(5.0))
     local = np.stack([r * np.cos(phi), r * np.sin(phi), np.sqrt(1.0 - r * r)], axis=-1)     # (D, 3), cosine-weighted
-    helper = np.where(np.abs(nrm[:, 1:2]) < 0.9, [[0.0, 1.0, 0.0]], [[1.0, 0.0, 0.0]])
-    t = np.cross(nrm, helper)
-    t /= np.linalg.norm(t, axis=-1, keepdims=True)
-    b = np.cross(nrm, t)
-    d = local[None, :, 0:1] * t[:, None] + local[None, :, 1:2] * b[:, None] + local[None, :, 2:3] * nrm[:, None]  # (P, D, 3)
-    o = (pos + nrm * 1e-4)[:, None, :]
-    best = np.full(d.shape[:2], np.inf)
-    col = np.zeros(d.shape)
-    for pl in planes:
-        pn = np.array(pl.normal, float)
-        pn /= np.linalg.norm(pn)
-        den = d @ pn
-        with np.errstate(divide="ignore", invalid="ignore"):
-            tt = ((np.array(pl.point, float) - o) @ pn) / den
-        hit = (den < -1e-6) & (tt > 1e-4) & (tt < best)
-        if pl.bounds is not None:
-            hp = o + d * np.where(np.isfinite(tt), tt, 0.0)[..., None]
-            for axis, (lo, hi) in enumerate(pl.bounds):
-                hit &= (hp[..., axis] >= lo) & (hp[..., axis] <= hi)
-        best[hit] = tt[hit]
-        col[hit] = pl.color
+    mean = np.zeros_like(pos)
+    chunk = 8192     # pixels per batch: the (P, D, 3) arrays would take several GB at 512 x 384
+    for s in range(0, len(pos), chunk):
+        cn = nrm[s:s + chunk]
+        helper = np.where(np.abs(cn[:, 1:2]) < 0.9, [[0.0, 1.0, 0.0]], [[1.0, 0.0, 0.0]])
+        t = np.cross(cn, helper)
+        t /= np.linalg.norm(t, axis=-1, keepdims=True)
+        b = np.cross(cn, t)
+        d = local[None, :, 0:1] * t[:, None] + local[None, :, 1:2] * b[:, None] + local[None, :, 2:3] * cn[:, None]  # (P, D, 3)
+        o = (pos[s:s + chunk] + cn * 1e-4)[:, None, :]
+        best = np.full(d.shape[:2], np.inf)
+        col = np.zeros(d.shape)
+        for pl in planes:
+            pn = np.array(pl.normal, float)
+            pn /= np.linalg.norm(pn)
+            den = d @ pn
+            with np.errstate(divide="ignore", invalid="ignore"):
+                tt = ((np.array(pl.point, float) - o) @ pn) / den
+            hit = (den < -1e-6) & (tt > 1e-4) & (tt < best)
+            if pl.bounds is not None:
+                hp = o + d * np.where(np.isfinite(tt), tt, 0.0)[..., None]
+                for axis, (lo, hi) in enumerate(pl.bounds):
+                    hit &= (hp[..., axis] >= lo) & (hp[..., axis] <= hi)
+            best[hit] = tt[hit]
+            col[hit] = pl.color
+        mean[s:s + chunk] = col.mean(axis=1)
     out = np.zeros(z.shape + (3,))
-    out[surf] = col.mean(axis=1)
+    out[surf] = mean
     return out
