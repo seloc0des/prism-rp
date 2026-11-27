@@ -12,7 +12,9 @@
 // Intervals are measured in screen pixels along the ray's projection: level i covers
 // [interval_start_px, interval_start_px + interval_length_px) of it, and the top level
 // (interval_length_px <= 0) runs on until the ray leaves the screen. Steps are spaced evenly on screen and
-// placed on the ray with perspective-correct interpolation. (Converting the pixel lengths to world
+// placed on the ray with perspective-correct interpolation. The jitter moves the first step, and the last
+// always lands on the interval's end: with steps at (i + jitter) / steps, a ray crossing a surface after
+// the last one was missed by its level, and the next level, starting behind the surface, missed it too. (Converting the pixel lengths to world
 // units at the probe's own depth gave each probe a reach of about its own distance from the camera,
 // so walls and floor near the camera never saw the far side of the room.)
 //
@@ -117,8 +119,9 @@ vec4 trace_ray(vec3 origin, float origin_depth, vec3 dir, float cone_angle, floa
         }
     }
     float u_prev = u0;
+    float step_div = float(pc.steps - 1) + jitter;
     for (int i = 0; i < pc.steps; ++i) {
-        float u = mix(u0, u1, (float(i) + jitter) / float(pc.steps));
+        float u = mix(u0, u1, (float(i) + jitter) / max(step_div, 1e-3));
         float ray_z = 1.0 / mix(k0, k1, u);
         vec2 sample_uv = mix(s0, s1, u) / res_f;
         float scene_depth = textureLod(u_depth_tex, sample_uv, 0.0).r;
