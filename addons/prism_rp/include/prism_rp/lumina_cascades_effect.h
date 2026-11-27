@@ -153,7 +153,8 @@ private:
         int32_t height = 0;
         float depth_params[2] = { 0.05f, 0.0f };
         float bounce_gain = 0.0f;   // 0: no previous GI to bounce
-        float _pad[3] = { 0.0f, 0.0f, 0.0f };
+        float scene_albedo = 0.0f;  // 1: binding 7 holds this frame's albedo from the scene mirror
+        float _pad[2] = { 0.0f, 0.0f };
     };
     static_assert(sizeof(RadianceCopyPushConstants) == 32);
 
@@ -245,6 +246,7 @@ private:
         std::array<godot::RID, 2> moments;          // RG16F
         std::array<godot::RID, 2> geometry;         // RGBA16F: view normal, linear depth
         std::array<godot::RID, 2> filter;           // RGBA16F a-trous ping-pong: rgb, a = variance
+        godot::RID scene_albedo;                    // RGBA16F: the scene mirror's albedo, a = 1 where a ray hit
         uint32_t history_index = 0;                 // which of [0], [1] holds last frame
         bool has_history = false;
         uint32_t last_gi = 0;                       // which filter[] holds last frame's denoised GI
@@ -257,6 +259,9 @@ private:
     void _release_view_targets();
     bool _render_ray_traced_albedo(godot::RenderSceneBuffersRD *p_buffers, godot::RenderSceneData *p_scene_data,
             const godot::Vector2i &p_size, uint32_t p_view_count);
+    bool _ensure_rt_albedo_pipeline();
+    void _trace_scene_albedo(godot::RenderSceneData *p_scene_data, uint32_t p_view, const godot::RID &p_target,
+            const godot::Vector2i &p_size, const godot::RID &p_scene_set);
 
     godot::RenderingDevice *rd = nullptr;
     godot::RID nearest_sampler;

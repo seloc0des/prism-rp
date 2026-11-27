@@ -11,8 +11,10 @@
 // texel takes in something in front of the surface its ray hit (lumina_rc_trace.comp.glsl).
 //
 // Godot's colour buffer holds direct light only, so on its own every level traces one bounce. Each pixel
-// also sends out last frame's GI times its albedo (the composite's proxy, scaled by its intensity), the
-// light the viewer saw it reflect: what the cascades trace then bounces once more every frame. Last
+// also sends out last frame's GI times its albedo (scaled by the composite's intensity), the light the viewer
+// saw it reflect: what the cascades trace then bounces once more every frame. On the custom build the albedo is
+// the scene mirror's, traced through each pixel (lumina_rt_albedo.comp.glsl); elsewhere, and where that ray
+// missed, it is the composite's proxy, the pixel's hue at a mid-grey reflectance. Last
 // frame's GI is reprojected with the motion vectors and used only on the same surface, as SVGF's temporal
 // pass decides it (lumina_svgf_temporal.comp.glsl). bounce_gain 0 turns this off (single-bounce GI).
 // The proxy gives a saturated colour an albedo of 1 in its channel, which nothing real has; bounced again
@@ -28,12 +30,13 @@ layout(set = 0, binding = 3) uniform sampler2D u_prev_gi_tex;         // last fr
 layout(set = 0, binding = 4) uniform sampler2D u_velocity_tex;
 layout(set = 0, binding = 5) uniform sampler2D u_prev_geometry_tex;   // last frame's view normal, linear depth
 layout(set = 0, binding = 6) uniform sampler2D u_normal_roughness_tex;
+layout(set = 0, binding = 7) uniform sampler2D u_scene_albedo_tex;    // the scene mirror's albedo, a = 1 where a ray hit
 
 layout(push_constant, std430) uniform PushConstants {
     ivec2 size;
     vec2 depth_params;
     float bounce_gain;   // the composite's intensity; 0: no previous GI to bounce
-    float _pad0;
+    float scene_albedo;  // 1: u_scene_albedo_tex holds this frame's albedo (lumina_rt_albedo.comp.glsl)
     vec2 _pad1;
 } pc;
 
@@ -60,7 +63,9 @@ void main() {
             vec3 n = lumina_decode_normal(texelFetch(u_normal_roughness_tex, p, 0));
             if (prev_geo.w > 0.0 && abs(prev_geo.w - z) / z < 0.1 && dot(normalize(prev_geo.xyz), n) > 0.9) {
                 vec3 gi = max(textureLod(u_prev_gi_tex, prev_uv, 0.0).rgb, vec3(0.0));
-                vec3 albedo = min(lumina_albedo_proxy(radiance), vec3(kMaxBounceAlbedo / max(pc.bounce_gain, 1.0)));
+                vec4 traced = pc.scene_albedo > 0.0 ? texelFetch(u_scene_albedo_tex, p, 0) : vec4(0.0);
+                vec3 guess = traced.a > 0.5 ? traced.rgb : lumina_albedo_proxy(radiance);
+                vec3 albedo = min(guess, vec3(kMaxBounceAlbedo / max(pc.bounce_gain, 1.0)));
                 radiance += albedo * gi * pc.bounce_gain;
             }
         }

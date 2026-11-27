@@ -44,14 +44,14 @@ def run_cascades(gpu, cam, g, spacing=8, count=3, steps=16, thickness=0.2, prefi
         bindings = {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("radiance", "storage", 0)}
         if previous is None:   # bounce_gain 0 never reads these
             bindings |= {3: ("color", "sampled_linear"), 4: ("color", "sampled_nearest"), 5: ("color", "sampled_linear"),
-                         6: ("color", "sampled_nearest")}
+                         6: ("color", "sampled_nearest"), 7: ("color", "sampled_nearest")}
         else:
             n = g["normal"][..., :3] * 2.0 - 1.0
             images["prev_gi"] = Img("rgba16f", data=np.concatenate([previous[..., :3], np.ones(previous.shape[:2] + (1,))], axis=-1))
             images["velocity"] = Img("rg16f", data=np.zeros((cam.height, cam.width, 2)))
             images["prev_geo"] = Img("rgba16f", data=np.concatenate([n, g["linear_z"][..., None]], axis=-1))
             bindings |= {3: ("prev_gi", "sampled_linear"), 4: ("velocity", "sampled_nearest"), 5: ("prev_geo", "sampled_nearest"),
-                         6: ("normal", "sampled_nearest")}
+                         6: ("normal", "sampled_nearest"), 7: ("color", "sampled_nearest")}   # scene_albedo 0: 7 unread
         dispatches.append(Dispatch(
             "lumina/lumina_radiance_copy.comp.glsl", bindings,
             pc.radiance_copy(cam.width, cam.height, cam.depth_params, 0.0 if previous is None else bounce_gain),
@@ -183,7 +183,7 @@ def test_radiance_copy_stores_colour_and_linear_depth(gpu):
     color[~floor, :3] = (0.3, 0.6, 1.0)               # a background colour on the sky
     out = gpu.run({"color": Img("rgba16f", data=color), "depth": Img("r32f", data=g["depth"]), "dst": Img("rgba16f", 32, 24)},
                   [Dispatch("lumina/lumina_radiance_copy.comp.glsl",
-                            {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("dst", "storage"), 3: ("color", "sampled_linear"), 4: ("color", "sampled_nearest"), 5: ("color", "sampled_linear"), 6: ("color", "sampled_nearest")},
+                            {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("dst", "storage"), 3: ("color", "sampled_linear"), 4: ("color", "sampled_nearest"), 5: ("color", "sampled_linear"), 6: ("color", "sampled_nearest"), 7: ("color", "sampled_nearest")},
                             pc.radiance_copy(32, 24, cam.depth_params), groups_for(32, 24))],
                   ["dst"])["dst"]
     assert floor.sum() > 50 and (~floor).sum() > 50
@@ -191,6 +191,33 @@ def test_radiance_copy_stores_colour_and_linear_depth(gpu):
     np.testing.assert_allclose(out[floor, 3], g["linear_z"][floor], rtol=2e-3)
     assert (out[~floor, :3] == 0.0).all()           # rays find no light in the sky, so none blurs off it
     assert (out[~floor, 3] > 1e4).all()             # and the sky is never nearer than a hit
+
+
+def test_the_bounce_takes_the_scene_mirrors_albedo_where_its_ray_hit(gpu):
+    # On the custom build the bounce reflects last frame's GI off each pixel's albedo as the scene mirror has it
+    # (lumina_rt_albedo.comp.glsl), not the proxy guessed from the pixel's colour. Where the mirror's ray missed
+    # (a = 0), and with scene_albedo off, it keeps the proxy. A grey wall, last frame's GI 0.5 everywhere.
+    cam = Camera(width=32, height=24)
+    g = render(cam, [Plane((0, 0, -3), (0, 0, 1), (0.2, 0.2, 0.2))])
+    n = g["normal"][..., :3] * 2.0 - 1.0
+    mirror = np.zeros((cam.height, cam.width, 4))
+    mirror[:, : cam.width // 2] = (0.1, 0.3, 0.6, 1.0)     # left half: the mirror's ray hit
+    gi = np.full((cam.height, cam.width, 4), 0.5)
+    images = {"color": Img("rgba16f", data=g["color"]), "depth": Img("r32f", data=g["depth"]), "dst": Img("rgba16f", cam.width, cam.height),
+              "gi": Img("rgba16f", data=gi), "velocity": Img("rg16f", data=np.zeros((cam.height, cam.width, 2))),
+              "geo": Img("rgba16f", data=np.concatenate([n, g["linear_z"][..., None]], axis=-1)),
+              "normal": Img("rgba8", data=g["normal"]), "mirror": Img("rgba16f", data=mirror)}
+    bindings = {0: ("color", "sampled_nearest"), 1: ("depth", "sampled_nearest"), 2: ("dst", "storage"), 3: ("gi", "sampled_linear"),
+                4: ("velocity", "sampled_nearest"), 5: ("geo", "sampled_nearest"), 6: ("normal", "sampled_nearest"), 7: ("mirror", "sampled_nearest")}
+    out = {flag: gpu.run(images, [Dispatch("lumina/lumina_radiance_copy.comp.glsl", bindings,
+                                           pc.radiance_copy(cam.width, cam.height, cam.depth_params, 1.0, flag),
+                                           groups_for(cam.width, cam.height))], ["dst"])["dst"]
+           for flag in (0.0, 1.0)}
+    left, right = slice(0, cam.width // 2), slice(cam.width // 2, cam.width)
+    expected = g["color"][:, left, :3] + np.array([0.1, 0.3, 0.6]) * 0.5
+    np.testing.assert_allclose(out[1.0][:, left, :3], expected, rtol=3e-3)
+    np.testing.assert_array_equal(out[1.0][:, right], out[0.0][:, right])
+    assert np.abs(out[0.0][:, left, :3] - expected).max() > 0.05   # the proxy alone gives something else
 
 
 @pytest.mark.parametrize("src_w, src_h", [(24, 16), (25, 17), (5, 3)])
