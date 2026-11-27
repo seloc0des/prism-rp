@@ -303,8 +303,9 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 }
 
                 // Interval i covers [l0 * (4^i - 1) / 3, l0 * (4^(i+1) - 1) / 3) screen pixels along the ray's
-                // projection, l0 = probe spacing. The top level runs on to the edge of the screen (length <= 0),
-                // with twice the steps since it covers the most screen.
+                // projection, l0 = probe spacing. The top level runs on to the edge of the screen (length <= 0)
+                // with the same steps as the others. Twice as many let more light through rows of thin pillars in
+                // the harness (1.57x the exact light against 1.39x at 1024 x 768) and changed nothing elsewhere.
                 const float l0 = static_cast<float>(probe_spacing);
                 const float scale = std::pow(4.0f, static_cast<float>(level));
                 const bool top = level + 1 == cascade_count;
@@ -317,7 +318,7 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 pc.probe_spacing_px = cl.spacing_px;
                 pc.interval_start_px = l0 * (scale - 1.0f) / 3.0f;
                 pc.interval_length_px = top ? -1.0f : l0 * scale;
-                pc.steps = top ? 2 * steps_per_interval : steps_per_interval;
+                pc.steps = steps_per_interval;
                 pc.thickness = thickness;
                 pc.frame_index = frame_counter;
                 pc.normal_bias = 0.01f;

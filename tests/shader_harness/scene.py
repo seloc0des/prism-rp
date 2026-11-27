@@ -86,14 +86,17 @@ def cornell(cam: Camera, red=(4.0, 0.0, 0.0), floor=(0.05, 0.05, 0.05)) -> dict[
     ])
 
 
-def irradiance_truth(cam: Camera, planes: list[Plane], n_dirs: int = 256) -> np.ndarray:
+def irradiance_truth(cam: Camera, planes: list[Plane], n_dirs: int = 256, pixels: np.ndarray | None = None) -> np.ndarray:
     """One-bounce E / pi (what Lumina's irradiance estimates) per pixel: the cosine-weighted mean of the
     radiance (plane colour) seen from each visible point, by casting n_dirs fixed cosine-distributed rays.
     Room means converge by 256 rays for large lights; a light a few pixels wide reads about 5% high there
-    (most pixels' rays miss it, a few catch it). 0 on sky pixels. Planes are one-sided, as in render()."""
+    (most pixels' rays miss it, a few catch it). 0 on sky pixels. Planes are one-sided, as in render().
+    `pixels` (a boolean mask) limits the work to those pixels; the rest come back 0."""
     g = render(cam, planes)
     z = g["linear_z"]
     surf = z > 0
+    if pixels is not None:
+        surf = surf & pixels
     pos = (cam.ray_dirs() * z[..., None])[surf]
     nrm = g["normal"][..., :3][surf] * 2.0 - 1.0
     nrm /= np.linalg.norm(nrm, axis=-1, keepdims=True)
@@ -128,9 +131,12 @@ def _mean_radiance(pos, nrm, local, planes):
             tt = ((np.array(pl.point, float) - o) @ pn) / den
         hit = (den < -1e-6) & (tt > 1e-4) & (tt < best)
         if pl.bounds is not None:
-            hp = o + d * np.where(np.isfinite(tt), tt, 0.0)[..., None]
+            idx = np.nonzero(hit)   # check the bounds only where the ray can hit the plane at all
+            hp = o[idx[0], 0] + d[idx] * tt[idx][:, None]
+            inside = np.ones(len(idx[0]), bool)
             for axis, (lo, hi) in enumerate(pl.bounds):
-                hit &= (hp[..., axis] >= lo) & (hp[..., axis] <= hi)
+                inside &= (hp[:, axis] >= lo) & (hp[:, axis] <= hi)
+            hit[idx[0][~inside], idx[1][~inside]] = False
         best[hit] = tt[hit]
         col[hit] = pl.color
     return col.mean(axis=1)

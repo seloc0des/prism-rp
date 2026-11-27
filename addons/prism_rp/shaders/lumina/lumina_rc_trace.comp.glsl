@@ -228,7 +228,7 @@ void main() {
     // screen can be most of a metre away, in front of an object this probe is behind: a floor probe behind
     // a bright card inherited the light of its lit front face. The merge's depth weights rank every parent
     // as poor there, then normalise the least poor to full weight. When no parent can stand in for this
-    // probe, it traces on to the edge of the screen by itself, with the top level's steps, and takes no
+    // probe, it traces on to the edge of the screen by itself, with twice its level's steps, and takes no
     // parent light at all (transmittance 0): even rays that leave the screen picked up the parent's hits.
     // Its own rays then carry everything the parents would have, so it traces 4 x 4 sub-rays per
     // direction to match their angular detail (with 2 x 2, level 0's 16 directions came out 30-45% dark

@@ -508,7 +508,7 @@ was the cause. On a floor seen at a grazing angle one probe spacing on screen is
 level-1 probes sat 0.1 m in front of the card and saw its lit face, while the level-0 probes they served were 0.6 m
 behind it. The merge's depth weights rated every parent there a poor match (0.19 at best). Then it normalised the
 least poor one to full weight. Now a probe that no parent can stand in for (bilinear times depth weight under 0.3)
-traces on to the edge of the screen by itself, with the top level's steps and 4 x 4 sub-rays per direction, and takes
+traces on to the edge of the screen by itself, with twice its level's steps and 4 x 4 sub-rays per direction, and takes
 no parent light at all. The floor behind the card gets 0.7–1.2x the exact light at every size from 96 x 64 to
 512 x 384, and a harness test holds 128 x 96 and 256 x 192 to 0.5–1.5x of it. To confirm on the GPU:
 
@@ -527,10 +527,18 @@ no parent light at all. The floor behind the card gets 0.7–1.2x the exact ligh
      (0.35 to 0.75 ms) and the top cascade level (about 0.5 ms) are the biggest passes left; time several runs per
      change. The top level now traces one ray per direction instead of 2 x 2, a quarter of its rays: in the
      harness at 512 x 384 and 1024 x 768 it lights the rooms within 3% of before and flickers no more (two tests
-     hold it). Halving its steps changed nothing there either, but the rooms have no thin geometry to slip
-     past, so that waits on a test that has some. One ray per direction once made thin wires sparkle on the GPU
-     (above), and the moving patch has no wires, so watch for it. To time on Tier 2, and to check Gate 2 for any
-     change;
+     hold it). It also takes as many steps as the other levels now, not twice as many: in a room whose back wall
+     shines through a row of thin pillars, twice the steps let more light through the pillars (1.23x the exact
+     share against 1.06x, tested). Together that is an eighth of the top level's old trace. To time on Tier 2,
+     and to check Gate 2 for any change. Both changes were tried on the GPU before the harness reached the top
+     level (above): one ray made thin wires sparkle and fewer steps darkened Sponza. Neither harness test moves
+     thin geometry, so watch the wires in motion and Sponza's light level.
+
+     One limit found on the way, not fixed: pillars that hide behind one another from the camera (looking down
+     a colonnade) are missing from the depth buffer, so light crosses them. In the harness, the wall beside such
+     a colonnade gets 1.5x its exact light (a thickness of 0.3 instead of 0.1 brings it to 1.0x, at the cost of
+     blocking light everywhere else). Screen space can't see them; the ray-traced world cache can, so it may
+     explain part of what's left of the smears on Sponza's columns;
    - measure the interval-end and facing-parent fixes (above) on the GPU: Gate 2 and Lumina's timings;
    - the parallax that is left of the top level's light loss (above), until its expected failure passes; then a
      moving wire test at 512 x 384, so the top level's sub-rays and steps can be judged off the GPU;
