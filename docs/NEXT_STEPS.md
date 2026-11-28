@@ -744,23 +744,50 @@ Thickness costs nothing measurable: in three interleaved runs of each, every sce
 two-level timing above for the same build, so Sponza is 0.35 to 0.40 ms over the budget and volumetrics 0.10 to 0.18
 over.
 
+**The albedo rays look only where Godot drew (2026-11-28).** The screen bounce's albedo rays ran from the near plane to
+the far plane, but all they need is the surface Godot drew at the pixel. Each now looks for it within 2% of the depth
+buffer's depth there, and sky pixels trace nothing. That changes what they find where the scene mirror lacks what
+Godot drew. The foliage scene's leaves are a MultiMesh and the volumetrics scene's sparks are particles, neither
+mirrored yet, and the full-length rays went straight through them: the lower half of the foliage scene took the
+ground's albedo. Those rays miss now and the bounce keeps the proxy there, the leaf's own colour. The foliage scene's GI
+gains 7% on average, green light between the leaves, and looks otherwise the same; the volumetrics scene's doesn't
+move. Elsewhere the two agree. The Ray-Traced Albedo view differs on 22 to 469 pixels along silhouettes in the other
+three scenes, the scene-mirror engine test still matches Godot's unshaded view on every pixel, and Gate 2 doesn't move
+(25.52 and 33.74 dB). Four harness tests hold the new behaviour, two of which fail on the old rays.
+
+| Scene | Albedo rays before | Windowed |
+| :--- | :--- | :--- |
+| Cornell box | 0.151 ms | 0.134 |
+| Foliage | 0.128 ms | 0.083 |
+| Thin geometry | 0.152 ms | 0.092 |
+| Sponza | 0.179 ms | 0.173 |
+| Volumetrics | 0.261 ms | 0.150 |
+
+Median of three interleaved runs each. Sponza's rays gain almost nothing, so Sponza stays 0.40 ms over; volumetrics
+comes to 2.51 ms, 0.11 over. Whole-frame sums were noisier than usual in these runs: thin geometry's level-1 trace
+swung between 0.35 and 0.80 ms on either build, and the GPU sat at 44% busy with nothing of Lumina's running.
+
+**Lone level-1 probes stay at 4 x 4.** At 2 x 2 they would save Sponza 0.17 to 0.24 ms, but the harness's small-spot
+room at 128 x 96, where 92% of level 1's probes are lone, then gets 0.55x its exact light against 0.66x, below the
+test's floor of 0.6. At 3 x 3 it gets 0.61x, too close to the floor to build on. At 512 x 384 neither changes the
+small-spot or bright-wall rooms, and 2 x 2 brings the card's lone pixels nearer the exact light (0.72x against 0.63x).
+A small bright light seen mostly by lone probes is what their extra rays are for, so they keep them.
+
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
 3. Next, in order:
-   - bring Sponza (0.35 to 0.40 ms over) and volumetrics (0.10 to 0.18 over) under the 2.40 ms Tier 2 budget without
-     losing the image: the a-trous denoiser (0.33 to 0.58 ms), the lone probes' 4 x 4 on levels 0 and 1 (0.16 to 0.28
-     ms a level) and the world cache's update (0.19 to 0.32 ms with two levels) are the biggest costs left. Lone
-     level-1 probes at 2 x 2 would save 0.17 to 0.24 ms; in the harness they come closer to the exact light (0.76x
-     against 0.67x in the card scene) but shift by 9 to 13% where they are, so they need Gate 2 and a look. Time
-     three runs per change. The top level now traces one ray per direction instead of 2 x 2, a quarter of its rays:
-     in the harness at 512 x 384 and 1024 x 768 it lights the rooms within 3% of before and flickers no more (two
-     tests hold it). It also takes as many steps as the other levels now, not twice as many: in a room whose back
-     wall shines through a row of thin pillars, twice the steps let more light through the pillars (1.23x the exact
-     share against 1.10x, tested). Together that is an eighth of the top level's old trace, and on the 4060 Ti it now
-     takes 0.04 to 0.09 ms against 0.28 to 0.55 before. Both changes were tried on the GPU before the harness reached
-     the top level (above): one ray made thin wires sparkle and fewer steps darkened Sponza. Neither harness test
-     moves thin geometry, so watch the wires in motion and Sponza's light level.
+   - bring Sponza (0.40 ms over) and volumetrics (0.11 over) under the 2.40 ms Tier 2 budget without losing the image:
+     the a-trous denoiser (0.35 to 0.58 ms), the world cache's update (0.19 to 0.32 ms with two levels) and the lone
+     probes' 4 x 4 on levels 0 and 1 (0.16 to 0.28 ms a level, which both levels need: above) are the biggest costs
+     left. Time three runs per change. The top level now traces one ray per direction instead of 2 x 2, a quarter of its
+     rays: in the harness at 512 x 384 and 1024 x 768 it lights the rooms within 3% of before and flickers no more (two
+     tests hold it). It also takes as many steps as the other levels now, not twice as many: in a room whose back wall
+     shines through a row of thin pillars, twice the steps let more light through the pillars (1.23x the exact share
+     against 1.10x, tested). Together that is an eighth of the top level's old trace, and on the 4060 Ti it now takes
+     0.04 to 0.09 ms against 0.28 to 0.55 before. Both changes were tried on the GPU before the harness reached the top
+     level (above): one ray made thin wires sparkle and fewer steps darkened Sponza. Neither harness test moves thin
+     geometry, so watch the wires in motion and Sponza's light level.
 
      One limit found on the way, not fixed: pillars that hide behind one another from the camera (looking down
      a colonnade) are missing from the depth buffer, so light crosses them. In the harness, the wall beside such

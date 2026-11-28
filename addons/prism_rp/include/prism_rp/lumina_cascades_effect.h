@@ -262,7 +262,7 @@ private:
             const godot::Vector2i &p_size, uint32_t p_view_count);
     bool _ensure_rt_albedo_pipeline();
     void _trace_scene_albedo(godot::RenderSceneData *p_scene_data, uint32_t p_view, const godot::RID &p_target,
-            const godot::Vector2i &p_size, const godot::RID &p_scene_set);
+            const godot::RID &p_depth, const godot::Vector2i &p_size, const godot::RID &p_scene_set);
 
     godot::RenderingDevice *rd = nullptr;
     godot::RID nearest_sampler;
