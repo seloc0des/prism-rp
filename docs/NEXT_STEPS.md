@@ -824,7 +824,9 @@ State on 2026-11-20:
 - Engine patches (`engine/patches/`): 0001 indirect-count draws, 0002 mesh and task shader stages, 0003 indirect mesh
   draws, 0004 the scene-renderer hook and the Track B capability check, 0005 nonuniform sampled-image indexing,
   0006 ray queries (VK_KHR_ray_query, TLAS instances without a hit shader binding table range, and a fix for a
-  second build of a TLAS in one frame overwriting the first build's instances).
+  second build of a TLAS in one frame overwriting the first build's instances), 0007 the Forward+ hooks Track B
+  draws through (a subclass claims main-view surfaces out of the colour pass and draws them in two calls, one after
+  the depth pre-pass and one after the opaque pass; nothing uses them yet).
 - Lumina's scene mirror (`LuminaSceneMirror`, in the GDExtension) keeps the main viewport's MeshInstance3D meshes in a
   TLAS, one BLAS per mesh, with each material's albedo colour and texture, UV transform, vertex colours, alpha
   scissor and cull mode. The Ray-Traced Albedo debug view sends one camera ray per pixel through it, and

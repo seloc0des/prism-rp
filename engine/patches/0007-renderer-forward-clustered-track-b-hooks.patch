@@ -1,0 +1,91 @@
+diff --git a/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.cpp b/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.cpp
+index 370d3b6..963dd5b 100644
+--- a/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.cpp
++++ b/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.cpp
+@@ -1130,7 +1130,9 @@ void RenderForwardClustered::_fill_render_list(RenderListType p_render_list, con
+ 			}
+ 
+ 			// ADD Element
+-			if (p_pass_mode == PASS_MODE_COLOR) {
++			if (p_pass_mode == PASS_MODE_COLOR && unlikely(track_b_active) && fade_alpha >= FADE_ALPHA_PASS_THRESHOLD && _track_b_claim_surface(inst, surf)) {
++				// Drawn by the Track B subclass.
++			} else if (p_pass_mode == PASS_MODE_COLOR) {
+ #ifdef DEBUG_ENABLED
+ 				bool force_alpha = unlikely(get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_OVERDRAW);
+ #else
+@@ -1910,6 +1912,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
+ 	// May have changed due to the above (light buffer enlarged, as an example).
+ 	_update_render_base_uniform_set();
+ 
++	track_b_active = rb_data.is_valid() && _track_b_begin_render(p_render_data);
+ 	_fill_render_list(RENDER_LIST_OPAQUE, p_render_data, PASS_MODE_COLOR, using_sdfgi, using_sdfgi || using_voxelgi, using_motion_pass);
+ 	render_list[RENDER_LIST_OPAQUE].sort_by_key();
+ 	render_list[RENDER_LIST_MOTION].sort_by_key();
+@@ -2109,7 +2112,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
+ 
+ 	bool debug_voxelgis = get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_VOXEL_GI_ALBEDO || get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_VOXEL_GI_LIGHTING || get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_VOXEL_GI_EMISSION;
+ 	bool debug_sdfgi_probes = get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_SDFGI_PROBES;
+-	bool force_depth_pre_pass = scene_state.used_opaque_stencil;
++	bool force_depth_pre_pass = scene_state.used_opaque_stencil || track_b_active;
+ 	bool depth_pre_pass = (force_depth_pre_pass || bool(GLOBAL_GET_CACHED(bool, "rendering/driver/depth_prepass/enable"))) && depth_framebuffer.is_valid();
+ 
+ 	SceneShaderForwardClustered::ShaderSpecialization base_specialization = scene_shader.default_specialization;
+@@ -2158,6 +2161,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
+ 		}
+ 	}
+ 
++	if (track_b_active) {
++		_track_b_render_geometry(p_render_data);
++	}
++
+ 	{
+ 		if (ce_pre_opaque_resolved_color) {
+ 			// We haven't rendered color data yet so...
+@@ -2253,6 +2260,10 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
+ 		}
+ 	}
+ 
++	if (track_b_active) {
++		_track_b_render_shading(p_render_data);
++	}
++
+ 	{
+ 		if (ce_post_opaque_resolved_color) {
+ 			for (uint32_t v = 0; v < rb->get_view_count(); v++) {
+diff --git a/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.h b/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.h
+index be97ee2..4054006 100644
+--- a/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.h
++++ b/servers/rendering/renderer_rd/forward_clustered/render_forward_clustered.h
+@@ -167,7 +167,9 @@ public:
+ 		static uint32_t get_voxelgi_usage_bits(bool p_resolve, bool p_msaa, bool p_storage);
+ 	};
+ 
+-private:
++	// Protected rather than private so that a module's subclass (Prism RP's Track B) can read instance, surface and
++	// render-list state.
++protected:
+ 	virtual void setup_render_buffer_data(Ref<RenderSceneBuffersRD> p_render_buffers) override;
+ 
+ 	RID render_base_uniform_set;
+@@ -807,6 +809,21 @@ protected:
+ 	virtual void _render_sdfgi(Ref<RenderSceneBuffersRD> p_render_buffers, const Vector3i &p_from, const Vector3i &p_size, const AABB &p_bounds, const PagedArray<RenderGeometryInstance *> &p_instances, const RID &p_albedo_texture, const RID &p_emission_texture, const RID &p_emission_aniso_texture, const RID &p_geom_facing_texture, float p_exposure_normalization) override;
+ 	virtual void _render_particle_collider_heightfield(RID p_fb, const Transform3D &p_cam_transform, const Projection &p_cam_projection, const PagedArray<RenderGeometryInstance *> &p_instances) override;
+ 
++	/* Track B (Prism RP) */
++
++	// Let a subclass draw some of the main view's opaque surfaces itself. The defaults keep the stock renderer.
++	// When _track_b_begin_render() returns true for a render with Forward+ render buffers, the surfaces that
++	// _track_b_claim_surface() accepts skip that render's color-pass lists and the scene flags they set (shadow and GI
++	// passes still draw them), the depth pre-pass always runs, and the two _track_b_render_*() calls draw them.
++	bool track_b_active = false;
++	virtual bool _track_b_begin_render(RenderDataRD *p_render_data) { return false; }
++	// Called once per surface while the main view's lists are filled, except for surfaces fading out.
++	virtual bool _track_b_claim_surface(GeometryInstanceForwardClustered *p_instance, GeometryInstanceSurfaceDataCache *p_surface) { return false; }
++	// After the depth pre-pass, before the pre-opaque compositor effects, SSAO, SSIL, SSR and GI.
++	virtual void _track_b_render_geometry(RenderDataRD *p_render_data) {}
++	// After the opaque and motion passes, before the post-opaque compositor effects.
++	virtual void _track_b_render_shading(RenderDataRD *p_render_data) {}
++
+ public:
+ 	static RenderForwardClustered *get_singleton() { return singleton; }
+ 
