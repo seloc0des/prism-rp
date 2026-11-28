@@ -121,8 +121,8 @@ will trace, and shows the albedo each ray hits, so it should look like Godot's u
 differences:
 
 - Meshes with `gi_mode` disabled, and those the copy doesn't hold yet (skinned and blend-shape meshes, MultiMesh,
-  CSG, particles, ImmediateMesh), aren't in it. Rays pass through them to whatever is behind, and where nothing is,
-  the pixel keeps Godot's lit image.
+  CSG, particles, ImmediateMesh), aren't in it. Where Godot draws one, the pixel keeps Godot's lit image: each ray
+  looks for the surface only near the depth Godot drew it at, so it doesn't reach whatever is behind.
 - ShaderMaterials show white, Godot's default material.
 - Alpha-blended surfaces are skipped, and alpha hash is cut at 0.5.
 - Visual layers, the camera's cull mask and visibility ranges are ignored.

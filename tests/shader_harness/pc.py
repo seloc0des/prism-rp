@@ -58,6 +58,11 @@ def radiance_copy(w, h, depth_params, bounce_gain=0.0, scene_albedo=0.0):
     return pack("ii2f4f", w, h, *depth_params, bounce_gain, scene_albedo, 0.0, 0.0)
 
 
+def rt_albedo(w, h, proj, depth_params):
+    # The camera's world-space basis columns, eye coordinate in w: at the origin, looking down -Z.
+    return pack("16f2i2f", 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, *proj, w, h, *depth_params)
+
+
 def merge(probes, parent_probes, block, parent_block, spacing, parent_spacing, resolution, depth_params):
     return pack("iiiiiiffii2f", *probes, *parent_probes, block, parent_block, spacing, parent_spacing, *resolution, *depth_params)
 

@@ -277,7 +277,7 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
         if (scene_albedo) {
             ScopedPassTimer timer("lumina_rt_albedo", godot::Color(0.40f, 0.80f, 0.50f, 1.0f));
             rd->texture_clear(vt.scene_albedo, godot::Color(0, 0, 0, 0), 0, 1, 0, 1);   // a = 0: the ray missed
-            _trace_scene_albedo(scene_data, view, vt.scene_albedo, size, albedo_scene_set);
+            _trace_scene_albedo(scene_data, view, vt.scene_albedo, depth_tex, size, albedo_scene_set);
         }
         {
             ScopedPassTimer timer("lumina_radiance_downsample", godot::Color(0.35f, 0.60f, 0.95f, 1.0f));
@@ -726,8 +726,9 @@ bool LuminaCascadesCompositorEffect::_render_ray_traced_albedo(godot::RenderScen
     ScopedPassTimer timer("lumina_rt_albedo", godot::Color(0.40f, 0.80f, 0.50f, 1.0f));
     for (uint32_t view = 0; view < p_view_count; ++view) {
         const godot::RID color_tex = p_buffers->get_color_layer(view);
-        if (color_tex.is_valid()) {
-            _trace_scene_albedo(p_scene_data, view, color_tex, p_size, scene_set);
+        const godot::RID depth_tex = p_buffers->get_depth_layer(view);
+        if (color_tex.is_valid() && depth_tex.is_valid()) {
+            _trace_scene_albedo(p_scene_data, view, color_tex, depth_tex, p_size, scene_set);
         }
     }
     return true;
@@ -741,12 +742,13 @@ bool LuminaCascadesCompositorEffect::_ensure_rt_albedo_pipeline() {
     return rt_albedo_pipeline.is_valid();
 }
 
-// One camera ray per pixel of view p_view through the scene mirror, writing the albedo it hits into p_target
-// (RGBA16F, a = 1). Pixels whose ray misses keep what p_target held.
+// One camera ray per pixel of view p_view through the scene mirror, writing the albedo it hits near the depth p_depth
+// holds there into p_target (RGBA16F, a = 1). Pixels whose ray misses, and sky pixels, keep what p_target held.
 void LuminaCascadesCompositorEffect::_trace_scene_albedo(godot::RenderSceneData *p_scene_data, uint32_t p_view,
-        const godot::RID &p_target, const godot::Vector2i &p_size, const godot::RID &p_scene_set) {
+        const godot::RID &p_target, const godot::RID &p_depth, const godot::Vector2i &p_size, const godot::RID &p_scene_set) {
     godot::TypedArray<godot::RDUniform> u;
     u.push_back(make_image_uniform(0, p_target));
+    u.push_back(make_sampler_texture_uniform(1, nearest_sampler, p_depth));
     const godot::RID target_set = godot::UniformSetCacheRD::get_cache(rt_albedo_shader, 0, u);
     if (!target_set.is_valid()) {
         return;
