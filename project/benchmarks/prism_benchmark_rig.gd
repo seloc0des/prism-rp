@@ -66,7 +66,10 @@ var _hidden_lights: Array[Light3D] = []
 ## --prism-debug-draw=unshaded: Godot's unshaded view, i.e. each visible surface's albedo (Gate 2 weights
 ## the bounce light by it). Not the lighting-only view: that one swaps every material, including the ones
 ## SDFGI captures its colours from, for Godot's grey default.
-## --prism-diffuse-only: every material non-metallic, non-specular and rough (Gate 2's matte scene).
+## --prism-diffuse-only: every material non-metallic, non-specular, rough and Lambertian (Gate 2's matte scene).
+## Lambert because Cycles renders the reference that way: with Godot's default Burley diffuse, which brightens
+## surfaces lit and seen from similar angles at roughness 1, the direct light Lumina bounces came out 4 to 14%
+## brighter than the direct light the reference bounces.
 var debug_draw_unshaded := false
 var diffuse_only := false
 ## --prism-emission=off: no material emits light. Gate 2 compares the bounce light of the scene's lights;
@@ -309,6 +312,7 @@ func _adjusted_copy(mat: BaseMaterial3D) -> BaseMaterial3D:
 		copy.metallic = 0.0
 		copy.metallic_specular = 0.0
 		copy.roughness = 1.0
+		copy.diffuse_mode = BaseMaterial3D.DIFFUSE_LAMBERT
 	if emission_off:
 		copy.emission_enabled = false
 	return copy

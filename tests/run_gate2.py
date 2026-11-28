@@ -6,7 +6,7 @@ for white albedo; Chronos off, ambient off, no jitter, full resolution) and expo
 (project/benchmarks/prism_scene_export.gd). Blender re-renders that export with Cycles, once with
 four diffuse bounces, as Cycles does by default, and once without; the difference is the bounced
 light, which Lumina and SDFGI compute with their own extra bounces on. Every Godot
-capture uses the same matte scene (--prism-diffuse-only: no metals, no specular), so the export,
+capture uses the same matte scene (--prism-diffuse-only: no metals, no specular, Lambert diffuse), so the export,
 Lumina and SDFGI share one set of materials. Godot also captures its unshaded view (each visible
 surface's albedo), and both irradiances are multiplied by it: Gate 2 compares bounce light as a
 viewer sees it, in linear light:
@@ -28,7 +28,10 @@ Stock Godot's own GI is measured the same way (on by default; --no-sdfgi skips i
 captures of the final image with SDFGI on and off, whose difference is SDFGI's bounce light as seen.
 Not Godot's lighting-only debug view: it swaps every material, including the ones SDFGI captures its
 colours from, for a grey default, so SDFGI would be measured in a colourless scene.
-compare_sdfgi.png shows it.
+compare_sdfgi.png shows it. The SDFGI-off capture is also Godot's direct light as seen: direct_light_ratio is its
+mean over the reference's direct render times the same albedo. Lumina and SDFGI bounce Godot's direct light and the
+reference bounces Cycles', so the two have to agree (within DIRECT_LIGHT_TOLERANCE) for Gate 2 to compare like with
+like; with Godot's default Burley diffuse they were 4 to 14% apart, which Lumina's score paid for.
 
 --noise-check renders the reference a second time with another seed. reference_ceiling_db is the
 best fitted PSNR anything could score against this reference: its self-PSNR plus 3 dB (a perfect
@@ -66,9 +69,10 @@ GATE2_SCENES = ["01_cornell_box", "04_dynamic_sponza"]
 # Multi-bounce, as shipped: Lumina's world cache and SDFGI both keep bouncing light by default, and it looks right.
 DIFFUSE_BOUNCES = 4
 CYCLES_SCRIPT = HERE / "reference" / "cycles_reference.py"
+DIRECT_LIGHT_TOLERANCE = 0.03
 
 
-# Every Gate 2 capture renders the same scene the reference does: matte (no metals, no specular), no emission, no
+# Every Gate 2 capture renders the same scene the reference does: matte (no metals, no specular, Lambert), no emission, no
 # environment light, and as many bounces of GI as the reference (DIFFUSE_BOUNCES unless --diffuse-bounces says otherwise), so
 # the exported scene, Lumina and SDFGI share one set of materials and the comparison is about the diffuse bounce
 # light of the scene's lights.
@@ -120,6 +124,12 @@ def write_comparison(path: Path, reference: np.ndarray, test: np.ndarray, scale:
     error = np.abs(fitted - reference).mean(axis=-1, keepdims=True).repeat(3, axis=-1) * 4.0
     row = np.concatenate([to_srgb8(reference, exposure), to_srgb8(fitted, exposure), to_srgb8(error, exposure)], axis=1)
     Image.fromarray(row).save(path)
+
+
+def direct_light_ratio(godot_direct: np.ndarray, cycles_direct_seen: np.ndarray) -> float:
+    """Godot's direct light over Cycles', both as seen (times albedo): 1.0 when the two renderers light the scene
+    alike."""
+    return float(np.mean(godot_direct) / np.mean(cycles_direct_seen))
 
 
 def render_reference(blender: str, scene_json: Path, out_prefix: Path, samples: int, bounces: int, seed: int = 1) -> Path:
@@ -206,6 +216,10 @@ def main() -> int:
                     raise SystemExit(f"{scene}: Godot wrote no {exr} (see the godot.log beside it)")
                 frames[on] = load_rgb(exr).astype(np.float64)
             sdfgi = np.maximum(frames[True] - frames[False], 0.0)   # already as seen: albedo times SDFGI's irradiance
+            m["direct_light_ratio"] = direct_light_ratio(frames[False], load_rgb(scene_dir / "reference_direct.exr") * albedo)
+            agrees = abs(m["direct_light_ratio"] - 1.0) <= DIRECT_LIGHT_TOLERANCE
+            print(f"  Direct light: Godot's is {m['direct_light_ratio']:.3f}x Cycles'"
+                  f"{'' if agrees else ', more than the tolerance: Gate 2 is not comparing like with like'}")
             ms = gate2_metrics(sdfgi, ref_seen, clipped_test=False)
             m["sdfgi"] = ms
             m["beats_sdfgi"] = m["psnr_fitted_db"] > ms["psnr_fitted_db"]

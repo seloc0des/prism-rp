@@ -149,3 +149,14 @@ def test_gate2_measures_multi_bounce_light_and_lets_gi_bounce_too():
     assert bounces > 1
     for args in (run_gate2.sdfgi_capture_args(Path("x.exr"), True, bounces), run_gate2.lumina_capture_args(Path("e"), Path("x.exr"), bounces)):
         assert "--prism-gi-single-bounce" not in args, args
+
+
+def test_direct_light_ratio_is_godots_direct_light_over_cycles():
+    # Lumina and SDFGI bounce Godot's direct light and the reference bounces Cycles', so Gate 2 reports how far
+    # apart the two are. Godot's default Burley diffuse put them 4 to 14% apart before the matte scene went Lambert.
+    pytest.importorskip("flip_evaluator")   # run_gate2 imports run_visual_regression
+    import run_gate2
+    cycles = np.random.default_rng(3).random((6, 8, 3))
+    assert run_gate2.direct_light_ratio(cycles, cycles) == pytest.approx(1.0)
+    assert run_gate2.direct_light_ratio(cycles * 1.11, cycles) == pytest.approx(1.11)
+    assert run_gate2.DIRECT_LIGHT_TOLERANCE < 0.04       # the Burley offset (1.11 in the mean) is far outside it
