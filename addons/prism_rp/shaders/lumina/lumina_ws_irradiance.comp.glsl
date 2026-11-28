@@ -23,13 +23,15 @@ layout(rgba16f, set = 0, binding = 2) uniform writeonly image2D u_world_irradian
 void main() {
     int n = wpc.a0.z;
     ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
-    if (texel.x >= n * n * WORLD_BLOCK || texel.y >= n * WORLD_BLOCK) {
+    if (texel.x >= n * n * WORLD_BLOCK || texel.y >= WORLD_LEVELS * n * WORLD_BLOCK) {
         return;
     }
     ivec2 probe2d = texel / WORLD_BLOCK;
     ivec2 normal_texel = texel - probe2d * WORLD_BLOCK;
-    ivec3 slot = ivec3(probe2d.x % n, probe2d.y, probe2d.x / n);
-    if (texelFetch(u_state_tex, lumina_state_texel(slot, n), 0).g > 0.5) {
+    ivec3 slot;
+    int level;
+    lumina_world_probe_of_texel(texel, n, slot, level);
+    if (texelFetch(u_state_tex, lumina_state_texel(slot, level, n), 0).g > 0.5) {
         imageStore(u_world_irradiance, texel, vec4(0.0));
         return;
     }

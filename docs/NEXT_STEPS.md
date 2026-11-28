@@ -664,20 +664,66 @@ Three runs each, interleaved, as above. Level 2's trace goes from 0.42-0.69 ms t
 over the budget and volumetrics 0.17 over; its level 2 saved 0.21 ms, but its other passes came out higher in
 these runs. The other three scenes are under.
 
+**Where Sponza's gap to SDFGI sits (2026-11-28).** Scored against the saved Cycles reference, 5% of the frame holds
+95% of the gap. About 60% of it is the outer walls of the upper galleries, at 0.64x the reference's light. Sun on the
+gallery floors lights them, and the camera, standing below those floors, never sees it. Another 30% is the back wall
+beside the right colonnade, at 1.68x. The cache on its own lights that wall at 1.08x, so the extra comes from the
+screen trace. Thickness trades the two against each other: at 0.02 the back wall drops to 1.09x and the gallery walls
+to 0.54x, and at 0.2 they rise to 1.90x and 0.90x.
+
+**The world cache has two levels (2026-11-28).** It was one 16^3 grid at 1 m around the camera. In Sponza that covers
+z = -1 to 15 while the courtyard runs to z = -9.5, so the far half of the galleries got nothing from it. A throwaway
+32^3 grid at 1 m lit those walls at 1.01x and scored 32.81 dB. Its update took 0.88 ms against 0.14, though. The
+cache now keeps a second 16^3 grid at 2 m, stacked under the first in the same atlas, which reaches 16 m from the
+camera. A point reads level 0 inside that grid, level 1 beyond it, and a blend of the two across level 0's last two
+cells. Three harness tests hold it: a wall only level 1 reaches, the handover down a floor, and level 1's probes
+being traced. Gate 2, scored against the Cycles references of the last full run (Tier 2, four bounces, 512 samples):
+
+| Scene | Two levels | Main | Lumina's light against the reference |
+| :--- | :--- | :--- | :--- |
+| Cornell box | 25.48 dB | 25.48 | unchanged |
+| Sponza | 32.44 dB | 31.76 | 1.22x (1.05x before) |
+
+The gallery walls now get 1.00x their light and the gap to SDFGI drops from 1.85 to 1.17 dB. Everything the cache
+didn't reach before gets brighter, though, the back wall most: 1.76x, against 1.42x on main and 0.82x for SDFGI. The
+cache alone puts that wall at 1.71x, so its extra light isn't only the screen trace's, and raw PSNR falls from 31.44
+to 30.30 dB. Two settings change the picture:
+
+- **The screen-space bounce off:** Sponza scores 33.31 dB (33.04 raw) at 1.06x, 0.30 dB short of SDFGI, and the back
+  wall falls to 1.46x. The Cornell box drops to 24.27 dB at 0.77x, as before the second level. With the cache
+  reaching the whole courtyard, the screen bounce now costs Sponza 0.87 dB.
+- **Thickness 0.05:** Sponza scores 33.08 dB (31.70 raw, 1.17x) and the Cornell box 25.42.
+
+| Scene | Main | Two levels |
+| :--- | :--- | :--- |
+| Cornell box | 2.13 ms | 2.18 |
+| Foliage | 2.25 ms | 2.31 |
+| Thin geometry | 2.04 ms | 2.25 |
+| Sponza | 2.50 ms | 2.75 |
+| Volumetrics | 2.43 ms | 2.50 |
+
+Three runs each, interleaved, with nothing else on the GPU. The second level costs 0.08 to 0.18 ms, all of it in the
+cache's update; the rest of thin geometry's 0.21 is noise in other passes. Sponza is now 0.35 ms over the budget and
+volumetrics 0.10 over. Two rewrites of the a-trous denoiser that keep its output didn't help: a shared-memory tile
+ran 1.6x slower, and folding its weights into one exponential was within noise.
+
 2. Commit the reviewed reference images so visual regressions can be caught. Optionally add a self-hosted runner on
    a GPU machine, but only for manual runs and pushes to `main`: the repository is public, and a self-hosted runner
    must never run pull requests from forks.
 3. Next, in order:
-   - bring Sponza (0.08 ms over) and volumetrics (0.17 over) under the 2.40 ms Tier 2 budget without losing the image:
-     the a-trous denoiser (0.33 to 0.55 ms) and the lone probes' 4 x 4 on levels 0 and 1 (0.16 to 0.28 ms a level) are
-     the biggest costs left; time three runs per change. The top level now traces one ray per direction instead of
-     2 x 2, a quarter of its rays: in the harness at 512 x 384 and 1024 x 768 it lights the rooms within 3% of before
-     and flickers no more (two tests hold it). It also takes as many steps as the other levels now, not twice as many:
-     in a room whose back wall shines through a row of thin pillars, twice the steps let more light through the
-     pillars (1.23x the exact share against 1.10x, tested). Together that is an eighth of the top level's old trace,
-     and on the 4060 Ti it now takes 0.04 to 0.09 ms against 0.28 to 0.55 before. Both changes were tried on the GPU
-     before the harness reached the top level (above): one ray made thin wires sparkle and fewer steps darkened
-     Sponza. Neither harness test moves thin geometry, so watch the wires in motion and Sponza's light level.
+   - bring Sponza (0.35 ms over) and volumetrics (0.10 over) under the 2.40 ms Tier 2 budget without losing the
+     image: the a-trous denoiser (0.33 to 0.58 ms), the lone probes' 4 x 4 on levels 0 and 1 (0.16 to 0.28 ms a
+     level) and the world cache's update (0.19 to 0.32 ms with two levels) are the biggest costs left. Lone level-1
+     probes at 2 x 2 would save 0.17 to 0.24 ms; in the harness they come closer to the exact light (0.76x against
+     0.67x in the card scene) but shift by 9 to 13% where they are, so they need Gate 2 and a look. Time three runs
+     per change. The top level now traces one ray per direction instead of 2 x 2, a quarter of its rays: in the
+     harness at 512 x 384 and 1024 x 768 it lights the rooms within 3% of before and flickers no more (two tests hold
+     it). It also takes as many steps as the other levels now, not twice as many: in a room whose back wall shines
+     through a row of thin pillars, twice the steps let more light through the pillars (1.23x the exact share against
+     1.10x, tested). Together that is an eighth of the top level's old trace, and on the 4060 Ti it now takes 0.04 to
+     0.09 ms against 0.28 to 0.55 before. Both changes were tried on the GPU before the harness reached the top level
+     (above): one ray made thin wires sparkle and fewer steps darkened Sponza. Neither harness test moves thin
+     geometry, so watch the wires in motion and Sponza's light level.
 
      One limit found on the way, not fixed: pillars that hide behind one another from the camera (looking down
      a colonnade) are missing from the depth buffer, so light crosses them. In the harness, the wall beside such
@@ -689,8 +735,10 @@ these runs. The other three scenes are under.
      so the top level's sub-rays and steps can be judged off the GPU;
    - the custom Godot build (next section), with CI that builds the Linux editor and the Linux and Windows export
      templates;
-   - on the custom build, Sponza's 1.85 dB gap to SDFGI (above): the screen bounce's own error, which still leaves it
-     0.35 dB below the bounce off; the 0.4 dB the lone probes and the cheaper top level cost it; skinned, blend-shape
+   - on the custom build, Sponza's 1.17 dB gap to SDFGI (above): the screen bounce, which with two cache levels costs
+     Sponza 0.87 dB and gains the Cornell box 1.2; the back wall's extra light, 1.76x with the cache alone at 1.71x;
+     thickness 0.05, once the thin-geometry and foliage scenes have been checked with it; the 0.4 dB the lone probes
+     and the cheaper top level cost it; skinned, blend-shape
      and MultiMesh geometry in the scene mirror; the mirror's albedo in the composite too, where the proxy still
      shades the final image; and a specular term so metals reflect bounced light, to finish Gate 2;
    - Track B wired up for Gates 3 and 4, then Gate 5.
