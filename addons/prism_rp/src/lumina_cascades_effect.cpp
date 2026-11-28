@@ -410,7 +410,7 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 upc.misc[3] = traced ? (bounce ? 1.0f : 0.0f) : 32.0f;   // the traced update's bounce off screen, or the march's steps
                 const auto bytes = make_push_constant_bytes(upc);
                 const uint32_t ax = groups_for(kWorldGridN * kWorldGridN * kWorldBlock);
-                const uint32_t ay = groups_for(kWorldGridN * kWorldBlock);
+                const uint32_t ay = groups_for(kWorldLevels * kWorldGridN * kWorldBlock);
 
                 godot::TypedArray<godot::RDUniform> uc;
                 uc.push_back(make_sampler_texture_uniform(0, nearest_sampler, depth_tex));
@@ -437,7 +437,8 @@ void LuminaCascadesCompositorEffect::_render_callback(int32_t p_effect_callback_
                 const godot::RID uset = godot::UniformSetCacheRD::get_cache(traced ? ws_update_rt_shader : ws_update_shader, 0, uu);
                 if (cset.is_valid() && uset.is_valid() && (!traced || iset.is_valid())) {
                     const uint32_t g3 = static_cast<uint32_t>((kWorldGridN + 3) / 4);
-                    dispatch_compute(rd, ws_classify_pipeline, cset, bytes, g3, g3, g3);
+                    const uint32_t g3z = static_cast<uint32_t>((kWorldLevels * kWorldGridN + 3) / 4);   // every level's slots
+                    dispatch_compute(rd, ws_classify_pipeline, cset, bytes, g3, g3, g3z);
                     if (traced) {
                         if (bounce) {
                             // Irradiance from last frame's radiance first: the update bounces it off its hits.
@@ -852,10 +853,12 @@ bool LuminaCascadesCompositorEffect::_ensure_world_targets() {
     using RD = godot::RenderingDevice;
     // CAN_COPY_TO: RenderingDevice::texture_clear requires it.
     const uint32_t rw = RD::TEXTURE_USAGE_STORAGE_BIT | RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT;
-    world_probes = rd_utils::create_2d_texture(rd, kWorldGridN * kWorldGridN * kWorldBlock, kWorldGridN * kWorldBlock,
+    // Every level stacked in one atlas, level 1's rows below level 0's (lumina_world_common.glsl).
+    world_probes = rd_utils::create_2d_texture(rd, kWorldGridN * kWorldGridN * kWorldBlock, kWorldLevels * kWorldGridN * kWorldBlock,
         RD::DATA_FORMAT_R16G16B16A16_SFLOAT, rw);
-    world_state = rd_utils::create_2d_texture(rd, kWorldGridN * kWorldGridN, kWorldGridN, RD::DATA_FORMAT_R32G32B32A32_SFLOAT, rw);
-    world_irradiance = rd_utils::create_2d_texture(rd, kWorldGridN * kWorldGridN * kWorldBlock, kWorldGridN * kWorldBlock,
+    world_state = rd_utils::create_2d_texture(rd, kWorldGridN * kWorldGridN, kWorldLevels * kWorldGridN,
+        RD::DATA_FORMAT_R32G32B32A32_SFLOAT, rw);
+    world_irradiance = rd_utils::create_2d_texture(rd, kWorldGridN * kWorldGridN * kWorldBlock, kWorldLevels * kWorldGridN * kWorldBlock,
         RD::DATA_FORMAT_R16G16B16A16_SFLOAT, rw);
     if (!world_probes.is_valid() || !world_state.is_valid() || !world_irradiance.is_valid()) {
         godot::UtilityFunctions::push_error("[Prism RP] Failed to allocate the Lumina world cache.");

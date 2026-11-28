@@ -2,7 +2,8 @@
 and the cache's irradiance (lumina_ws_irradiance). Each scene's triangles go into both the mirror's buffers and the
 TLAS (mirror.py); what the camera sees comes from scene.render as in the other world-cache tests.
 
-The grid is 4^3 cells of 1 m around the camera at the origin, so cell (x, y, z) has its probe at (x, y, z) + 0.5."""
+Level 0 of the grid is 4^3 cells of 1 m around the camera at the origin, so cell (x, y, z) has its probe at
+(x, y, z) + 0.5; level 1 is 4^3 cells of 2 m."""
 
 import numpy as np
 import pytest
@@ -10,14 +11,14 @@ import pytest
 from harness import Dispatch, Img, groups_for
 from mirror import LIGHT_DIRECTIONAL, LIGHT_OMNI, LIGHT_SPOT, Light, Material, Mesh, Scene, cube, quad, sphere
 from scene import Camera, Plane, render
-from test_lumina_world import (FORWARD, N, WORLD_BLOCK, atlas_texel, base_cell_for, dir_texel, radiance_mip_count,
+from test_lumina_world import (CLASSIFY_GROUPS, FORWARD, LEVELS, N, WORLD_BLOCK, atlas_texel, base_cell_for, dir_texel, radiance_mip_count,
                                radiance_mip_dispatches, world_pc)
 
 GREY = Material(albedo=(0.5, 0.5, 0.5))
 
 
 def atlas_shape():
-    return (N * WORLD_BLOCK, N * N * WORLD_BLOCK, 4)
+    return (LEVELS * N * WORLD_BLOCK, N * N * WORLD_BLOCK, 4)
 
 
 def update_rt(gpu, cam, g, scene, irradiance=None, bounce=1.0, classify=True, screen_holds_bounce=False):
@@ -31,15 +32,15 @@ def update_rt(gpu, cam, g, scene, irradiance=None, bounce=1.0, classify=True, sc
     irradiance = np.zeros(atlas_shape()) if irradiance is None else irradiance
     dispatches = radiance_mip_dispatches(cam)
     if classify:
-        dispatches.append(Dispatch("lumina/lumina_ws_classify.comp.glsl", {0: ("depth", "sampled_nearest"), 1: ("state", "storage")}, push, (1, 1, 1)))
+        dispatches.append(Dispatch("lumina/lumina_ws_classify.comp.glsl", {0: ("depth", "sampled_nearest"), 1: ("state", "storage")}, push, CLASSIFY_GROUPS))
     dispatches.append(Dispatch(
         "lumina/lumina_ws_update_rt.comp.glsl",
         {0: ("depth", "sampled_nearest"), 1: ("radiance", "sampled_linear"), 2: ("state", "sampled_nearest"),
          3: ("probes", "storage"), 4: ("irradiance", "sampled_nearest"), **scene.bindings()},
-        push, groups_for(N * N * WORLD_BLOCK, N * WORLD_BLOCK)))
+        push, groups_for(N * N * WORLD_BLOCK, LEVELS * N * WORLD_BLOCK)))
     images = {"depth": Img("r32f", data=g["depth"]), "color": Img("rgba16f", data=g["color"]),
               "radiance": Img("rgba16f", cam.width, cam.height, mips=radiance_mip_count(cam)),
-              "state": Img("rgba32f", data=np.zeros((N, N * N, 4))), "probes": Img("rgba16f", data=np.zeros(atlas_shape())),
+              "state": Img("rgba32f", data=np.zeros((LEVELS * N, N * N, 4))), "probes": Img("rgba16f", data=np.zeros(atlas_shape())),
               "irradiance": Img("rgba16f", data=irradiance), **scene.images()}
     out = gpu.run(images, dispatches, ["probes"], buffers=scene.buffers(), acceleration_structures=scene.acceleration_structures())
     return out["probes"]
@@ -47,18 +48,18 @@ def update_rt(gpu, cam, g, scene, irradiance=None, bounce=1.0, classify=True, sc
 
 def irradiance_of(gpu, probes, state=None):
     push = world_pc(Camera(), (0.0, 0.0, 0.0), *FORWARD, base_cell_for((0.0, 0.0, 0.0)))
-    state = np.zeros((N, N * N, 4)) if state is None else state
+    state = np.zeros((LEVELS * N, N * N, 4)) if state is None else state
     return gpu.run(
         {"probes": Img("rgba16f", data=probes), "state": Img("rgba32f", data=state), "irradiance": Img("rgba16f", *atlas_shape()[1::-1])},
         [Dispatch("lumina/lumina_ws_irradiance.comp.glsl",
                   {0: ("probes", "sampled_nearest"), 1: ("state", "sampled_nearest"), 2: ("irradiance", "storage")},
-                  push, groups_for(N * N * WORLD_BLOCK, N * WORLD_BLOCK))], ["irradiance"])["irradiance"]
+                  push, groups_for(N * N * WORLD_BLOCK, LEVELS * N * WORLD_BLOCK))], ["irradiance"])["irradiance"]
 
 
-def at(atlas, cell, direction):
+def at(atlas, cell, direction, level=0):
     """The atlas texel of cell's probe for a world direction (or, in the irradiance atlas, a surface normal)."""
     slot = tuple(c % N for c in cell)
-    return atlas[atlas_texel(slot, dir_texel(direction))[::-1]]
+    return atlas[atlas_texel(slot, dir_texel(direction), level)[::-1]]
 
 
 def wall_behind_camera(material=GREY, z=6.0, normal=(0.0, 0.0, -1.0)):
@@ -75,6 +76,15 @@ def test_rt_update_lights_a_wall_behind_the_camera(gpu):
     cam = Camera(width=32, height=24)
     probes = update_rt(gpu, cam, render(cam, []), Scene([wall_behind_camera()], [SUN_BEHIND]))
     got = at(probes, (0, 0, 0), (0, 0, 1))
+    assert got[3] == 1.0
+    assert got[:3] == pytest.approx((1.0, 1.0, 1.0), rel=0.01)
+
+
+def test_rt_update_traces_level_1s_probes_too(gpu):
+    # Level 1's probe at (1, 1, 1), the centre of its cell (0, 0, 0) at 2 m spacing, finds the same wall.
+    cam = Camera(width=32, height=24)
+    probes = update_rt(gpu, cam, render(cam, []), Scene([wall_behind_camera()], [SUN_BEHIND]))
+    got = at(probes, (0, 0, 0), (0, 0, 1), level=1)
     assert got[3] == 1.0
     assert got[:3] == pytest.approx((1.0, 1.0, 1.0), rel=0.01)
 
@@ -270,7 +280,7 @@ def test_irradiance_is_the_cosine_weighted_mean_over_the_normals_hemisphere(gpu)
     # Light from above only: a surface facing up gets all of it, one facing down none, one facing sideways half.
     from_above = (block_directions()[..., 1] > 0.0).astype(float)
     probes = np.zeros(atlas_shape())
-    probes[..., 0] = np.tile(from_above, (N, N * N))
+    probes[..., 0] = np.tile(from_above, (LEVELS * N, N * N))
     probes[..., 3] = 1.0
     irradiance = irradiance_of(gpu, probes)
     assert at(irradiance, (0, 0, 0), (0, 1, 0))[0] > 0.9
@@ -286,14 +296,14 @@ def test_irradiance_of_a_cell_new_this_frame_is_empty(gpu):
     # Its slot still holds the radiance of the cell that left.
     probes = np.zeros(atlas_shape())
     probes[...] = (1.0, 1.0, 1.0, 1.0)
-    state = np.zeros((N, N * N, 4))
+    state = np.zeros((LEVELS * N, N * N, 4))
     state[1, 2 + 3 * N, 1] = 1.0   # slot (2, 1, 3) changed cells
     irradiance = irradiance_of(gpu, probes, state)
     x0, y0 = atlas_texel((2, 1, 3), (0, 0))
     new = irradiance[y0:y0 + WORLD_BLOCK, x0:x0 + WORLD_BLOCK]
     assert np.all(new == 0.0)
     assert np.all(irradiance[..., 0][irradiance[..., 3] > 0] == pytest.approx(1.0, abs=0.003))
-    assert (irradiance[..., 3] > 0).sum() == (N ** 3 - 1) * WORLD_BLOCK ** 2
+    assert (irradiance[..., 3] > 0).sum() == (LEVELS * N ** 3 - 1) * WORLD_BLOCK ** 2
 
 
 def test_rt_update_negative_light_darkens_the_bounce_too(gpu):

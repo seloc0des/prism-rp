@@ -35,22 +35,23 @@ const float kNearerOccluder = 0.9;
 void main() {
     int n = wpc.a0.z;
     ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
-    if (texel.x >= n * n * WORLD_BLOCK || texel.y >= n * WORLD_BLOCK) {
+    if (texel.x >= n * n * WORLD_BLOCK || texel.y >= WORLD_LEVELS * n * WORLD_BLOCK) {
         return;
     }
-    ivec2 probe2d = texel / WORLD_BLOCK;
-    ivec2 dir_texel = texel - probe2d * WORLD_BLOCK;
-    ivec3 slot = ivec3(probe2d.x % n, probe2d.y, probe2d.x / n);
+    ivec2 dir_texel = texel % WORLD_BLOCK;
+    ivec3 slot;
+    int level;
+    lumina_world_probe_of_texel(texel, n, slot, level);
 
-    vec4 state = texelFetch(u_state_tex, lumina_state_texel(slot, n), 0);
+    vec4 state = texelFetch(u_state_tex, lumina_state_texel(slot, level, n), 0);
     vec4 cached = state.g > 0.5 ? vec4(0.0) : imageLoad(u_world_probes, texel);
     if (state.b > 0.5) {
         imageStore(u_world_probes, texel, cached);
         return;
     }
 
-    ivec3 cell = lumina_cell_for_slot(slot, wpc.a1.xyz, n);
-    vec3 origin = lumina_cell_center(cell, wpc.cam_pos.w);
+    ivec3 cell = lumina_cell_for_slot(slot, lumina_world_base(level, n), n);
+    vec3 origin = lumina_cell_center(cell, lumina_world_spacing(level));
     vec3 dir = lumina_block_direction(dir_texel, WORLD_BLOCK);
 
     int steps = int(wpc.misc.w);
@@ -59,7 +60,7 @@ void main() {
     bool hit = false;
     vec3 radiance = vec3(0.0);
     for (int i = 0; i < steps; ++i) {
-        float t = wpc.misc.z * (float(i) + jitter) / float(steps);
+        float t = wpc.misc.z * float(1 << level) * (float(i) + jitter) / float(steps);   // as many cells on every level
         vec3 v = lumina_world_to_view(origin + dir * t);
         if (v.z >= -1e-3) { known = false; break; }
         vec2 uv = lumina_project_to_uv(v, wpc.proj);

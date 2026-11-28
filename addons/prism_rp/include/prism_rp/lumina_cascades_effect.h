@@ -105,7 +105,8 @@ protected:
 private:
     static constexpr int32_t kMaxCascades = 4;
     static constexpr int32_t kBaseBlock = 4;   // level-0 directions = 4 x 4 = 16
-    static constexpr int32_t kWorldGridN = 16; // world cache: 16^3 probes
+    static constexpr int32_t kWorldGridN = 16; // world cache: 16^3 probes per level
+    static constexpr int32_t kWorldLevels = 2; // level 0 at world_probe_spacing, level 1 at twice it (WORLD_LEVELS)
     static constexpr int32_t kWorldBlock = 8;  // 8 x 8 = 64 directions per world probe (WORLD_BLOCK)
     static constexpr uint32_t kMaxRadianceMips = 16;   // a full chain for up to 65535 px
 
@@ -285,9 +286,9 @@ private:
     bool world_rt_failed = false;
 
     // World cache (view-independent; updated from view 0 once per frame).
-    godot::RID world_probes;   // RGBA16F (N*N*block) x (N*block)
+    godot::RID world_probes;   // RGBA16F (N*N*block) x (levels*N*block)
     godot::RID world_irradiance;   // same layout: per cell, irradiance / pi by surface normal (read by the traced update)
-    godot::RID world_state;    // RGBA32F (N*N) x N: cell id, changed, buried, written
+    godot::RID world_state;    // RGBA32F (N*N) x (levels*N): cell id, changed, buried, written
     float cached_world_spacing = 0.0f;
 
     std::vector<PerViewTargets> view_targets;

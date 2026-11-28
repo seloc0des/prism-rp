@@ -98,22 +98,23 @@ vec3 shade(LuminaScenePoint hit, vec3 p, vec3 normal, vec3 dir, float t) {
 void main() {
     int n = wpc.a0.z;
     ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
-    if (texel.x >= n * n * WORLD_BLOCK || texel.y >= n * WORLD_BLOCK) {
+    if (texel.x >= n * n * WORLD_BLOCK || texel.y >= WORLD_LEVELS * n * WORLD_BLOCK) {
         return;
     }
-    ivec2 probe2d = texel / WORLD_BLOCK;
-    ivec2 dir_texel = texel - probe2d * WORLD_BLOCK;
-    ivec3 slot = ivec3(probe2d.x % n, probe2d.y, probe2d.x / n);
+    ivec2 dir_texel = texel % WORLD_BLOCK;
+    ivec3 slot;
+    int level;
+    lumina_world_probe_of_texel(texel, n, slot, level);
 
-    vec4 state = texelFetch(u_state_tex, lumina_state_texel(slot, n), 0);
+    vec4 state = texelFetch(u_state_tex, lumina_state_texel(slot, level, n), 0);
     vec4 cached = state.g > 0.5 ? vec4(0.0) : imageLoad(u_world_probes, texel);
     if (state.b > 0.5) {
         imageStore(u_world_probes, texel, cached);
         return;
     }
 
-    ivec3 cell = lumina_cell_for_slot(slot, wpc.a1.xyz, n);
-    vec3 origin = lumina_cell_center(cell, wpc.cam_pos.w);
+    ivec3 cell = lumina_cell_for_slot(slot, lumina_world_base(level, n), n);
+    vec3 origin = lumina_cell_center(cell, lumina_world_spacing(level));
     // An R2 sequence over frames, offset per texel so neighbouring texels don't step in lockstep.
     vec2 offset = vec2(prism_interleaved_gradient_noise(vec2(texel), 0u), prism_interleaved_gradient_noise(vec2(texel.yx) + 17.0, 0u));
     vec2 jitter = fract(offset + float(uint(wpc.a1.w) & 1023u) * vec2(0.7548776662, 0.5698402910));
