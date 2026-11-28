@@ -305,7 +305,9 @@ private:
     int32_t cascade_count = 4;
     int32_t probe_spacing = 8;
     int32_t steps_per_interval = 6;
-    float thickness = 0.1f;
+    // Fraction of view depth behind a surface that still counts as a hit. 0.1 caught rays passing behind lit
+    // pillars at Sponza's depths (a metre at ten) and took their light: Gate 2 gains 0.5 dB there at 0.05.
+    float thickness = 0.05f;
     float intensity = 1.0f;
     float denoise_strength = 4.0f;
     int32_t albedo_mode = ALBEDO_PROXY;

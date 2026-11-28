@@ -8,6 +8,7 @@ from harness import Dispatch, Img, groups_for
 from scene import LONE_SUPPORT, Camera, Plane, cornell, irradiance_truth, parent_support, render
 
 BASE_BLOCK = 4
+SHIPPED_THICKNESS = 0.05   # LuminaCascadesCompositorEffect's default thickness
 
 
 def cascade_layout(cam, spacing, count):
@@ -596,7 +597,7 @@ def test_floor_behind_a_card_gets_no_light_from_its_front_at_any_resolution(gpu,
         Plane((0, 0, -3.5), (0, 0, 1), (4.0, 0.0, 0.0), bounds=((-0.6, 0.6), (-1.0, 0.6), (-4.0, -3.0))),
     ]
     g = render(cam, planes)
-    irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1)[..., 0]
+    irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=SHIPPED_THICKNESS)[..., 0]
     truth = irradiance_truth(cam, planes)[..., 0]
     pos = cam.ray_dirs() * g["linear_z"][..., None]
     on_floor = (g["normal"][..., 1] > 0.9) & (g["linear_z"] > 0)
@@ -687,7 +688,7 @@ def light_in_black_room(gpu, cam, planes, count=4):
     """Lumina's irradiance and the exact one-bounce truth (red channel), and the mask of dark surface
     pixels, which receive all their light from the bright planes. Shipping defaults: 4 levels, 6 steps."""
     g = render(cam, planes)
-    irr = run_cascades(gpu, cam, g, count=count, steps=6, thickness=0.1)[..., 0]
+    irr = run_cascades(gpu, cam, g, count=count, steps=6, thickness=SHIPPED_THICKNESS)[..., 0]
     dark = (g["linear_z"] > 0) & (g["color"][..., 0] == 0.0)
     return irr, irradiance_truth(cam, planes)[..., 0], dark, g
 
@@ -756,7 +757,7 @@ def test_the_top_level_lights_steadily_from_a_moving_patch(gpu):
         ])
         g = render(cam, planes)
         walls = (g["linear_z"] > 0) & (g["color"][..., 0] < 1.0)
-        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1)[..., 0]
+        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=SHIPPED_THICKNESS)[..., 0]
         if i == 0:
             ratio = float(irr[walls].mean() / irradiance_truth(cam, planes)[..., 0][walls].mean())
             assert 0.6 < ratio < 1.2, ratio
@@ -788,7 +789,7 @@ def test_a_row_of_thin_pillars_shades_the_room_as_much_as_it_should(gpu):
     for planes in (black_room([Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0)), lit_wall]),
                    black_room([Plane((1.5, 0, 0), (-1, 0, 0), (0.0, 0.0, 0.0)), lit_wall] + pillars)):
         g = render(cam, planes)
-        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1)[..., 0]
+        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=SHIPPED_THICKNESS)[..., 0]
         near = sample & (g["linear_z"] > 0) & (g["linear_z"] < 3.5) & (g["color"][..., 0] == 0.0)
         truth = irradiance_truth(cam, planes, pixels=near)[..., 0]
         shares.append((float(irr[near].mean()), float(truth[near].mean())))
@@ -858,7 +859,7 @@ def test_light_does_not_leak_through_the_back_of_objects_with_the_top_level(gpu)
         Plane((0, 0, -3.5), (0, 0, 1), (4.0, 0.0, 0.0), bounds=((-0.6, 0.6), (-1.0, 0.6), (-4.0, -3.0))),
     ]
     g = render(cam, planes)
-    irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1)[..., 0]
+    irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=SHIPPED_THICKNESS)[..., 0]
     truth = irradiance_truth(cam, planes)[..., 0]
     pos = cam.ray_dirs() * g["linear_z"][..., None]
     on_floor = (g["normal"][..., 1] > 0.9) & (g["linear_z"] > 0)
@@ -891,7 +892,7 @@ def test_light_bounces_more_than_once(gpu):
     truth = irradiance_truth(cam, planes, pixels=dark, bounces=8)[..., 0]
     irr = None
     for _ in range(6):
-        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1, previous=irr)
+        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=SHIPPED_THICKNESS, previous=irr)
     ratio = float(irr[dark, 0].mean() / truth[dark].mean())
     assert 0.7 < ratio < 1.2, ratio
 
@@ -908,7 +909,7 @@ def test_bounced_light_stays_bounded_in_a_saturated_room(gpu, intensity):
     surf = g["linear_z"] > 0
     irr, means = None, []
     for _ in range(20):
-        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=0.1, previous=irr, bounce_gain=intensity)
+        irr = run_cascades(gpu, cam, g, count=4, steps=6, thickness=SHIPPED_THICKNESS, previous=irr, bounce_gain=intensity)
         means.append(float(irr[surf, 0].mean()))
     assert abs(means[-1] - means[-2]) < 0.01 * means[-1], means[-5:]   # settled
     assert means[-1] < 2.0 * red[0], means[-1]
